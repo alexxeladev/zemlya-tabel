@@ -57,3 +57,30 @@ pytest
 # или
 pytest -v --tb=short
 ```
+
+## Запуск frontend локально
+
+### 1. Установка зависимостей
+
+```bash
+cd frontend
+npm install
+```
+
+### 2. Dev-сервер
+
+```bash
+cd frontend
+npm run dev
+# открывает http://localhost:5173
+```
+
+Требует запущенного backend на http://localhost:8000.
+
+### 3. Продакшн-сборка
+
+```bash
+cd frontend
+npm run build
+# артефакты в frontend/dist/
+```

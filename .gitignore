@@ -19,6 +19,7 @@ pip-wheel-metadata/
 .env
 .env.*
 !.env.example
+!frontend/.env.development
 
 # Testing
 .pytest_cache/
