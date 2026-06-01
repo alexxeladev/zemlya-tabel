@@ -4,37 +4,56 @@
 
 ## Запуск backend локально
 
-### 1. Установка зависимостей
+### 1. База данных (PostgreSQL через Docker)
+
+```bash
+cd backend
+docker compose -f docker-compose.dev.yml up -d
+```
+
+### 2. Установка зависимостей
 
 ```bash
 cd backend
 pip install -e ".[dev]"
 ```
 
-### 2. Настройка окружения
+### 3. Настройка окружения
 
 ```bash
 cp .env.example .env
-# Заполнить DATABASE_URL и SECRET_KEY в .env
+# Заполнить SECRET_KEY (остальные значения из .env.example уже рабочие для docker-compose.dev.yml)
 ```
 
-### 3. Миграции
+### 4. Миграции
 
 ```bash
+cd backend
 alembic upgrade head
 ```
 
-### 4. Запуск сервера
+### 5. Создание первого администратора
 
 ```bash
+cd backend
+python -m app.cli create-admin --email admin@example.com --password changeme --full-name "Admin"
+```
+
+### 6. Запуск сервера
+
+```bash
+cd backend
 uvicorn app.main:app --reload
 ```
 
 API доступен на http://localhost:8000  
 Документация: http://localhost:8000/docs
 
-### 5. Тесты
+### 7. Тесты
 
 ```bash
+cd backend
 pytest
+# или
+pytest -v --tb=short
 ```
