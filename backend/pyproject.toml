@@ -18,13 +18,13 @@ dependencies = [
     "passlib[bcrypt]",
     "bcrypt<4.0",
     "python-multipart",
+    "httpx",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
     "pytest-asyncio",
-    "httpx",
     "ruff",
 ]
 
