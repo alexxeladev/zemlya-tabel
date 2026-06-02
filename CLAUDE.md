@@ -120,6 +120,14 @@ pytest -v --tb=short
 sudo chown -R <user>:<user> <папка>
 ```
 
+## Производственный календарь
+
+- **Источник:** xmlcalendar.ru — `https://xmlcalendar.ru/data/ru/{year}/calendar.json`
+- **Формула нормы:** `Норма = workdays × hours_per_shift − short_days`
+- Все вычисления норм — только через `app.services.calendar`, не дублировать формулу в роутерах.
+- В тестах **обязательно мокать** `app.services.calendar.fetch_calendar_from_remote` через `monkeypatch` — никаких реальных сетевых запросов.
+- Тип дня в строке `days`: обычное число → выходной/праздник, `N+` → праздничный (тоже нерабочий), `N*` → сокращённый рабочий.
+
 ## Переменные окружения
 
 | Переменная                  | Описание                              | Default                              |
