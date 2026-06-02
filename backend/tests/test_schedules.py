@@ -4,7 +4,6 @@ from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.schedules import Schedule
-from app.models.users import User
 from tests.conftest import get_token
 
 
@@ -16,7 +15,7 @@ def _make_schedule(db_session, name="5/2", hours=8) -> Schedule:
     return schedule
 
 
-def test_create_schedule_admin(client: TestClient, admin_user: User):
+def test_create_schedule_admin(client: TestClient, admin_user: Employee):
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.post(
         "/api/schedules",
@@ -30,7 +29,7 @@ def test_create_schedule_admin(client: TestClient, admin_user: User):
     assert data["is_active"] is True
 
 
-def test_create_schedule_manager_forbidden(client: TestClient, manager_user: User):
+def test_create_schedule_manager_forbidden(client: TestClient, manager_user: Employee):
     token = get_token(client, "manager@example.com", "manager123")
     resp = client.post(
         "/api/schedules",
@@ -40,7 +39,7 @@ def test_create_schedule_manager_forbidden(client: TestClient, manager_user: Use
     assert resp.status_code == 403
 
 
-def test_list_schedules(client: TestClient, admin_user: User, db_session):
+def test_list_schedules(client: TestClient, admin_user: Employee, db_session):
     _make_schedule(db_session)
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.get("/api/schedules", headers={"Authorization": f"Bearer {token}"})
@@ -48,7 +47,7 @@ def test_list_schedules(client: TestClient, admin_user: User, db_session):
     assert len(resp.json()) == 1
 
 
-def test_update_schedule(client: TestClient, admin_user: User, db_session):
+def test_update_schedule(client: TestClient, admin_user: Employee, db_session):
     schedule = _make_schedule(db_session)
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.patch(
@@ -60,7 +59,7 @@ def test_update_schedule(client: TestClient, admin_user: User, db_session):
     assert resp.json()["hours_per_shift"] == 9
 
 
-def test_delete_schedule_soft(client: TestClient, admin_user: User, db_session):
+def test_delete_schedule_soft(client: TestClient, admin_user: Employee, db_session):
     schedule = _make_schedule(db_session)
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.delete(f"/api/schedules/{schedule.id}", headers={"Authorization": f"Bearer {token}"})
@@ -69,7 +68,7 @@ def test_delete_schedule_soft(client: TestClient, admin_user: User, db_session):
     assert schedule.is_active is False
 
 
-def test_delete_schedule_with_employees_409(client: TestClient, admin_user: User, db_session):
+def test_delete_schedule_with_employees_409(client: TestClient, admin_user: Employee, db_session):
     schedule = _make_schedule(db_session)
     dept = Department(name="ОП", code="OP", is_active=True)
     company = Company(code="A", name="ООО А", is_active=True)

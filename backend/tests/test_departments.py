@@ -4,7 +4,6 @@ from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.companies import Company
 from app.models.schedules import Schedule
-from app.models.users import User, UserRole
 from app.core.security import hash_password
 from tests.conftest import get_token
 
@@ -17,7 +16,7 @@ def _make_dept(db_session, name="Дирекция", code="DIR") -> Department:
     return dept
 
 
-def test_create_department_admin(client: TestClient, admin_user: User):
+def test_create_department_admin(client: TestClient, admin_user: Employee):
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.post(
         "/api/departments",
@@ -30,7 +29,7 @@ def test_create_department_admin(client: TestClient, admin_user: User):
     assert data["is_active"] is True
 
 
-def test_create_department_manager_forbidden(client: TestClient, manager_user: User):
+def test_create_department_manager_forbidden(client: TestClient, manager_user: Employee):
     token = get_token(client, "manager@example.com", "manager123")
     resp = client.post(
         "/api/departments",
@@ -40,7 +39,7 @@ def test_create_department_manager_forbidden(client: TestClient, manager_user: U
     assert resp.status_code == 403
 
 
-def test_list_departments_manager(client: TestClient, admin_user: User, manager_user: User, db_session):
+def test_list_departments_manager(client: TestClient, admin_user: Employee, manager_user: Employee, db_session):
     _make_dept(db_session)
     token = get_token(client, "manager@example.com", "manager123")
     resp = client.get("/api/departments", headers={"Authorization": f"Bearer {token}"})
@@ -49,11 +48,11 @@ def test_list_departments_manager(client: TestClient, admin_user: User, manager_
 
 
 def test_list_departments_employee_forbidden(client: TestClient, db_session):
-    emp_user = User(
+    emp_user = Employee(
         email="emp@example.com",
         full_name="Employee",
         hashed_password=hash_password("pass123"),
-        role=UserRole.employee,
+        role="employee",
         is_active=True,
         must_change_password=False,
     )
@@ -64,7 +63,7 @@ def test_list_departments_employee_forbidden(client: TestClient, db_session):
     assert resp.status_code == 403
 
 
-def test_update_department_admin(client: TestClient, admin_user: User, db_session):
+def test_update_department_admin(client: TestClient, admin_user: Employee, db_session):
     dept = _make_dept(db_session)
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.patch(
@@ -76,7 +75,7 @@ def test_update_department_admin(client: TestClient, admin_user: User, db_sessio
     assert resp.json()["name"] == "Изменённый отдел"
 
 
-def test_delete_department_soft(client: TestClient, admin_user: User, db_session):
+def test_delete_department_soft(client: TestClient, admin_user: Employee, db_session):
     dept = _make_dept(db_session)
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.delete(f"/api/departments/{dept.id}", headers={"Authorization": f"Bearer {token}"})
@@ -85,7 +84,7 @@ def test_delete_department_soft(client: TestClient, admin_user: User, db_session
     assert dept.is_active is False
 
 
-def test_delete_department_with_employees_409(client: TestClient, admin_user: User, db_session):
+def test_delete_department_with_employees_409(client: TestClient, admin_user: Employee, db_session):
     dept = _make_dept(db_session)
     company = Company(code="A", name="ООО А", is_active=True)
     schedule = Schedule(name="5/2", hours_per_shift=8, is_active=True)

@@ -4,7 +4,6 @@ from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.schedules import Schedule
-from app.models.users import User
 from tests.conftest import get_token
 
 
@@ -16,7 +15,7 @@ def _make_company(db_session, code="A", name="ООО Альфа") -> Company:
     return company
 
 
-def test_create_company_admin(client: TestClient, admin_user: User):
+def test_create_company_admin(client: TestClient, admin_user: Employee):
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.post(
         "/api/companies",
@@ -30,7 +29,7 @@ def test_create_company_admin(client: TestClient, admin_user: User):
     assert data["is_active"] is True
 
 
-def test_create_company_manager_forbidden(client: TestClient, manager_user: User):
+def test_create_company_manager_forbidden(client: TestClient, manager_user: Employee):
     token = get_token(client, "manager@example.com", "manager123")
     resp = client.post(
         "/api/companies",
@@ -40,7 +39,7 @@ def test_create_company_manager_forbidden(client: TestClient, manager_user: User
     assert resp.status_code == 403
 
 
-def test_list_companies(client: TestClient, admin_user: User, db_session):
+def test_list_companies(client: TestClient, admin_user: Employee, db_session):
     _make_company(db_session)
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.get("/api/companies", headers={"Authorization": f"Bearer {token}"})
@@ -48,7 +47,7 @@ def test_list_companies(client: TestClient, admin_user: User, db_session):
     assert len(resp.json()) == 1
 
 
-def test_update_company(client: TestClient, admin_user: User, db_session):
+def test_update_company(client: TestClient, admin_user: Employee, db_session):
     company = _make_company(db_session)
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.patch(
@@ -60,7 +59,7 @@ def test_update_company(client: TestClient, admin_user: User, db_session):
     assert resp.json()["name"] == "ООО Альфа Плюс"
 
 
-def test_delete_company_soft(client: TestClient, admin_user: User, db_session):
+def test_delete_company_soft(client: TestClient, admin_user: Employee, db_session):
     company = _make_company(db_session)
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.delete(f"/api/companies/{company.id}", headers={"Authorization": f"Bearer {token}"})
@@ -69,7 +68,7 @@ def test_delete_company_soft(client: TestClient, admin_user: User, db_session):
     assert company.is_active is False
 
 
-def test_delete_company_with_employees_409(client: TestClient, admin_user: User, db_session):
+def test_delete_company_with_employees_409(client: TestClient, admin_user: Employee, db_session):
     company = _make_company(db_session)
     dept = Department(name="ОП", code="OP", is_active=True)
     schedule = Schedule(name="5/2", hours_per_shift=8, is_active=True)

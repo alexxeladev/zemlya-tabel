@@ -1,10 +1,10 @@
 from fastapi.testclient import TestClient
 
-from app.models.users import User
+from app.models.employees import Employee
 from tests.conftest import get_token
 
 
-def test_login_success(client: TestClient, admin_user: User):
+def test_login_success(client: TestClient, admin_user: Employee):
     resp = client.post("/api/auth/login", json={"email": "admin@example.com", "password": "admin123"})
     assert resp.status_code == 200
     data = resp.json()
@@ -13,14 +13,23 @@ def test_login_success(client: TestClient, admin_user: User):
     assert data["must_change_password"] is True
 
 
-def test_login_wrong_password(client: TestClient, admin_user: User):
+def test_login_wrong_password(client: TestClient, admin_user: Employee):
     resp = client.post("/api/auth/login", json={"email": "admin@example.com", "password": "wrong"})
     assert resp.status_code == 401
 
 
-def test_login_inactive_user(client: TestClient, inactive_user: User):
+def test_login_inactive_user(client: TestClient, inactive_user: Employee):
     resp = client.post("/api/auth/login", json={"email": "inactive@example.com", "password": "pass123"})
     assert resp.status_code == 403
+
+
+def test_login_no_access_employee(client: TestClient, db_session):
+    # Employee without email/role cannot log in
+    emp = Employee(full_name="No Access", is_active=True)
+    db_session.add(emp)
+    db_session.commit()
+    resp = client.post("/api/auth/login", json={"email": "nobody@example.com", "password": "pass"})
+    assert resp.status_code == 401
 
 
 def test_me_requires_token(client: TestClient):
@@ -28,14 +37,17 @@ def test_me_requires_token(client: TestClient):
     assert resp.status_code == 401
 
 
-def test_me_returns_current_user(client: TestClient, admin_user: User):
+def test_me_returns_current_user(client: TestClient, admin_user: Employee):
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
-    assert resp.json()["email"] == "admin@example.com"
+    data = resp.json()
+    assert data["email"] == "admin@example.com"
+    assert data["has_access"] is True
+    assert data["is_system_admin"] is True
 
 
-def test_change_password_resets_flag(client: TestClient, admin_user: User):
+def test_change_password_resets_flag(client: TestClient, admin_user: Employee):
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.post(
         "/api/auth/change-password",
@@ -44,7 +56,6 @@ def test_change_password_resets_flag(client: TestClient, admin_user: User):
     )
     assert resp.status_code == 204
 
-    # Login with new password should return must_change_password=False
     resp2 = client.post("/api/auth/login", json={"email": "admin@example.com", "password": "newpass456"})
     assert resp2.status_code == 200
     assert resp2.json()["must_change_password"] is False

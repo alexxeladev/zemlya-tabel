@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.security import hash_password
 from app.database import Base, get_db
 from app.main import app
-from app.models.users import User, UserRole
+from app.models.employees import Employee
 
 SQLITE_URL = "sqlite://"
 
@@ -50,51 +50,52 @@ def client(db_session):
 
 
 @pytest.fixture
-def admin_user(db_session) -> User:
-    user = User(
-        email="admin@example.com",
+def admin_user(db_session) -> Employee:
+    emp = Employee(
         full_name="Test Admin",
+        email="admin@example.com",
         hashed_password=hash_password("admin123"),
-        role=UserRole.admin,
+        role="admin",
         is_active=True,
         must_change_password=True,
+        is_system_admin=True,
     )
-    db_session.add(user)
+    db_session.add(emp)
     db_session.commit()
-    db_session.refresh(user)
-    return user
+    db_session.refresh(emp)
+    return emp
 
 
 @pytest.fixture
-def manager_user(db_session) -> User:
-    user = User(
-        email="manager@example.com",
+def manager_user(db_session) -> Employee:
+    emp = Employee(
         full_name="Test Manager",
+        email="manager@example.com",
         hashed_password=hash_password("manager123"),
-        role=UserRole.manager,
+        role="manager",
         is_active=True,
         must_change_password=False,
     )
-    db_session.add(user)
+    db_session.add(emp)
     db_session.commit()
-    db_session.refresh(user)
-    return user
+    db_session.refresh(emp)
+    return emp
 
 
 @pytest.fixture
-def inactive_user(db_session) -> User:
-    user = User(
-        email="inactive@example.com",
+def inactive_user(db_session) -> Employee:
+    emp = Employee(
         full_name="Inactive User",
+        email="inactive@example.com",
         hashed_password=hash_password("pass123"),
-        role=UserRole.employee,
+        role="employee",
         is_active=False,
         must_change_password=False,
     )
-    db_session.add(user)
+    db_session.add(emp)
     db_session.commit()
-    db_session.refresh(user)
-    return user
+    db_session.refresh(emp)
+    return emp
 
 
 def get_token(client: TestClient, email: str, password: str) -> str:
