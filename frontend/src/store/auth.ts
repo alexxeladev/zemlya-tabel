@@ -1,10 +1,10 @@
 import { create } from 'zustand'
-import type { User } from '../types/api'
+import type { Employee } from '../types/api'
 import { TOKEN_KEY } from '../api/client'
 import { login as apiLogin, getMe } from '../api/auth'
 
 interface AuthState {
-  user: User | null
+  user: Employee | null
   token: string | null
   mustChangePassword: boolean
   isInitialized: boolean

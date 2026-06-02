@@ -2,14 +2,17 @@ import { useCallback, useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { listEmployees, createEmployee, updateEmployee, deleteEmployee } from '../../api/employees'
+import {
+  listEmployees, createEmployee, updateEmployee, deleteEmployee,
+  grantAccess, updateRole, resetPassword, revokeAccess,
+} from '../../api/employees'
 import { listDepartments } from '../../api/departments'
 import { listCompanies } from '../../api/companies'
 import { listSchedules } from '../../api/schedules'
 import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../hooks/useAuth'
 import { toast } from '../../store/toasts'
-import type { Employee } from '../../types/api'
+import type { Employee, UserRole } from '../../types/api'
 import { PageHeader } from '../../components/PageHeader'
 import { Table, Th, Td } from '../../components/Table'
 import { Badge } from '../../components/Badge'
@@ -19,18 +22,37 @@ import { Button } from '../../components/Button'
 import { Select } from '../../components/Select'
 import { ApiError } from '../../api/client'
 
+const ROLE_LABELS: Record<string, string> = {
+  admin: 'Администратор',
+  manager: 'Руководитель',
+  accountant: 'Бухгалтер',
+  employee: 'Сотрудник',
+}
+
+const ROLE_OPTIONS = [
+  { value: 'admin', label: 'Администратор' },
+  { value: 'manager', label: 'Руководитель' },
+  { value: 'accountant', label: 'Бухгалтер' },
+  { value: 'employee', label: 'Сотрудник' },
+]
+
 const schema = z.object({
   tab_number: z.string().optional(),
   full_name: z.string().min(1, 'Обязательное поле'),
   position: z.string().optional(),
-  department_id: z.coerce.number().min(1, 'Выберите отдел'),
-  schedule_id: z.coerce.number().min(1, 'Выберите график'),
-  default_company_id: z.coerce.number().min(1, 'Выберите компанию'),
-  rate: z.string().min(1, 'Обязательное поле'),
+  department_id: z.coerce.number().optional(),
+  schedule_id: z.coerce.number().optional(),
+  default_company_id: z.coerce.number().optional(),
+  rate: z.string().optional(),
   is_active: z.boolean().default(true),
   hire_date: z.string().optional(),
   dismissal_date: z.string().optional(),
+  has_access: z.boolean().default(false),
+  email: z.string().optional(),
+  role: z.string().optional(),
+  initial_password: z.string().optional(),
 })
+
 type FormInput = z.input<typeof schema>
 type FormData = z.output<typeof schema>
 
@@ -50,14 +72,15 @@ export function EmployeesPage() {
   const [filterActive, setFilterActive] = useState<boolean | undefined>(undefined)
   const debouncedSearch = useDebounce(search, 300)
 
-  const params = {
-    search: debouncedSearch || undefined,
-    department_id: isManager() ? undefined : filterDept,
-    is_active: filterActive,
-  }
-  const fetchFn = useCallback(() => listEmployees(params), [debouncedSearch, filterDept, filterActive])
+  const fetchFn = useCallback(
+    () => listEmployees({
+      search: debouncedSearch || undefined,
+      department_id: isManager() ? undefined : filterDept,
+      is_active: filterActive,
+    }),
+    [debouncedSearch, filterDept, filterActive],
+  )
   const { data: employees, isLoading, refetch } = useApi(fetchFn, [debouncedSearch, filterDept, filterActive])
-
   const { data: departments } = useApi(listDepartments)
   const { data: companies } = useApi(listCompanies)
   const { data: schedules } = useApi(listSchedules)
@@ -65,25 +88,33 @@ export function EmployeesPage() {
   const [editTarget, setEditTarget] = useState<Employee | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null)
+  const [resetTarget, setResetTarget] = useState<Employee | null>(null)
+  const [revokeTarget, setRevokeTarget] = useState<Employee | null>(null)
+  const [tempPassword, setTempPassword] = useState<string | null>(null)
 
   const form = useForm<FormInput, unknown, FormData>({ resolver: zodResolver(schema) })
+  const hasAccess = form.watch('has_access')
 
-  const deptOptions = [{ value: 0, label: '— выберите —' }, ...(departments?.map((d) => ({ value: d.id, label: d.name })) ?? [])]
-  const companyOptions = [{ value: 0, label: '— выберите —' }, ...(companies?.map((c) => ({ value: c.id, label: c.name })) ?? [])]
-  const scheduleOptions = [{ value: 0, label: '— выберите —' }, ...(schedules?.map((s) => ({ value: s.id, label: s.name })) ?? [])]
+  const deptOptions = [
+    { value: 0, label: '— без отдела —' },
+    ...(departments?.map((d) => ({ value: d.id, label: d.name })) ?? []),
+  ]
+  const companyOptions = [
+    { value: 0, label: '— не указана —' },
+    ...(companies?.map((c) => ({ value: c.id, label: c.name })) ?? []),
+  ]
+  const scheduleOptions = [
+    { value: 0, label: '— не указан —' },
+    ...(schedules?.map((s) => ({ value: s.id, label: s.name })) ?? []),
+  ]
 
   const openCreate = () => {
     form.reset({
-      tab_number: '',
-      full_name: '',
-      position: '',
-      department_id: isManager() ? (user?.department_id ?? 0) : 0,
-      schedule_id: 0,
-      default_company_id: 0,
-      rate: '',
-      is_active: true,
-      hire_date: '',
-      dismissal_date: '',
+      tab_number: '', full_name: '', position: '',
+      department_id: isManager() ? (user?.department_id ?? undefined) : undefined,
+      schedule_id: undefined, default_company_id: undefined,
+      rate: '', is_active: true, hire_date: '', dismissal_date: '',
+      has_access: false, email: '', role: 'employee', initial_password: '',
     })
     setShowCreate(true)
   }
@@ -94,13 +125,17 @@ export function EmployeesPage() {
       tab_number: e.tab_number ?? '',
       full_name: e.full_name,
       position: e.position ?? '',
-      department_id: e.department_id,
-      schedule_id: e.schedule_id,
-      default_company_id: e.default_company_id,
-      rate: e.rate,
+      department_id: e.department_id ?? undefined,
+      schedule_id: e.schedule_id ?? undefined,
+      default_company_id: e.default_company_id ?? undefined,
+      rate: e.rate ?? '',
       is_active: e.is_active,
       hire_date: e.hire_date ?? '',
       dismissal_date: e.dismissal_date ?? '',
+      has_access: e.has_access,
+      email: e.email ?? '',
+      role: e.role ?? 'employee',
+      initial_password: '',
     })
   }
 
@@ -113,19 +148,41 @@ export function EmployeesPage() {
   const onSubmit = async (data: FormData) => {
     try {
       const payload = {
-        ...data,
         tab_number: data.tab_number || null,
+        full_name: data.full_name,
         position: data.position || null,
+        department_id: data.department_id || null,
+        schedule_id: data.schedule_id || null,
+        default_company_id: data.default_company_id || null,
+        rate: data.rate || null,
+        is_active: data.is_active,
         hire_date: data.hire_date || null,
         dismissal_date: data.dismissal_date || null,
+        access: data.has_access && data.email && data.role
+          ? { email: data.email, role: data.role as UserRole, initial_password: data.initial_password ?? '' }
+          : null,
       }
+
       if (editTarget) {
         await updateEmployee(editTarget.id, payload)
+
+        // Handle access changes for edit
+        if (data.has_access && !editTarget.has_access && data.email && data.role) {
+          await grantAccess(editTarget.id, {
+            email: data.email,
+            role: data.role as UserRole,
+            initial_password: data.initial_password ?? '',
+          })
+        } else if (data.has_access && editTarget.has_access && data.role && data.role !== editTarget.role && !editTarget.is_system_admin) {
+          await updateRole(editTarget.id, { role: data.role as UserRole })
+        }
+
         toast.success('Сотрудник обновлён')
       } else {
         await createEmployee(payload)
         toast.success('Сотрудник создан')
       }
+
       closeModal()
       refetch()
     } catch (e) {
@@ -146,6 +203,33 @@ export function EmployeesPage() {
     }
   }
 
+  const onReset = async () => {
+    if (!resetTarget) return
+    try {
+      const res = await resetPassword(resetTarget.id)
+      setTempPassword(res.temp_password)
+      setResetTarget(null)
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : 'Ошибка')
+      setResetTarget(null)
+    }
+  }
+
+  const onRevoke = async () => {
+    if (!revokeTarget) return
+    try {
+      await revokeAccess(revokeTarget.id)
+      toast.success('Доступ отозван')
+      setRevokeTarget(null)
+      refetch()
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : 'Ошибка')
+      setRevokeTarget(null)
+    }
+  }
+
+  const noDepMsg = isManager() && !user?.department_id
+
   return (
     <div>
       <PageHeader
@@ -153,35 +237,43 @@ export function EmployeesPage() {
         action={canAdmin() ? <Button onClick={openCreate}>Добавить сотрудника</Button> : undefined}
       />
 
-      <div className="mb-4 flex flex-wrap gap-3">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Поиск по ФИО или табельному №"
-          className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
-        />
-        {!isManager() && (
+      {noDepMsg && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          У вас не задан отдел. Обратитесь к администратору для назначения отдела.
+        </div>
+      )}
+
+      {!noDepMsg && (
+        <div className="mb-4 flex flex-wrap gap-3">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Поиск по ФИО или табельному №"
+            className="w-64 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          {!isManager() && (
+            <select
+              value={filterDept ?? ''}
+              onChange={(e) => setFilterDept(e.target.value ? Number(e.target.value) : undefined)}
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Все отделы</option>
+              {departments?.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          )}
           <select
-            value={filterDept ?? ''}
-            onChange={(e) => setFilterDept(e.target.value ? Number(e.target.value) : undefined)}
+            value={filterActive === undefined ? '' : String(filterActive)}
+            onChange={(e) => setFilterActive(e.target.value === '' ? undefined : e.target.value === 'true')}
             className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <option value="">Все отделы</option>
-            {departments?.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            <option value="">Все</option>
+            <option value="true">Только активные</option>
+            <option value="false">Только уволенные</option>
           </select>
-        )}
-        <select
-          value={filterActive === undefined ? '' : String(filterActive)}
-          onChange={(e) => setFilterActive(e.target.value === '' ? undefined : e.target.value === 'true')}
-          className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">Все</option>
-          <option value="true">Только активные</option>
-          <option value="false">Только уволенные</option>
-        </select>
-      </div>
+        </div>
+      )}
 
-      <Table isLoading={isLoading} isEmpty={!employees?.length} emptyText="Сотрудников не найдено" skeletonCols={7}>
+      <Table isLoading={isLoading} isEmpty={!employees?.length} emptyText="Сотрудников не найдено" skeletonCols={8}>
         <thead>
           <tr>
             <Th>Таб. №</Th>
@@ -189,8 +281,7 @@ export function EmployeesPage() {
             <Th>Должность</Th>
             <Th>Отдел</Th>
             <Th>График</Th>
-            <Th>Компания</Th>
-            <Th>Оклад</Th>
+            <Th>Доступ</Th>
             <Th>Статус</Th>
             {canAdmin() && <Th>Действия</Th>}
           </tr>
@@ -199,12 +290,23 @@ export function EmployeesPage() {
           {employees?.map((e) => (
             <tr key={e.id} className="border-b border-gray-100 last:border-0">
               <Td><span className="font-mono text-xs">{e.tab_number ?? '—'}</span></Td>
-              <Td className="font-medium">{e.full_name}</Td>
+              <Td className="font-medium">
+                {e.full_name}
+                {e.is_system_admin && (
+                  <span className="ml-2 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700">Системный</span>
+                )}
+              </Td>
               <Td>{e.position ?? '—'}</Td>
               <Td>{e.department?.name ?? '—'}</Td>
               <Td>{e.schedule?.name ?? '—'}</Td>
-              <Td>{e.default_company?.name ?? '—'}</Td>
-              <Td>{Number(e.rate).toLocaleString('ru-RU')} ₽</Td>
+              <Td>
+                {e.is_system_admin
+                  ? <Badge variant="blue">Системный</Badge>
+                  : e.has_access && e.role
+                    ? <Badge variant="green">{ROLE_LABELS[e.role] ?? e.role}</Badge>
+                    : <Badge variant="gray">Нет</Badge>
+                }
+              </Td>
               <Td>
                 <Badge variant={e.is_active ? 'green' : 'gray'}>
                   {e.is_active ? 'Активен' : 'Уволен'}
@@ -214,7 +316,9 @@ export function EmployeesPage() {
                 <Td>
                   <div className="flex gap-2">
                     <Button size="sm" variant="secondary" onClick={() => openEdit(e)}>Изменить</Button>
-                    <Button size="sm" variant="danger" onClick={() => setDeleteTarget(e)}>Уволить</Button>
+                    {!e.is_system_admin && (
+                      <Button size="sm" variant="danger" onClick={() => setDeleteTarget(e)}>Уволить</Button>
+                    )}
                   </div>
                 </Td>
               )}
@@ -223,10 +327,11 @@ export function EmployeesPage() {
         </tbody>
       </Table>
 
+      {/* Create / Edit modal */}
       <Modal
         isOpen={showCreate || !!editTarget}
         onClose={closeModal}
-        title={editTarget ? 'Изменить сотрудника' : 'Добавить сотрудника'}
+        title={editTarget ? `Изменить: ${editTarget.full_name}` : 'Добавить сотрудника'}
         actions={
           <>
             <Button type="button" variant="ghost" onClick={closeModal}>Отмена</Button>
@@ -234,36 +339,122 @@ export function EmployeesPage() {
           </>
         }
       >
-        <form id="emp-form" onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-3 max-h-[60vh] overflow-y-auto pr-1">
-          {[
-            { name: 'tab_number' as const, label: 'Табельный номер' },
-            { name: 'full_name' as const, label: 'ФИО' },
-            { name: 'position' as const, label: 'Должность' },
-            { name: 'rate' as const, label: 'Оклад' },
-          ].map(({ name, label }) => (
-            <div key={name} className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-gray-700">{label}</label>
-              <input {...form.register(name)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              {form.formState.errors[name] && <p className="text-xs text-red-600">{form.formState.errors[name]?.message}</p>}
-            </div>
-          ))}
-          <Select label="Отдел" options={deptOptions} {...form.register('department_id')} error={form.formState.errors.department_id?.message} />
-          <Select label="График" options={scheduleOptions} {...form.register('schedule_id')} error={form.formState.errors.schedule_id?.message} />
-          <Select label="Основная компания" options={companyOptions} {...form.register('default_company_id')} error={form.formState.errors.default_company_id?.message} />
-          <div className="flex gap-4">
-            <div className="flex flex-col gap-1 flex-1">
-              <label className="text-sm font-medium text-gray-700">Дата приёма</label>
-              <input type="date" {...form.register('hire_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            </div>
-            <div className="flex flex-col gap-1 flex-1">
-              <label className="text-sm font-medium text-gray-700">Дата увольнения</label>
-              <input type="date" {...form.register('dismissal_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <form id="emp-form" onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4 max-h-[70vh] overflow-y-auto pr-1">
+          {/* Section 1 — Personal */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Личная информация</p>
+            <div className="flex flex-col gap-3">
+              {[
+                { name: 'tab_number' as const, label: 'Табельный номер' },
+                { name: 'full_name' as const, label: 'ФИО *' },
+                { name: 'position' as const, label: 'Должность' },
+              ].map(({ name, label }) => (
+                <div key={name} className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">{label}</label>
+                  <input {...form.register(name)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  {form.formState.errors[name] && <p className="text-xs text-red-600">{form.formState.errors[name]?.message}</p>}
+                </div>
+              ))}
             </div>
           </div>
-          <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-            <input type="checkbox" {...form.register('is_active')} className="rounded" />
-            Активен
-          </label>
+
+          {/* Section 2 — Structure */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Структура</p>
+            <div className="flex flex-col gap-3">
+              <Select label="Отдел" options={deptOptions} {...form.register('department_id')} />
+              <Select label="График" options={scheduleOptions} {...form.register('schedule_id')} />
+              <Select label="Основная компания" options={companyOptions} {...form.register('default_company_id')} />
+            </div>
+          </div>
+
+          {/* Section 3 — Finance */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Финансы</p>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-gray-700">Оклад (₽)</label>
+                <input {...form.register('rate')} placeholder="50000" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div className="flex gap-3">
+                <div className="flex flex-col gap-1 flex-1">
+                  <label className="text-sm font-medium text-gray-700">Дата приёма</label>
+                  <input type="date" {...form.register('hire_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div className="flex flex-col gap-1 flex-1">
+                  <label className="text-sm font-medium text-gray-700">Дата увольнения</label>
+                  <input type="date" {...form.register('dismissal_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input type="checkbox" {...form.register('is_active')} className="rounded" />
+                Активен
+              </label>
+            </div>
+          </div>
+
+          {/* Section 4 — Access */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Доступ в систему</p>
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer mb-3">
+              <input type="checkbox" {...form.register('has_access')} className="rounded" />
+              Есть доступ в систему
+            </label>
+
+            {hasAccess && (
+              <div className="flex flex-col gap-3 pl-2 border-l-2 border-blue-200">
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Email</label>
+                  <input
+                    type="email"
+                    {...form.register('email')}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <Select
+                  label="Роль"
+                  options={ROLE_OPTIONS}
+                  {...form.register('role')}
+                  disabled={editTarget?.is_system_admin}
+                />
+                {editTarget?.is_system_admin && (
+                  <p className="text-xs text-gray-400">Системный администратор — роль изменить нельзя</p>
+                )}
+                {!editTarget && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-sm font-medium text-gray-700">Начальный пароль</label>
+                    <input
+                      type="password"
+                      {...form.register('initial_password')}
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                )}
+                {editTarget && editTarget.has_access && (
+                  <div className="flex gap-2 mt-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => { closeModal(); setResetTarget(editTarget) }}
+                    >
+                      Сбросить пароль
+                    </Button>
+                    {!editTarget.is_system_admin && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="danger"
+                        onClick={() => { closeModal(); setRevokeTarget(editTarget) }}
+                      >
+                        Отобрать доступ
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </form>
       </Modal>
 
@@ -271,10 +462,51 @@ export function EmployeesPage() {
         isOpen={!!deleteTarget}
         onConfirm={onDelete}
         onCancel={() => setDeleteTarget(null)}
-        title="Уволить сотрудника"
-        message={`Деактивировать карточку сотрудника «${deleteTarget?.full_name}»?`}
+        title="Деактивировать сотрудника"
+        message={`Деактивировать карточку «${deleteTarget?.full_name}»?`}
         danger
       />
+
+      <Confirm
+        isOpen={!!resetTarget}
+        onConfirm={onReset}
+        onCancel={() => setResetTarget(null)}
+        title="Сбросить пароль"
+        message={`Сгенерировать временный пароль для «${resetTarget?.full_name}»?`}
+      />
+
+      <Confirm
+        isOpen={!!revokeTarget}
+        onConfirm={onRevoke}
+        onCancel={() => setRevokeTarget(null)}
+        title="Отобрать доступ"
+        message={`Отобрать системный доступ у «${revokeTarget?.full_name}»? Email и роль будут обнулены.`}
+        danger
+      />
+
+      {/* Temp password modal */}
+      <Modal
+        isOpen={!!tempPassword}
+        onClose={() => setTempPassword(null)}
+        title="Временный пароль"
+        actions={
+          <>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => { navigator.clipboard.writeText(tempPassword ?? ''); toast.success('Скопировано') }}
+            >
+              Скопировать
+            </Button>
+            <Button type="button" onClick={() => setTempPassword(null)}>Закрыть</Button>
+          </>
+        }
+      >
+        <p className="mb-3 text-sm text-gray-600">Передайте пользователю этот пароль. Он будет обязан сменить его при входе.</p>
+        <div className="rounded-lg bg-gray-100 px-4 py-3 font-mono text-lg tracking-widest text-gray-900">
+          {tempPassword}
+        </div>
+      </Modal>
     </div>
   )
 }

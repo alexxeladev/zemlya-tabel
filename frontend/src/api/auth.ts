@@ -1,4 +1,4 @@
-import type { TokenResponse, User } from '../types/api'
+import type { Employee, TokenResponse } from '../types/api'
 import { apiClient } from './client'
 
 export async function login(email: string, password: string): Promise<TokenResponse> {
@@ -6,8 +6,8 @@ export async function login(email: string, password: string): Promise<TokenRespo
   return data
 }
 
-export async function getMe(): Promise<User> {
-  const { data } = await apiClient.get<User>('/api/auth/me')
+export async function getMe(): Promise<Employee> {
+  const { data } = await apiClient.get<Employee>('/api/auth/me')
   return data
 }
 

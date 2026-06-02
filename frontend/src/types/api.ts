@@ -1,17 +1,5 @@
 export type UserRole = 'admin' | 'manager' | 'accountant' | 'employee'
 
-export interface User {
-  id: number
-  email: string
-  full_name: string
-  role: UserRole
-  department_id: number | null
-  employee_id: number | null
-  is_active: boolean
-  must_change_password: boolean
-  last_login_at: string | null
-}
-
 export interface TokenResponse {
   access_token: string
   token_type: string
@@ -46,13 +34,21 @@ export interface Employee {
   tab_number: string | null
   full_name: string
   position: string | null
-  department_id: number
-  schedule_id: number
-  default_company_id: number
-  rate: string
+  department_id: number | null
+  schedule_id: number | null
+  default_company_id: number | null
+  rate: string | null
   is_active: boolean
   hire_date: string | null
   dismissal_date: string | null
+  // auth fields
+  email: string | null
+  role: UserRole | null
+  has_access: boolean
+  must_change_password: boolean
+  last_login_at: string | null
+  is_system_admin: boolean
+  // nested
   department: Department | null
   schedule: Schedule | null
   default_company: Company | null

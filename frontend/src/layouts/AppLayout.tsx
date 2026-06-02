@@ -57,11 +57,10 @@ export function AppLayout() {
   const role = user?.role
 
   const adminItems: NavItem[] = [
-    { to: '/admin/users', label: 'Пользователи' },
+    { to: '/admin/employees', label: 'Сотрудники' },
     { to: '/admin/departments', label: 'Отделы' },
     { to: '/admin/companies', label: 'Компании' },
     { to: '/admin/schedules', label: 'Графики работы' },
-    { to: '/admin/employees', label: 'Сотрудники' },
   ]
 
   const managerItems: NavItem[] = [

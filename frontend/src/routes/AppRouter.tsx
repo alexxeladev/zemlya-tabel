@@ -7,7 +7,6 @@ import { DepartmentsPage } from '../pages/admin/DepartmentsPage'
 import { CompaniesPage } from '../pages/admin/CompaniesPage'
 import { SchedulesPage } from '../pages/admin/SchedulesPage'
 import { EmployeesPage } from '../pages/admin/EmployeesPage'
-import { UsersPage } from '../pages/admin/UsersPage'
 import { PrivateRoute } from './PrivateRoute'
 import { useAuthStore } from '../store/auth'
 import { toast } from '../store/toasts'
@@ -17,7 +16,7 @@ function RoleRoute({ allow, children }: { allow: UserRole[]; children: React.Rea
   const user = useAuthStore((s) => s.user)
   const location = useLocation()
 
-  if (!user || !allow.includes(user.role)) {
+  if (!user || !user.role || !allow.includes(user.role)) {
     toast.error('Нет доступа к этой странице')
     return <Navigate to="/dashboard" replace state={{ from: location }} />
   }
@@ -34,14 +33,6 @@ export function AppRouter() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/change-password" element={<ChangePasswordPage />} />
 
-            <Route
-              path="/admin/users"
-              element={
-                <RoleRoute allow={['admin']}>
-                  <UsersPage />
-                </RoleRoute>
-              }
-            />
             <Route
               path="/admin/departments"
               element={

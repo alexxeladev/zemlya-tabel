@@ -45,11 +45,10 @@ const ICONS = {
 }
 
 const ADMIN_TILES: Tile[] = [
-  { to: '/admin/users', title: 'Пользователи', description: 'Управление учётными записями', icon: ICONS.users },
+  { to: '/admin/employees', title: 'Сотрудники', description: 'Карточки сотрудников и доступ', icon: ICONS.employees },
   { to: '/admin/departments', title: 'Отделы', description: 'Структура подразделений', icon: ICONS.departments },
   { to: '/admin/companies', title: 'Компании', description: 'Юридические лица группы', icon: ICONS.companies },
   { to: '/admin/schedules', title: 'Графики работы', description: 'Режимы и смены', icon: ICONS.schedules },
-  { to: '/admin/employees', title: 'Сотрудники', description: 'Карточки сотрудников', icon: ICONS.employees },
 ]
 
 const MANAGER_TILES: Tile[] = [
@@ -95,7 +94,7 @@ export function DashboardPage() {
     <div className="space-y-6">
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
         <h1 className="text-2xl font-bold text-gray-900">Здравствуйте, {user.full_name}!</h1>
-        <p className="mt-1 text-sm text-gray-500">{ROLE_LABELS[user.role]}</p>
+        <p className="mt-1 text-sm text-gray-500">{user.role ? ROLE_LABELS[user.role] : ''}</p>
       </div>
 
       {tiles.length > 0 ? (
