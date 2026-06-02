@@ -25,7 +25,7 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), nullable=False)
     entity_type: Mapped[str] = mapped_column(String(100), nullable=False)
     entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     action: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -34,7 +34,7 @@ class AuditLog(Base):
     reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[str] = mapped_column(server_default=func.now())
 
-    actor = relationship("User", foreign_keys=[actor_id])
+    actor = relationship("Employee", foreign_keys=[actor_id])
 
     __table_args__ = (
         Index("ix_audit_log_entity", "entity_type", "entity_id"),

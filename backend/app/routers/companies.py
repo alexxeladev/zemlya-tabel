@@ -5,7 +5,7 @@ from app.core.audit import log_action
 from app.core.deps import get_current_user, require_role
 from app.database import get_db
 from app.models.companies import Company
-from app.models.users import User, UserRole
+from app.models.employees import Employee
 from app.schemas.company import CompanyCreate, CompanyRead, CompanyUpdate
 
 router = APIRouter()
@@ -20,9 +20,9 @@ def _to_dict(obj: Company) -> dict:
 @router.get("", response_model=list[CompanyRead])
 def list_companies(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Employee = Depends(get_current_user),
 ):
-    if current_user.role == UserRole.employee:
+    if current_user.role == "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     return db.query(Company).all()
 
@@ -31,7 +31,7 @@ def list_companies(
 def create_company(
     payload: CompanyCreate,
     db: Session = Depends(get_db),
-    actor: User = Depends(_admin_only),
+    actor: Employee = Depends(_admin_only),
 ):
     if db.query(Company).filter(Company.code == payload.code).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Code already exists")
@@ -48,9 +48,9 @@ def create_company(
 def get_company(
     company_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Employee = Depends(get_current_user),
 ):
-    if current_user.role == UserRole.employee:
+    if current_user.role == "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     company = db.get(Company, company_id)
     if not company:
@@ -63,7 +63,7 @@ def update_company(
     company_id: int,
     payload: CompanyUpdate,
     db: Session = Depends(get_db),
-    actor: User = Depends(_admin_only),
+    actor: Employee = Depends(_admin_only),
 ):
     company = db.get(Company, company_id)
     if not company:
@@ -82,7 +82,7 @@ def update_company(
 def delete_company(
     company_id: int,
     db: Session = Depends(get_db),
-    actor: User = Depends(_admin_only),
+    actor: Employee = Depends(_admin_only),
 ):
     company = db.get(Company, company_id)
     if not company:

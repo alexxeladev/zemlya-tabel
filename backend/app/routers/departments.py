@@ -5,7 +5,7 @@ from app.core.audit import log_action
 from app.core.deps import get_current_user, require_role
 from app.database import get_db
 from app.models.departments import Department
-from app.models.users import User, UserRole
+from app.models.employees import Employee
 from app.schemas.department import DepartmentCreate, DepartmentRead, DepartmentUpdate
 
 router = APIRouter()
@@ -21,9 +21,9 @@ def _to_dict(obj: Department) -> dict:
 @router.get("", response_model=list[DepartmentRead])
 def list_departments(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Employee = Depends(get_current_user),
 ):
-    if current_user.role == UserRole.employee:
+    if current_user.role == "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     return db.query(Department).all()
 
@@ -32,7 +32,7 @@ def list_departments(
 def create_department(
     payload: DepartmentCreate,
     db: Session = Depends(get_db),
-    actor: User = Depends(_admin_only),
+    actor: Employee = Depends(_admin_only),
 ):
     if db.query(Department).filter(Department.code == payload.code).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Code already exists")
@@ -49,9 +49,9 @@ def create_department(
 def get_department(
     dept_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Employee = Depends(get_current_user),
 ):
-    if current_user.role == UserRole.employee:
+    if current_user.role == "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     dept = db.get(Department, dept_id)
     if not dept:
@@ -64,7 +64,7 @@ def update_department(
     dept_id: int,
     payload: DepartmentUpdate,
     db: Session = Depends(get_db),
-    actor: User = Depends(_admin_only),
+    actor: Employee = Depends(_admin_only),
 ):
     dept = db.get(Department, dept_id)
     if not dept:
@@ -83,7 +83,7 @@ def update_department(
 def delete_department(
     dept_id: int,
     db: Session = Depends(get_db),
-    actor: User = Depends(_admin_only),
+    actor: Employee = Depends(_admin_only),
 ):
     dept = db.get(Department, dept_id)
     if not dept:

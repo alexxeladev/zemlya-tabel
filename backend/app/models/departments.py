@@ -9,7 +9,6 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.employees import Employee
-    from app.models.users import User
 
 
 class Department(Base):
@@ -23,4 +22,3 @@ class Department(Base):
     updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())
 
     employees: Mapped[list[Employee]] = relationship("Employee", back_populates="department")
-    users: Mapped[list[User]] = relationship("User", back_populates="department")

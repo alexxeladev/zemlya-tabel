@@ -5,7 +5,7 @@ from app.core.audit import log_action
 from app.core.deps import get_current_user, require_role
 from app.database import get_db
 from app.models.schedules import Schedule
-from app.models.users import User, UserRole
+from app.models.employees import Employee
 from app.schemas.schedule import ScheduleCreate, ScheduleRead, ScheduleUpdate
 
 router = APIRouter()
@@ -26,9 +26,9 @@ def _to_dict(obj: Schedule) -> dict:
 @router.get("", response_model=list[ScheduleRead])
 def list_schedules(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Employee = Depends(get_current_user),
 ):
-    if current_user.role == UserRole.employee:
+    if current_user.role == "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     return db.query(Schedule).all()
 
@@ -37,7 +37,7 @@ def list_schedules(
 def create_schedule(
     payload: ScheduleCreate,
     db: Session = Depends(get_db),
-    actor: User = Depends(_admin_only),
+    actor: Employee = Depends(_admin_only),
 ):
     if db.query(Schedule).filter(Schedule.name == payload.name).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Name already exists")
@@ -59,9 +59,9 @@ def create_schedule(
 def get_schedule(
     schedule_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Employee = Depends(get_current_user),
 ):
-    if current_user.role == UserRole.employee:
+    if current_user.role == "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
     schedule = db.get(Schedule, schedule_id)
     if not schedule:
@@ -74,7 +74,7 @@ def update_schedule(
     schedule_id: int,
     payload: ScheduleUpdate,
     db: Session = Depends(get_db),
-    actor: User = Depends(_admin_only),
+    actor: Employee = Depends(_admin_only),
 ):
     schedule = db.get(Schedule, schedule_id)
     if not schedule:
@@ -93,7 +93,7 @@ def update_schedule(
 def delete_schedule(
     schedule_id: int,
     db: Session = Depends(get_db),
-    actor: User = Depends(_admin_only),
+    actor: Employee = Depends(_admin_only),
 ):
     schedule = db.get(Schedule, schedule_id)
     if not schedule:

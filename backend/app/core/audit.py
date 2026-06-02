@@ -3,12 +3,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.audit_log import AuditLog
-from app.models.users import User
+from app.models.employees import Employee
 
 
 def log_action(
     db: Session,
-    actor: User,
+    actor: Employee,
     entity_type: str,
     entity_id: int | None,
     action: str,

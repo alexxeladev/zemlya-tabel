@@ -7,7 +7,6 @@ from app.routers.companies import router as companies_router
 from app.routers.departments import router as departments_router
 from app.routers.employees import router as employees_router
 from app.routers.schedules import router as schedules_router
-from app.routers.users import router as users_router
 
 app = FastAPI(title="Zemlya Tabel API", version="0.1.0")
 
@@ -20,7 +19,6 @@ app.add_middleware(
 )
 
 app.include_router(auth_router, prefix="/api", tags=["auth"])
-app.include_router(users_router, prefix="/api/users", tags=["users"])
 app.include_router(departments_router, prefix="/api/departments", tags=["departments"])
 app.include_router(companies_router, prefix="/api/companies", tags=["companies"])
 app.include_router(schedules_router, prefix="/api/schedules", tags=["schedules"])
