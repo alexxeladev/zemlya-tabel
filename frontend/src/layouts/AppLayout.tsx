@@ -1,11 +1,47 @@
-import { Link, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
+import { Toaster } from '../components/Toaster'
 
 const ROLE_LABELS: Record<string, string> = {
   admin: 'Администратор',
   manager: 'Руководитель',
   accountant: 'Бухгалтер',
   employee: 'Сотрудник',
+}
+
+interface NavItem {
+  to: string
+  label: string
+}
+
+function SidebarLink({ to, label }: NavItem) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        `block rounded-md px-3 py-2 text-sm transition-colors ${
+          isActive
+            ? 'bg-blue-50 text-blue-700 font-medium'
+            : 'text-gray-700 hover:bg-gray-50'
+        }`
+      }
+    >
+      {label}
+    </NavLink>
+  )
+}
+
+function SidebarGroup({ title, items }: { title: string; items: NavItem[] }) {
+  return (
+    <div>
+      <p className="mb-1 px-3 text-xs font-semibold uppercase tracking-wider text-gray-400">{title}</p>
+      <div className="flex flex-col gap-0.5">
+        {items.map((item) => (
+          <SidebarLink key={item.to} {...item} />
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export function AppLayout() {
@@ -18,30 +54,69 @@ export function AppLayout() {
     navigate('/login', { replace: true })
   }
 
+  const role = user?.role
+
+  const adminItems: NavItem[] = [
+    { to: '/admin/users', label: 'Пользователи' },
+    { to: '/admin/departments', label: 'Отделы' },
+    { to: '/admin/companies', label: 'Компании' },
+    { to: '/admin/schedules', label: 'Графики работы' },
+    { to: '/admin/employees', label: 'Сотрудники' },
+  ]
+
+  const managerItems: NavItem[] = [
+    { to: '/admin/employees', label: 'Сотрудники' },
+  ]
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="sticky top-0 z-10 border-b border-gray-200 bg-white">
-        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
-          <Link to="/dashboard" className="text-lg font-semibold text-brand">
-            Табель
-          </Link>
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-700">{user?.full_name}</span>
-            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
-              {ROLE_LABELS[user?.role ?? ''] ?? user?.role}
-            </span>
-            <button
-              onClick={handleLogout}
-              className="cursor-pointer text-sm text-gray-500 transition-colors hover:text-gray-900"
-            >
-              Выйти
-            </button>
-          </div>
+    <div className="flex min-h-screen bg-gray-50">
+      {/* Sidebar */}
+      <aside className="fixed inset-y-0 left-0 flex w-60 flex-col border-r border-gray-200 bg-white">
+        <div className="flex h-14 items-center border-b border-gray-200 px-4">
+          <span className="text-lg font-bold text-blue-700">Табель</span>
         </div>
-      </header>
-      <main className="mx-auto max-w-7xl px-4 py-6">
-        <Outlet />
-      </main>
+
+        <nav className="flex flex-1 flex-col gap-4 overflow-y-auto p-3">
+          <SidebarGroup title="Учёт" items={[{ to: '/dashboard', label: 'Дашборд' }]} />
+
+          {role === 'admin' && (
+            <SidebarGroup title="Справочники" items={adminItems} />
+          )}
+          {role === 'manager' && (
+            <SidebarGroup title="Справочники" items={managerItems} />
+          )}
+          {role === 'accountant' && (
+            <SidebarGroup title="Справочники" items={[
+              { to: '/admin/departments', label: 'Отделы' },
+              { to: '/admin/companies', label: 'Компании' },
+              { to: '/admin/schedules', label: 'Графики работы' },
+              { to: '/admin/employees', label: 'Сотрудники' },
+            ]} />
+          )}
+        </nav>
+
+        <div className="border-t border-gray-200 p-3">
+          <div className="mb-2 px-3">
+            <p className="text-sm font-medium text-gray-800 truncate">{user?.full_name}</p>
+            <p className="text-xs text-gray-500">{ROLE_LABELS[role ?? ''] ?? role}</p>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="w-full rounded-md px-3 py-2 text-left text-sm text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
+          >
+            Выйти
+          </button>
+        </div>
+      </aside>
+
+      {/* Main content */}
+      <div className="ml-60 flex flex-1 flex-col">
+        <main className="flex-1 p-6">
+          <Outlet />
+        </main>
+      </div>
+
+      <Toaster />
     </div>
   )
 }
