@@ -1,5 +1,37 @@
 export type UserRole = 'admin' | 'manager' | 'accountant' | 'employee'
 
+export interface MonthData {
+  month: number
+  days: string
+}
+
+export interface ProductionCalendar {
+  id: number
+  year: number
+  months: MonthData[]
+  source: 'remote' | 'manual'
+  loaded_at: string
+  workdays_total: number
+  short_days_total: number
+}
+
+export type DayType = 'work' | 'short' | 'holiday'
+
+export interface DayInfo {
+  day: number
+  type: DayType
+  weekday: number
+}
+
+export interface MonthSummary {
+  year: number
+  month: number
+  workdays: number
+  short_days: number
+  norm_hours_8h: number
+  days: DayInfo[]
+}
+
 export interface TokenResponse {
   access_token: string
   token_type: string

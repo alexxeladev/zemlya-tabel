@@ -61,6 +61,7 @@ export function AppLayout() {
     { to: '/admin/departments', label: 'Отделы' },
     { to: '/admin/companies', label: 'Компании' },
     { to: '/admin/schedules', label: 'Графики работы' },
+    { to: '/admin/calendar', label: 'Произв. календарь' },
   ]
 
   const managerItems: NavItem[] = [
