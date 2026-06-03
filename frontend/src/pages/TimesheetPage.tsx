@@ -7,13 +7,16 @@ import type {
   Company,
   Department,
   Employee,
+  EmployeePayroll,
   MonthSummary,
+  PayrollSummary,
   TimesheetEntry,
   TimesheetMonthResponse,
   TimesheetPeriod,
 } from '../types/api'
 import { timesheetApi } from '../api/timesheet'
 import { apiClient, ApiError } from '../api/client'
+import { formatDelta, formatHours, formatMoney } from '../utils/money'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -704,8 +707,11 @@ export function TimesheetPage() {
   const [autofillPreview, setAutofillPreview] = useState<AutofillPreview | null>(null)
   const [autofillLoading, setAutofillLoading] = useState(false)
 
+  const [payroll, setPayroll] = useState<PayrollSummary | null>(null)
+
   const canFilterDept = user?.role === 'admin' || user?.role === 'accountant'
   const canAutofill = user?.role === 'admin' || user?.role === 'accountant' || user?.role === 'manager'
+  const canSeeFinance = user?.role === 'admin' || user?.role === 'accountant'
 
   useEffect(() => {
     if (!canFilterDept) return
@@ -716,13 +722,17 @@ export function TimesheetPage() {
     setLoading(true)
     try {
       const [monthData, calData] = await Promise.all([
-        timesheetApi.getMonth(year, month, canFilterDept ? departmentId : undefined),
+        timesheetApi.getMonth(year, month, {
+          department_id: canFilterDept ? departmentId : undefined,
+          include_payroll: canSeeFinance,
+        }),
         apiClient.get<MonthSummary>(`/api/calendar/${year}/${month}/summary`).then((r) => r.data).catch(() => null),
       ])
       setData(monthData)
       setCalendar(calData)
       setEntryMap(buildEntryMap(monthData.entries))
       setPeriods(monthData.periods)
+      setPayroll(monthData.payroll ?? null)
 
       // Initialize expandedCompanies from server extra_companies_by_employee
       const extras = monthData.extra_companies_by_employee
@@ -740,7 +750,8 @@ export function TimesheetPage() {
     } finally {
       setLoading(false)
     }
-  }, [year, month, departmentId, canFilterDept])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year, month, departmentId, canFilterDept, canSeeFinance])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -786,6 +797,12 @@ export function TimesheetPage() {
     setSavingCount((n) => n + 1)
     try {
       await timesheetApi.saveCell({ employee_id: employeeId, work_date: workDate, company_id: companyId, hours })
+      // Refresh payroll after cell save
+      if (canSeeFinance) {
+        timesheetApi.getPayroll(year, month, canFilterDept ? departmentId : undefined)
+          .then(setPayroll)
+          .catch(() => {})
+      }
     } catch (err) {
       setEntryMap((prev) => {
         const next = new Map(prev)
@@ -915,6 +932,9 @@ export function TimesheetPage() {
     return sum
   }
 
+  const payrollByEmployee = (empId: number): EmployeePayroll | null =>
+    payroll?.employees.find((e) => e.employee_id === empId) ?? null
+
   const weekdayOf = (day: number) => WEEKDAY_SHORT[new Date(year, month - 1, day).getDay()]
 
   // Build rows per employee: default company + expanded extras
@@ -966,8 +986,18 @@ export function TimesheetPage() {
                 </th>
               ))}
               <th className="sticky right-0 z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[52px]">
-                Итого
+                Итого ч
               </th>
+              {canSeeFinance && (
+                <>
+                  <th className="sticky right-[52px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[48px] text-[11px]">Норма</th>
+                  <th className="sticky right-[100px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[44px] text-[11px]">Δ</th>
+                  <th className="sticky right-[144px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[72px] text-[11px]">Оклад</th>
+                  <th className="sticky right-[216px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[68px] text-[11px]">Сверхур.</th>
+                  <th className="sticky right-[284px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[60px] text-[11px]">Праздн.</th>
+                  <th className="sticky right-[344px] z-20 bg-blue-50 border-b border-l border-gray-200 px-2 py-2 text-center font-semibold text-blue-700 whitespace-nowrap min-w-[80px] text-[11px]">Итого ₽</th>
+                </>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -979,6 +1009,57 @@ export function TimesheetPage() {
               const empRows = buildEmployeeRows(emp)
               const shownCompanyIds = empRows
               const isDismissed = !emp.is_active
+              const ep = payrollByEmployee(emp.id)
+
+              const renderFinanceCells = (isFirstRow: boolean) => {
+                if (!canSeeFinance) return null
+                if (!isFirstRow) {
+                  return (
+                    <>
+                      <td className="sticky right-[52px] z-10 bg-white border-l border-gray-100" />
+                      <td className="sticky right-[100px] z-10 bg-white border-l border-gray-100" />
+                      <td className="sticky right-[144px] z-10 bg-white border-l border-gray-100" />
+                      <td className="sticky right-[216px] z-10 bg-white border-l border-gray-100" />
+                      <td className="sticky right-[284px] z-10 bg-white border-l border-gray-100" />
+                      <td className="sticky right-[344px] z-10 bg-blue-50 border-l border-gray-200" />
+                    </>
+                  )
+                }
+                if (!ep) return (
+                  <>
+                    <td className="sticky right-[52px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
+                    <td className="sticky right-[100px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
+                    <td className="sticky right-[144px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
+                    <td className="sticky right-[216px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
+                    <td className="sticky right-[284px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
+                    <td className="sticky right-[344px] z-10 bg-blue-50 border-l border-gray-200 px-1 py-1 text-center text-blue-700 font-semibold text-[11px]">—</td>
+                  </>
+                )
+                const delta = formatDelta(ep.delta_hours)
+                const notCalcTitle = ep.reason_if_not_calculable ?? ''
+                return (
+                  <>
+                    <td className="sticky right-[52px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-600 text-[11px] whitespace-nowrap">
+                      {formatHours(ep.norm_hours)}
+                    </td>
+                    <td className={`sticky right-[100px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-[11px] whitespace-nowrap ${delta.className}`}>
+                      {delta.text}
+                    </td>
+                    <td className="sticky right-[144px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-700 text-[11px] whitespace-nowrap" title={notCalcTitle}>
+                      {ep.is_calculable ? formatMoney(ep.base_amount) : <span className="text-gray-400 italic">—</span>}
+                    </td>
+                    <td className="sticky right-[216px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-700 text-[11px] whitespace-nowrap" title={notCalcTitle}>
+                      {ep.is_calculable ? formatMoney(ep.overtime_amount) : <span className="text-gray-400 italic">—</span>}
+                    </td>
+                    <td className="sticky right-[284px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-700 text-[11px] whitespace-nowrap" title={notCalcTitle}>
+                      {ep.is_calculable ? formatMoney(ep.holiday_amount) : <span className="text-gray-400 italic">—</span>}
+                    </td>
+                    <td className="sticky right-[344px] z-10 bg-blue-50 border-l border-blue-200 px-1 py-1 text-center text-blue-700 font-semibold text-[11px] whitespace-nowrap" title={notCalcTitle}>
+                      {ep.is_calculable ? formatMoney(ep.total_amount) : <span className="text-gray-400 italic font-normal">—</span>}
+                    </td>
+                  </>
+                )
+              }
 
               // If employee has no default and no extras, show placeholder row
               if (empRows.length === 0) {
@@ -1007,6 +1088,7 @@ export function TimesheetPage() {
                       <td key={d} className="border-r border-gray-100 p-0" />
                     ))}
                     <td className="sticky right-0 z-10 bg-white border-l border-gray-200 px-2 py-1" />
+                    {renderFinanceCells(true)}
                   </tr>
                 )
               }
@@ -1075,10 +1157,40 @@ export function TimesheetPage() {
                     <td className={`sticky right-0 z-10 bg-white border-l border-gray-200 px-2 py-1 text-center font-semibold ${isFirstRow && total > 0 ? 'text-gray-800' : 'text-transparent select-none'}`}>
                       {isFirstRow && total > 0 ? total : ''}
                     </td>
+                    {renderFinanceCells(isFirstRow)}
                   </tr>
                 )
               })
             })}
+            {/* Footer row */}
+            {payroll && canSeeFinance && (
+              <tr className="sticky bottom-0 z-10 bg-gray-50 border-t-2 border-gray-300 font-semibold text-xs">
+                <td className="sticky left-0 z-20 bg-gray-50 border-r border-gray-200 px-3 py-2 whitespace-nowrap text-gray-700">
+                  ИТОГО: {payroll.total_employees} сотр.
+                </td>
+                <td className="sticky left-[160px] z-20 bg-gray-50 border-r border-gray-200 px-2 py-2" />
+                {days.map((d) => (
+                  <td key={d} className="border-r border-gray-100 p-0" />
+                ))}
+                <td className="sticky right-0 z-20 bg-gray-50 border-l border-gray-200 px-2 py-2 text-center text-gray-700">
+                  {formatHours(payroll.total_hours)}
+                </td>
+                <td className="sticky right-[52px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-500">—</td>
+                <td className="sticky right-[100px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-500">—</td>
+                <td className="sticky right-[144px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
+                  {formatMoney(payroll.total_base_amount)}
+                </td>
+                <td className="sticky right-[216px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
+                  {formatMoney(payroll.total_overtime_amount)}
+                </td>
+                <td className="sticky right-[284px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
+                  {formatMoney(payroll.total_holiday_amount)}
+                </td>
+                <td className="sticky right-[344px] z-20 bg-blue-100 border-l border-blue-300 px-1 py-2 text-center text-blue-800 font-bold whitespace-nowrap">
+                  {formatMoney(payroll.grand_total)}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

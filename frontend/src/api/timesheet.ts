@@ -1,11 +1,23 @@
-import type { AuditLogEntry, AutofillPreview, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
+import type { AuditLogEntry, AutofillPreview, PayrollSummary, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
 export const timesheetApi = {
-  async getMonth(year: number, month: number, departmentId?: number): Promise<TimesheetMonthResponse> {
+  async getMonth(
+    year: number,
+    month: number,
+    options?: { department_id?: number; include_payroll?: boolean },
+  ): Promise<TimesheetMonthResponse> {
+    const params: Record<string, unknown> = {}
+    if (options?.department_id !== undefined) params.department_id = options.department_id
+    if (options?.include_payroll) params.include_payroll = true
+    const { data } = await apiClient.get<TimesheetMonthResponse>(`/api/timesheet/${year}/${month}`, { params })
+    return data
+  },
+
+  async getPayroll(year: number, month: number, departmentId?: number): Promise<PayrollSummary> {
     const params: Record<string, unknown> = {}
     if (departmentId !== undefined) params.department_id = departmentId
-    const { data } = await apiClient.get<TimesheetMonthResponse>(`/api/timesheet/${year}/${month}`, { params })
+    const { data } = await apiClient.get<PayrollSummary>(`/api/timesheet/${year}/${month}/payroll`, { params })
     return data
   },
 

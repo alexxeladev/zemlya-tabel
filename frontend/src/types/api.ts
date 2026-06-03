@@ -1,5 +1,48 @@
 export type UserRole = 'admin' | 'manager' | 'accountant' | 'employee'
 
+export interface CompanyBreakdown {
+  company_id: number
+  company_code: string
+  company_name: string
+  hours: string
+  base_amount: string
+  overtime_amount: string
+  holiday_amount: string
+  total: string
+}
+
+export interface EmployeePayroll {
+  employee_id: number
+  employee_name: string
+  rate: string | null
+  schedule_name: string | null
+  total_hours: string
+  norm_hours: string | null
+  delta_hours: string | null
+  overtime_hours: string
+  holiday_hours: string
+  hourly_rate: string | null
+  base_amount: string
+  overtime_amount: string
+  holiday_amount: string
+  total_amount: string
+  breakdown_by_company: CompanyBreakdown[]
+  is_calculable: boolean
+  reason_if_not_calculable: string | null
+}
+
+export interface PayrollSummary {
+  year: number
+  month: number
+  employees: EmployeePayroll[]
+  total_employees: number
+  total_hours: string
+  total_base_amount: string
+  total_overtime_amount: string
+  total_holiday_amount: string
+  grand_total: string
+}
+
 export interface TimesheetEntry {
   employee_id: number
   work_date: string  // YYYY-MM-DD
@@ -15,6 +58,7 @@ export interface TimesheetMonthResponse {
   entries: TimesheetEntry[]
   periods: TimesheetPeriod[]
   extra_companies_by_employee: Record<string, number[]>
+  payroll: PayrollSummary | null
 }
 
 export interface AutofillSkippedEmployee {
