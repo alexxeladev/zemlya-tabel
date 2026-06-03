@@ -117,6 +117,18 @@ def _upsert_cell_no_commit(
         return entry
 
 
+def _check_period_lock(db: Session, employee_id: int, work_date: date) -> None:
+    """Raises PeriodLockedException if the period for this employee+date is not draft."""
+    from app.services.timesheet_periods import PeriodLockedException, get_or_create_period, can_edit_cells
+
+    emp = db.get(Employee, employee_id)
+    if emp is None:
+        return  # employee not found — let the FK check handle it
+    period = get_or_create_period(db, emp.department_id, work_date.year, work_date.month)
+    if not can_edit_cells(period):
+        raise PeriodLockedException(period.status)
+
+
 def upsert_cell(
     db: Session,
     actor: Employee,
@@ -125,6 +137,7 @@ def upsert_cell(
     company_id: int,
     hours: Decimal,
 ) -> TimesheetEntry | None:
+    _check_period_lock(db, employee_id, work_date)
     result = _upsert_cell_no_commit(db, actor, employee_id, work_date, company_id, hours)
     db.commit()
     if result is not None:
@@ -138,6 +151,10 @@ def upsert_cells_batch(
     cells: list[tuple[int, date, int, Decimal]],
 ) -> list[TimesheetEntry | None]:
     """Transactional batch upsert — single commit for all cells."""
+    # Check period lock for all cells first
+    for employee_id, work_date, _company_id, _hours in cells:
+        _check_period_lock(db, employee_id, work_date)
+
     results = []
     for employee_id, work_date, company_id, hours in cells:
         result = _upsert_cell_no_commit(db, actor, employee_id, work_date, company_id, hours)

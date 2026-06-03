@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.company import CompanyRead
 from app.schemas.employee import EmployeeRead
+from app.schemas.timesheet_period import TimesheetPeriodRead
 
 
 class TimesheetEntryRead(BaseModel):
@@ -37,6 +38,7 @@ class TimesheetMonthResponse(BaseModel):
     employees: list[EmployeeRead]
     companies: list[CompanyRead]
     entries: list[TimesheetEntryRead]
+    periods: list[TimesheetPeriodRead]
 
 
 class TimesheetBatchInput(BaseModel):
