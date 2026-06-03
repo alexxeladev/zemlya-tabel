@@ -3,8 +3,10 @@ import { useAuthStore } from '../store/auth'
 import { toast } from '../store/toasts'
 import type {
   AuditLogEntry,
+  AutofillPreview,
   Company,
   Department,
+  Employee,
   MonthSummary,
   TimesheetEntry,
   TimesheetMonthResponse,
@@ -170,10 +172,7 @@ function PeriodHistory({ periodId }: { periodId: number }) {
 
   return (
     <div className="mt-2 border-t border-gray-100 pt-2">
-      <button
-        onClick={toggle}
-        className="text-xs text-blue-600 hover:underline"
-      >
+      <button onClick={toggle} className="text-xs text-blue-600 hover:underline">
         {open ? 'Скрыть историю' : 'История'}
       </button>
       {open && (
@@ -299,17 +298,11 @@ function PeriodPanel({ periods, onPeriodsChange, onFilterDept }: PeriodPanelProp
   } | null>(null)
   const [collapsed, setCollapsed] = useState(periods.length > 3)
 
-  const handleAction = (period: TimesheetPeriod) => {
-    // Determine which action to take based on period flags
+  const handleCardAction = (period: TimesheetPeriod) => {
     if (period.can_submit) setModal({ period, action: 'submit' })
     else if (period.can_close) setModal({ period, action: 'close' })
     else if (period.can_return) setModal({ period, action: 'return' })
     else if (period.can_reopen) setModal({ period, action: 'reopen' })
-  }
-
-  // This is called when clicking specific action buttons
-  const handleCardAction = (period: TimesheetPeriod) => {
-    handleAction(period)
   }
 
   const handleConfirm = async (reason?: string) => {
@@ -337,10 +330,6 @@ function PeriodPanel({ periods, onPeriodsChange, onFilterDept }: PeriodPanelProp
       throw err
     }
   }
-
-  // Determine the current action button label for cards
-  // PeriodCard handles its own button rendering with data-action attributes
-  // We need to intercept clicks by matching the button's data-action
 
   if (periods.length === 0) return null
 
@@ -384,7 +373,6 @@ function PeriodPanel({ periods, onPeriodsChange, onFilterDept }: PeriodPanelProp
         />
       )}
       {modal && (modal.action === 'submit' || modal.action === 'close') && (
-        // No reason needed — confirm immediately
         (() => {
           handleConfirm()
           setModal(null)
@@ -392,6 +380,124 @@ function PeriodPanel({ periods, onPeriodsChange, onFilterDept }: PeriodPanelProp
         })()
       )}
     </>
+  )
+}
+
+// ── AutofillModal ─────────────────────────────────────────────────────────────
+
+interface AutofillModalProps {
+  preview: AutofillPreview
+  onApply: () => Promise<void>
+  onClose: () => void
+}
+
+function AutofillModal({ preview, onApply, onClose }: AutofillModalProps) {
+  const [loading, setLoading] = useState(false)
+  const [showSkipped, setShowSkipped] = useState(false)
+
+  // Group entries by employee for the summary table
+  const byEmployee = new Map<number, { company_id: number; count: number; hours: number }>()
+  for (const e of preview.entries_to_create) {
+    const key = e.employee_id
+    const existing = byEmployee.get(key)
+    const hours = parseFloat(e.hours as unknown as string)
+    if (existing) {
+      existing.count += 1
+      existing.hours += hours
+    } else {
+      byEmployee.set(key, { company_id: e.company_id, count: 1, hours })
+    }
+  }
+
+  const handleApply = async () => {
+    setLoading(true)
+    try {
+      await onApply()
+      onClose()
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl flex flex-col max-h-[85vh]">
+        <div className="p-6 border-b border-gray-100">
+          <h2 className="text-lg font-semibold text-gray-900">Заполнить по графику</h2>
+          <p className="mt-1 text-sm text-gray-500">
+            Будет создано <strong>{preview.entries_to_create.length}</strong> записей для{' '}
+            <strong>{preview.employees_processed}</strong> сотрудников
+            {preview.cells_skipped > 0 && ` (${preview.cells_skipped} ячеек оставлено как есть)`}
+          </p>
+        </div>
+
+        <div className="overflow-y-auto flex-1 p-6">
+          {byEmployee.size > 0 && (
+            <table className="w-full text-sm mb-4">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+                  <th className="pb-2 font-medium">ID</th>
+                  <th className="pb-2 font-medium">Дней</th>
+                  <th className="pb-2 font-medium">Часов</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from(byEmployee.entries()).map(([empId, info]) => (
+                  <tr key={empId} className="border-b border-gray-50">
+                    <td className="py-1 text-gray-700">#{empId}</td>
+                    <td className="py-1 text-gray-700">{info.count}</td>
+                    <td className="py-1 text-gray-700">{info.hours}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {preview.employees_skipped.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <button
+                onClick={() => setShowSkipped((v) => !v)}
+                className="text-sm font-medium text-amber-800 hover:underline"
+              >
+                {preview.employees_skipped.length} сотрудников пропущено{' '}
+                {showSkipped ? '▲' : '▼'}
+              </button>
+              {showSkipped && (
+                <ul className="mt-2 space-y-1">
+                  {preview.employees_skipped.map((s) => (
+                    <li key={s.employee_id} className="text-xs text-amber-700">
+                      #{s.employee_id} {s.employee_name} — {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {preview.entries_to_create.length === 0 && preview.employees_skipped.length === 0 && (
+            <p className="text-sm text-gray-500">Нечего заполнять</p>
+          )}
+        </div>
+
+        <div className="p-6 border-t border-gray-100 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            onClick={handleApply}
+            disabled={loading || preview.entries_to_create.length === 0}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loading ? 'Применяется...' : 'Применить'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -487,11 +593,15 @@ interface TimesheetHeaderProps {
   departments: Department[]
   departmentId: number | undefined
   onDeptChange: (id: number | undefined) => void
+  hasDraftPeriod: boolean
+  onAutofill: () => void
+  autofillLoading: boolean
 }
 
 function TimesheetHeader({
   year, month, onPrev, onNext,
   canFilterDept, departments, departmentId, onDeptChange,
+  hasDraftPeriod, onAutofill, autofillLoading,
 }: TimesheetHeaderProps) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-5 py-3 shadow-sm">
@@ -503,17 +613,69 @@ function TimesheetHeader({
         </span>
         <button onClick={onNext} className="rounded-md p-1 text-gray-500 hover:bg-gray-100">→</button>
       </div>
-      {canFilterDept && departments.length > 0 && (
-        <select
-          value={departmentId ?? ''}
-          onChange={(e) => onDeptChange(e.target.value === '' ? undefined : Number(e.target.value))}
-          className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+      <div className="flex items-center gap-2 flex-wrap">
+        {canFilterDept && departments.length > 0 && (
+          <select
+            value={departmentId ?? ''}
+            onChange={(e) => onDeptChange(e.target.value === '' ? undefined : Number(e.target.value))}
+            className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            <option value="">Все отделы</option>
+            {departments.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
+            ))}
+          </select>
+        )}
+        <button
+          onClick={onAutofill}
+          disabled={!hasDraftPeriod || autofillLoading}
+          title={!hasDraftPeriod ? 'Сначала откройте период для редактирования' : 'Заполнить по графику'}
+          className="rounded-lg border border-blue-300 px-3 py-1.5 text-sm text-blue-700 hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          <option value="">Все отделы</option>
-          {departments.map((d) => (
-            <option key={d.id} value={d.id}>{d.name}</option>
-          ))}
-        </select>
+          {autofillLoading ? '...' : 'Заполнить по графику'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── CompanyDropdown ───────────────────────────────────────────────────────────
+
+interface CompanyDropdownProps {
+  companies: Company[]
+  shownCompanyIds: number[]
+  onSelect: (companyId: number) => void
+}
+
+function CompanyDropdown({ companies, shownCompanyIds, onSelect }: CompanyDropdownProps) {
+  const [open, setOpen] = useState(false)
+  const available = companies.filter((c) => !shownCompanyIds.includes(c.id))
+
+  if (available.length === 0) return null
+
+  return (
+    <div className="relative inline-block">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="rounded text-[10px] px-1.5 py-0.5 border border-blue-200 text-blue-600 hover:bg-blue-50 whitespace-nowrap"
+      >
+        + компания
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full z-40 mt-1 min-w-[120px] rounded-lg border border-gray-200 bg-white shadow-lg py-1">
+            {available.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => { onSelect(c.id); setOpen(false) }}
+                className="w-full px-3 py-1.5 text-left text-sm hover:bg-gray-50 text-gray-700"
+              >
+                {c.code} — {c.name}
+              </button>
+            ))}
+          </div>
+        </>
       )}
     </div>
   )
@@ -535,7 +697,15 @@ export function TimesheetPage() {
   const [savingCount, setSavingCount] = useState(0)
   const [loading, setLoading] = useState(true)
 
+  // expandedCompanies: for each employee id, a Set of extra company ids to show
+  const [expandedCompanies, setExpandedCompanies] = useState<Record<number, Set<number>>>({})
+
+  // Autofill state
+  const [autofillPreview, setAutofillPreview] = useState<AutofillPreview | null>(null)
+  const [autofillLoading, setAutofillLoading] = useState(false)
+
   const canFilterDept = user?.role === 'admin' || user?.role === 'accountant'
+  const canAutofill = user?.role === 'admin' || user?.role === 'accountant' || user?.role === 'manager'
 
   useEffect(() => {
     if (!canFilterDept) return
@@ -553,6 +723,18 @@ export function TimesheetPage() {
       setCalendar(calData)
       setEntryMap(buildEntryMap(monthData.entries))
       setPeriods(monthData.periods)
+
+      // Initialize expandedCompanies from server extra_companies_by_employee
+      const extras = monthData.extra_companies_by_employee
+      setExpandedCompanies((prev) => {
+        const next: Record<number, Set<number>> = {}
+        for (const emp of monthData.employees) {
+          const serverExtras = extras[String(emp.id)] ?? []
+          const prevExtras = prev[emp.id] ?? new Set<number>()
+          next[emp.id] = new Set([...serverExtras, ...prevExtras])
+        }
+        return next
+      })
     } catch {
       toast.error('Не удалось загрузить табель')
     } finally {
@@ -568,11 +750,19 @@ export function TimesheetPage() {
     periodByDeptId.set(p.department_id === null ? 'null' : String(p.department_id), p)
   }
 
+  const hasDraftPeriod = periods.some((p) => p.status === 'draft')
+
   const isRowLocked = (deptId: number | null): boolean => {
     const key = deptId === null ? 'null' : String(deptId)
     const period = periodByDeptId.get(key)
     if (!period) return false
     return period.status !== 'draft'
+  }
+
+  const isDraft = (deptId: number | null): boolean => {
+    const key = deptId === null ? 'null' : String(deptId)
+    const period = periodByDeptId.get(key)
+    return period?.status === 'draft'
   }
 
   const handleSaveCell = useCallback(async (
@@ -613,6 +803,48 @@ export function TimesheetPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entryMap])
 
+  const handleAutofill = async () => {
+    if (!canAutofill) return
+    setAutofillLoading(true)
+    try {
+      const preview = await timesheetApi.autofillPreview(year, month, canFilterDept ? departmentId : undefined)
+      setAutofillPreview(preview)
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Ошибка загрузки preview'
+      toast.error(msg)
+    } finally {
+      setAutofillLoading(false)
+    }
+  }
+
+  const handleAutofillApply = async () => {
+    await timesheetApi.autofillApply(year, month, canFilterDept ? departmentId : undefined)
+    toast.success('Табель заполнен по графику')
+    await loadData()
+  }
+
+  const addCompanyForEmployee = (empId: number, companyId: number) => {
+    setExpandedCompanies((prev) => ({
+      ...prev,
+      [empId]: new Set([...(prev[empId] ?? []), companyId]),
+    }))
+  }
+
+  const removeCompanyForEmployee = (empId: number, companyId: number) => {
+    setExpandedCompanies((prev) => {
+      const set = new Set(prev[empId] ?? [])
+      set.delete(companyId)
+      return { ...prev, [empId]: set }
+    })
+  }
+
+  const employeeHasHoursForCompany = (empId: number, companyId: number): boolean => {
+    for (const [key] of entryMap.entries()) {
+      if (key.startsWith(`${empId}_`) && key.endsWith(`_${companyId}`)) return true
+    }
+    return false
+  }
+
   const prevMonth = () => {
     if (month === 1) { setYear((y) => y - 1); setMonth(12) }
     else setMonth((m) => m - 1)
@@ -640,9 +872,12 @@ export function TimesheetPage() {
   if (employees.length === 0) {
     return (
       <div className="space-y-4">
-        <TimesheetHeader year={year} month={month} onPrev={prevMonth} onNext={nextMonth}
+        <TimesheetHeader
+          year={year} month={month} onPrev={prevMonth} onNext={nextMonth}
           canFilterDept={canFilterDept} departments={departments}
-          departmentId={departmentId} onDeptChange={setDepartmentId} />
+          departmentId={departmentId} onDeptChange={setDepartmentId}
+          hasDraftPeriod={hasDraftPeriod} onAutofill={handleAutofill} autofillLoading={autofillLoading}
+        />
         <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-500">
           Нет сотрудников в отделе
         </div>
@@ -682,11 +917,29 @@ export function TimesheetPage() {
 
   const weekdayOf = (day: number) => WEEKDAY_SHORT[new Date(year, month - 1, day).getDay()]
 
+  // Build rows per employee: default company + expanded extras
+  const buildEmployeeRows = (emp: Employee): number[] => {
+    const rows: number[] = []
+    if (emp.default_company_id !== null) {
+      rows.push(emp.default_company_id)
+    }
+    const extras = expandedCompanies[emp.id] ?? new Set<number>()
+    for (const cid of Array.from(extras).sort((a, b) => a - b)) {
+      if (cid !== emp.default_company_id) {
+        rows.push(cid)
+      }
+    }
+    return rows
+  }
+
   return (
     <div className="space-y-4">
-      <TimesheetHeader year={year} month={month} onPrev={prevMonth} onNext={nextMonth}
+      <TimesheetHeader
+        year={year} month={month} onPrev={prevMonth} onNext={nextMonth}
         canFilterDept={canFilterDept} departments={departments}
-        departmentId={departmentId} onDeptChange={setDepartmentId} />
+        departmentId={departmentId} onDeptChange={setDepartmentId}
+        hasDraftPeriod={hasDraftPeriod} onAutofill={handleAutofill} autofillLoading={autofillLoading}
+      />
 
       {periods.length > 0 && (
         <PeriodPanel
@@ -700,10 +953,10 @@ export function TimesheetPage() {
         <table className="min-w-full border-collapse text-xs">
           <thead>
             <tr className="sticky top-0 z-10 bg-white shadow-sm">
-              <th className="sticky left-0 z-20 bg-white px-3 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[140px]">
+              <th className="sticky left-0 z-20 bg-white px-3 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[160px]">
                 Сотрудник
               </th>
-              <th className="sticky left-[140px] z-20 bg-white px-2 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[80px]">
+              <th className="sticky left-[160px] z-20 bg-white px-2 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[80px]">
                 Компания
               </th>
               {days.map((d) => (
@@ -722,35 +975,91 @@ export function TimesheetPage() {
               const total = employeeTotal(emp.id)
               const isLastEmp = empIdx === employees.length - 1
               const locked = isRowLocked(emp.department_id)
+              const draft = isDraft(emp.department_id)
+              const empRows = buildEmployeeRows(emp)
+              const shownCompanyIds = empRows
+              const isDismissed = !emp.is_active
 
-              return companies.map((company, cIdx) => {
+              // If employee has no default and no extras, show placeholder row
+              if (empRows.length === 0) {
+                return (
+                  <tr key={`${emp.id}_empty`} className={isLastEmp ? '' : 'border-b-2 border-gray-300'}>
+                    <td className="sticky left-0 z-10 bg-white border-r border-gray-200 px-3 py-1 whitespace-nowrap font-medium text-gray-800">
+                      <div className="flex flex-col gap-0.5">
+                        <div className="flex items-center gap-1">
+                          <span>{emp.full_name}</span>
+                          {isDismissed && <span className="text-[10px] text-gray-400">(уволен)</span>}
+                          {locked && <span className={`text-[10px] rounded px-1 ${STATUS_BADGE[periodByDeptId.get(emp.department_id === null ? 'null' : String(emp.department_id))?.status ?? 'draft']}`}>🔒</span>}
+                        </div>
+                        {draft && (
+                          <CompanyDropdown
+                            companies={companies}
+                            shownCompanyIds={shownCompanyIds}
+                            onSelect={(cid) => addCompanyForEmployee(emp.id, cid)}
+                          />
+                        )}
+                      </div>
+                    </td>
+                    <td className="sticky left-[160px] z-10 border-r border-gray-200 px-2 py-1 text-gray-400 italic text-xs">
+                      не выбрана
+                    </td>
+                    {days.map((d) => (
+                      <td key={d} className="border-r border-gray-100 p-0" />
+                    ))}
+                    <td className="sticky right-0 z-10 bg-white border-l border-gray-200 px-2 py-1" />
+                  </tr>
+                )
+              }
+
+              return empRows.map((companyId, cIdx) => {
+                const isDefault = companyId === emp.default_company_id
                 const isFirstRow = cIdx === 0
-                const isLastRow = cIdx === companies.length - 1
+                const isLastRow = cIdx === empRows.length - 1
                 const rowBorder = isLastRow && !isLastEmp
                   ? 'border-b-2 border-gray-300'
                   : 'border-b border-gray-100'
-                const cc = companyColor(company.id, companies)
+                const company = companies.find((c) => c.id === companyId)
+                const cc = companyColor(companyId, companies)
+                const hasHours = employeeHasHoursForCompany(emp.id, companyId)
+                const canRemove = !isDefault && !hasHours && draft
 
                 return (
-                  <tr key={`${emp.id}_${company.id}`} className={rowBorder}>
+                  <tr key={`${emp.id}_${companyId}`} className={rowBorder}>
                     <td className={`sticky left-0 z-10 bg-white border-r border-gray-200 px-3 py-1 whitespace-nowrap font-medium text-gray-800 ${isFirstRow ? '' : 'text-transparent select-none'}`}>
                       {isFirstRow ? (
-                        <div className="flex items-center gap-1">
-                          <span>{emp.full_name}</span>
-                          {locked && (
-                            <span className={`text-[10px] rounded px-1 ${STATUS_BADGE[periodByDeptId.get(emp.department_id === null ? 'null' : String(emp.department_id))?.status ?? 'draft']}`}>
-                              🔒
-                            </span>
+                        <div className="flex flex-col gap-0.5">
+                          <div className="flex items-center gap-1">
+                            <span>{emp.full_name}</span>
+                            {isDismissed && <span className="text-[10px] text-gray-400">(уволен)</span>}
+                            {locked && <span className={`text-[10px] rounded px-1 ${STATUS_BADGE[periodByDeptId.get(emp.department_id === null ? 'null' : String(emp.department_id))?.status ?? 'draft']}`}>🔒</span>}
+                          </div>
+                          {draft && (
+                            <CompanyDropdown
+                              companies={companies}
+                              shownCompanyIds={shownCompanyIds}
+                              onSelect={(cid) => addCompanyForEmployee(emp.id, cid)}
+                            />
                           )}
                         </div>
                       ) : ''}
                     </td>
-                    <td className={`sticky left-[140px] z-10 border-r border-gray-200 px-2 py-1 whitespace-nowrap ${cc.bg} ${cc.text}`}>
-                      {company.code}
+                    <td className={`sticky left-[160px] z-10 border-r border-gray-200 px-2 py-1 whitespace-nowrap ${cc.bg} ${cc.text}`}>
+                      <div className="flex items-center gap-1">
+                        {canRemove && (
+                          <button
+                            onClick={() => removeCompanyForEmployee(emp.id, companyId)}
+                            className="text-gray-400 hover:text-red-500 text-[10px] leading-none"
+                            title="Убрать компанию"
+                          >
+                            ×
+                          </button>
+                        )}
+                        <span>{company?.code ?? companyId}</span>
+                      </div>
                     </td>
                     {days.map((d) => {
                       const workDate = toWorkDate(year, month, d)
-                      const key = makeCellKey(emp.id, workDate, company.id)
+                      const key = makeCellKey(emp.id, workDate, companyId)
                       const val = entryMap.get(key)
                       return (
                         <td key={d} className={`border-r border-gray-100 p-0 ${dayCellBg(d)} ${cc.cell}`}>
@@ -758,7 +1067,7 @@ export function TimesheetPage() {
                             value={val}
                             locked={locked}
                             dayBgClass={dayCellBg(d)}
-                            onSave={(hours) => handleSaveCell(emp.id, workDate, company.id, hours, emp.department_id)}
+                            onSave={(hours) => handleSaveCell(emp.id, workDate, companyId, hours, emp.department_id)}
                           />
                         </td>
                       )
@@ -775,6 +1084,14 @@ export function TimesheetPage() {
       </div>
 
       <SavingIndicator savingCount={savingCount} />
+
+      {autofillPreview && (
+        <AutofillModal
+          preview={autofillPreview}
+          onApply={handleAutofillApply}
+          onClose={() => setAutofillPreview(null)}
+        />
+      )}
     </div>
   )
 }

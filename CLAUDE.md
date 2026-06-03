@@ -146,6 +146,25 @@ sudo chown -R <user>:<user> <папка>
 - Фильтрация по department_id на бэке принудительная для manager
 - Один сотрудник может иметь несколько ячеек в один день на разные компании
 - Unique constraint: `(employee_id, work_date, company_id)`
+- **Системные пользователи (is_system_admin=True) скрыты из табеля** — никогда не попадают в выдачу
+- Компании сотрудника в табеле: только default_company по умолчанию + те, где есть часы. Бэк отдаёт `extra_companies_by_employee: dict[int, list[int]]`. UI хранит «expanded companies» в локальном state (не zustand), загружает с сервера при старте.
+
+## Autofill (автозаполнение по графику)
+
+- Эндпоинты: `POST /api/timesheet/autofill/preview` (preview без изменений), `POST /api/timesheet/autofill/apply` (применить)
+- Работает только для графиков `schedule_type="standard"` (5/2 по производственному календарю)
+- Графики `schedule_type="shift"` (2/2, 3/3) — пропускаются с причиной (TODO задача 3.4)
+- Существующие ячейки НЕ перезаписываются
+- 422 если нет производственного календаря или нет ни одного draft-периода среди видимых сотрудников
+
+## Employee lifecycle (жизненный цикл сотрудника)
+
+- Увольнение: `POST /api/employees/{id}/dismiss` (body: `{dismissal_date: date}`) → is_active=False, dismissal_date установлен
+- Возврат: `POST /api/employees/{id}/rehire` → is_active=True, dismissal_date=NULL
+- Физическое удаление (`DELETE /api/employees/{id}`) оставлено для редких случаев
+- Видимость в табеле: исключаются только те у кого `dismissal_date IS NOT NULL AND dismissal_date < date(year, month, 1)`. Таким образом уволенные в середине месяца видны в этом месяце
+- Часы и история сохраняются при увольнении (каскада нет)
+- is_active=False → login невозможен (auth endpoint возвращает 403)
 
 ## Timesheet Periods
 

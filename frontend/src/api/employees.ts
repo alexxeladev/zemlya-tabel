@@ -54,3 +54,9 @@ export const resetPassword = (id: number) =>
 
 export const revokeAccess = (id: number) =>
   apiClient.delete(`/api/employees/${id}/access`)
+
+export const dismissEmployee = (id: number, dismissal_date: string) =>
+  apiClient.post<Employee>(`/api/employees/${id}/dismiss`, { dismissal_date }).then((r) => r.data)
+
+export const rehireEmployee = (id: number) =>
+  apiClient.post<Employee>(`/api/employees/${id}/rehire`).then((r) => r.data)

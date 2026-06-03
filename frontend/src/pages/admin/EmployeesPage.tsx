@@ -3,8 +3,9 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import {
-  listEmployees, createEmployee, updateEmployee, deleteEmployee,
+  listEmployees, createEmployee, updateEmployee,
   grantAccess, updateRole, resetPassword, revokeAccess,
+  dismissEmployee, rehireEmployee,
 } from '../../api/employees'
 import { listDepartments } from '../../api/departments'
 import { listCompanies } from '../../api/companies'
@@ -87,7 +88,8 @@ export function EmployeesPage() {
 
   const [editTarget, setEditTarget] = useState<Employee | null>(null)
   const [showCreate, setShowCreate] = useState(false)
-  const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null)
+  const [dismissTarget, setDismissTarget] = useState<Employee | null>(null)
+  const [dismissDate, setDismissDate] = useState('')
   const [resetTarget, setResetTarget] = useState<Employee | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<Employee | null>(null)
   const [tempPassword, setTempPassword] = useState<string | null>(null)
@@ -190,16 +192,26 @@ export function EmployeesPage() {
     }
   }
 
-  const onDelete = async () => {
-    if (!deleteTarget) return
+  const onDismiss = async () => {
+    if (!dismissTarget || !dismissDate) return
     try {
-      await deleteEmployee(deleteTarget.id)
-      toast.success('Сотрудник деактивирован')
-      setDeleteTarget(null)
+      await dismissEmployee(dismissTarget.id, dismissDate)
+      toast.success('Сотрудник уволен')
+      setDismissTarget(null)
+      setDismissDate('')
       refetch()
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : 'Ошибка')
-      setDeleteTarget(null)
+    }
+  }
+
+  const onRehire = async (emp: Employee) => {
+    try {
+      await rehireEmployee(emp.id)
+      toast.success('Сотрудник принят обратно')
+      refetch()
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : 'Ошибка')
     }
   }
 
@@ -308,16 +320,20 @@ export function EmployeesPage() {
                 }
               </Td>
               <Td>
-                <Badge variant={e.is_active ? 'green' : 'gray'}>
-                  {e.is_active ? 'Активен' : 'Уволен'}
-                </Badge>
+                {e.is_active
+                  ? <Badge variant="green">Работает</Badge>
+                  : <Badge variant="gray">Уволен {e.dismissal_date ? `с ${e.dismissal_date}` : ''}</Badge>
+                }
               </Td>
               {canAdmin() && (
                 <Td>
                   <div className="flex gap-2">
                     <Button size="sm" variant="secondary" onClick={() => openEdit(e)}>Изменить</Button>
-                    {!e.is_system_admin && (
-                      <Button size="sm" variant="danger" onClick={() => setDeleteTarget(e)}>Уволить</Button>
+                    {!e.is_system_admin && e.is_active && (
+                      <Button size="sm" variant="danger" onClick={() => { setDismissTarget(e); setDismissDate(new Date().toISOString().slice(0, 10)) }}>Уволить</Button>
+                    )}
+                    {!e.is_system_admin && !e.is_active && (
+                      <Button size="sm" variant="secondary" onClick={() => onRehire(e)}>Принять обратно</Button>
                     )}
                   </div>
                 </Td>
@@ -368,28 +384,48 @@ export function EmployeesPage() {
             </div>
           </div>
 
-          {/* Section 3 — Finance */}
+          {/* Section 3 — Employment */}
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Финансы</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Трудовая занятость</p>
             <div className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
                 <label className="text-sm font-medium text-gray-700">Оклад (₽)</label>
                 <input {...form.register('rate')} placeholder="50000" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
-              <div className="flex gap-3">
-                <div className="flex flex-col gap-1 flex-1">
-                  <label className="text-sm font-medium text-gray-700">Дата приёма</label>
-                  <input type="date" {...form.register('hire_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div className="flex flex-col gap-1 flex-1">
-                  <label className="text-sm font-medium text-gray-700">Дата увольнения</label>
-                  <input type="date" {...form.register('dismissal_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-gray-700">Дата приёма</label>
+                <input type="date" {...form.register('hire_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
-              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                <input type="checkbox" {...form.register('is_active')} className="rounded" />
-                Активен
-              </label>
+              {editTarget && !editTarget.is_active && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Дата увольнения</label>
+                  <input readOnly value={editTarget.dismissal_date ?? ''} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500" />
+                </div>
+              )}
+              {editTarget && !editTarget.is_system_admin && editTarget.is_active && (
+                <div className="pt-1">
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="sm"
+                    onClick={() => { closeModal(); setDismissTarget(editTarget); setDismissDate(new Date().toISOString().slice(0, 10)) }}
+                  >
+                    Уволить
+                  </Button>
+                </div>
+              )}
+              {editTarget && !editTarget.is_system_admin && !editTarget.is_active && (
+                <div className="pt-1">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => { closeModal(); onRehire(editTarget) }}
+                  >
+                    Принять обратно
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -458,14 +494,41 @@ export function EmployeesPage() {
         </form>
       </Modal>
 
-      <Confirm
-        isOpen={!!deleteTarget}
-        onConfirm={onDelete}
-        onCancel={() => setDeleteTarget(null)}
-        title="Деактивировать сотрудника"
-        message={`Деактивировать карточку «${deleteTarget?.full_name}»?`}
-        danger
-      />
+      {/* Dismiss modal */}
+      {dismissTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h2 className="mb-4 text-lg font-semibold text-gray-900">Уволить {dismissTarget.full_name}?</h2>
+            <div className="mb-4 flex flex-col gap-1">
+              <label className="text-sm font-medium text-gray-700">Дата увольнения</label>
+              <input
+                type="date"
+                value={dismissDate}
+                onChange={(e) => setDismissDate(e.target.value)}
+                className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
+              />
+            </div>
+            <p className="mb-4 text-sm text-amber-700 bg-amber-50 rounded-lg p-3">
+              Часы сотрудника останутся в системе. Доступ в систему будет заблокирован. Сотрудник перестанет отображаться в табеле в новых периодах.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setDismissTarget(null); setDismissDate('') }}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={onDismiss}
+                disabled={!dismissDate}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                Уволить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Confirm
         isOpen={!!resetTarget}

@@ -14,6 +14,22 @@ export interface TimesheetMonthResponse {
   companies: Company[]
   entries: TimesheetEntry[]
   periods: TimesheetPeriod[]
+  extra_companies_by_employee: Record<string, number[]>
+}
+
+export interface AutofillSkippedEmployee {
+  employee_id: number
+  employee_name: string
+  reason: string
+}
+
+export interface AutofillPreview {
+  year: number
+  month: number
+  entries_to_create: TimesheetCellInput[]
+  cells_skipped: number
+  employees_processed: number
+  employees_skipped: AutofillSkippedEmployee[]
 }
 
 export interface TimesheetCellInput {
@@ -129,6 +145,7 @@ export interface Employee {
   default_company_id: number | null
   rate: string | null
   is_active: boolean
+  status: 'active' | 'dismissed'
   hire_date: string | null
   dismissal_date: string | null
   // auth fields

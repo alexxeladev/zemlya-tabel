@@ -1,4 +1,4 @@
-import type { AuditLogEntry, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
+import type { AuditLogEntry, AutofillPreview, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
 export const timesheetApi = {
@@ -41,6 +41,20 @@ export const timesheetApi = {
 
   async getPeriodHistory(periodId: number): Promise<AuditLogEntry[]> {
     const { data } = await apiClient.get<AuditLogEntry[]>(`/api/timesheet/periods/${periodId}/history`)
+    return data
+  },
+
+  async autofillPreview(year: number, month: number, departmentId?: number): Promise<AutofillPreview> {
+    const { data } = await apiClient.post<AutofillPreview>('/api/timesheet/autofill/preview', {
+      year, month, department_id: departmentId ?? null,
+    })
+    return data
+  },
+
+  async autofillApply(year: number, month: number, departmentId?: number): Promise<{ entries_created: number; employees_count: number }> {
+    const { data } = await apiClient.post<{ entries_created: number; employees_count: number }>('/api/timesheet/autofill/apply', {
+      year, month, department_id: departmentId ?? null,
+    })
     return data
   },
 }
