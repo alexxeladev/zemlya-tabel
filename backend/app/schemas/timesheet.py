@@ -39,6 +39,7 @@ class TimesheetMonthResponse(BaseModel):
     companies: list[CompanyRead]
     entries: list[TimesheetEntryRead]
     periods: list[TimesheetPeriodRead]
+    extra_companies_by_employee: dict[int, list[int]] = {}
 
 
 class TimesheetBatchInput(BaseModel):
@@ -47,3 +48,24 @@ class TimesheetBatchInput(BaseModel):
 
 class TimesheetBatchResponse(BaseModel):
     entries: list[TimesheetEntryRead | None]
+
+
+class AutofillSkippedEmployee(BaseModel):
+    employee_id: int
+    employee_name: str
+    reason: str
+
+
+class AutofillPreview(BaseModel):
+    year: int
+    month: int
+    entries_to_create: list[TimesheetCellInput]
+    cells_skipped: int
+    employees_processed: int
+    employees_skipped: list[AutofillSkippedEmployee]
+
+
+class AutofillRequest(BaseModel):
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)
+    department_id: int | None = None

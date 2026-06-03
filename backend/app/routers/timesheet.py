@@ -13,6 +13,8 @@ from app.models.companies import Company
 from app.models.employees import Employee
 from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.timesheet import (
+    AutofillPreview,
+    AutofillRequest,
     TimesheetBatchInput,
     TimesheetBatchResponse,
     TimesheetCellInput,
@@ -21,6 +23,9 @@ from app.schemas.timesheet import (
 )
 from app.schemas.timesheet_period import AuditLogRead, StatusChangeReason, TimesheetPeriodRead
 from app.services.timesheet import (
+    apply_autofill,
+    build_autofill_preview,
+    compute_extra_companies_by_employee,
     get_month_entries,
     upsert_cell,
     upsert_cells_batch,
@@ -101,10 +106,11 @@ def get_month(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
 
-    employees = visible_employees_for_actor(db, actor, department_id)
+    employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     companies = db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
     entries = get_month_entries(db, employees, year, month)
     periods = _build_periods_for_response(db, employees, year, month, actor)
+    extra_companies = compute_extra_companies_by_employee(employees, entries)
 
     return TimesheetMonthResponse(
         year=year,
@@ -113,6 +119,7 @@ def get_month(
         companies=companies,
         entries=entries,
         periods=periods,
+        extra_companies_by_employee=extra_companies,
     )
 
 
@@ -226,6 +233,55 @@ def reopen_period_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     return make_period_read(period, actor)
+
+
+# ── Autofill ─────────────────────────────────────────────────────────────────
+
+@router.post("/autofill/preview", response_model=AutofillPreview)
+def autofill_preview(
+    payload: AutofillRequest,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    if actor.role not in ("admin", "accountant", "manager"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    if actor.role == "manager" and payload.department_id is not None and payload.department_id != actor.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager может автозаполнить только свой отдел")
+    try:
+        return build_autofill_preview(db, actor, payload.year, payload.month, payload.department_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+
+@router.post("/autofill/apply")
+def autofill_apply(
+    payload: AutofillRequest,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    if actor.role not in ("admin", "accountant", "manager"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    if actor.role == "manager" and payload.department_id is not None and payload.department_id != actor.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager может автозаполнить только свой отдел")
+    try:
+        preview = build_autofill_preview(db, actor, payload.year, payload.month, payload.department_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    try:
+        count = apply_autofill(db, actor, preview)
+    except PeriodLockedException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Период закрыт для редактирования, статус: {exc.status}",
+        )
+
+    log_action(
+        db, actor, "timesheet", None, "timesheet_autofilled",
+        after={"entries_created": count, "employees_count": preview.employees_processed},
+    )
+    db.commit()
+    return {"entries_created": count, "employees_count": preview.employees_processed}
 
 
 # ── Period history ────────────────────────────────────────────────────────────

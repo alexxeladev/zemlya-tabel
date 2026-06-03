@@ -202,7 +202,21 @@ def test_period_auto_created_on_get_month(
 def test_null_dept_period_created_separately(
     client: TestClient, admin_user: Employee, db_session: Session
 ):
-    """Admin (no dept) triggers creation of null-department period."""
+    """An employee with no department triggers creation of null-department period."""
+    # System admins are hidden from timesheet; need a regular employee with null dept
+    from app.core.security import hash_password as _hp
+    nodept_emp = Employee(
+        full_name="No Dept Employee",
+        email="nodept@example.com",
+        hashed_password=_hp("nodept123"),
+        role="employee",
+        is_active=True,
+        is_system_admin=False,
+        department_id=None,
+    )
+    db_session.add(nodept_emp)
+    db_session.commit()
+
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.get(f"/api/timesheet/{YEAR}/{MONTH}", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
