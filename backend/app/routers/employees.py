@@ -11,6 +11,7 @@ from app.core.security import hash_password
 from app.database import get_db
 from app.models.employees import Employee
 from app.schemas.employee import (
+    DismissalRequest,
     EmployeeAccessGrant,
     EmployeeAccessUpdate,
     EmployeeCreate,
@@ -177,6 +178,57 @@ def delete_employee(
     db.flush()
     log_action(db, actor, "employee", emp.id, "delete", before=before)
     db.commit()
+
+
+# ── Dismiss / Rehire ──────────────────────────────────────────────────────────
+
+@router.post("/{emp_id}/dismiss", response_model=EmployeeRead)
+def dismiss_employee(
+    emp_id: int,
+    payload: DismissalRequest,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    emp = db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    if emp.is_system_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нельзя уволить системного администратора")
+    if not emp.is_active:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Сотрудник уже уволен")
+
+    before = _to_dict(emp)
+    emp.is_active = False
+    emp.dismissal_date = payload.dismissal_date
+    db.flush()
+    log_action(db, actor, "employee", emp.id, "employee_dismissed",
+               before=before, after={"dismissal_date": str(payload.dismissal_date)})
+    db.commit()
+    db.refresh(emp)
+    return emp
+
+
+@router.post("/{emp_id}/rehire", response_model=EmployeeRead)
+def rehire_employee(
+    emp_id: int,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    emp = db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    if emp.is_active:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Сотрудник уже активен")
+
+    before = _to_dict(emp)
+    emp.is_active = True
+    emp.dismissal_date = None
+    db.flush()
+    log_action(db, actor, "employee", emp.id, "employee_rehired",
+               before=before, after={"is_active": True})
+    db.commit()
+    db.refresh(emp)
+    return emp
 
 
 # ── Access management ──────────────────────────────────────────────────────────

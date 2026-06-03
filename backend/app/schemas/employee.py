@@ -6,6 +6,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_validator
 
+
 from app.schemas.company import CompanyRead
 from app.schemas.department import DepartmentRead
 from app.schemas.schedule import ScheduleRead
@@ -49,6 +50,7 @@ class EmployeeRead(EmployeeBase):
 
     id: int
     has_access: bool = False
+    status: Literal["active", "dismissed"] = "active"
     email: Optional[str] = None
     role: Optional[str] = None
     must_change_password: bool = False
@@ -60,9 +62,14 @@ class EmployeeRead(EmployeeBase):
     default_company: Optional[CompanyRead] = None
 
     @model_validator(mode="after")
-    def _compute_has_access(self) -> "EmployeeRead":
+    def _compute_fields(self) -> "EmployeeRead":
         self.has_access = self.email is not None
+        self.status = "dismissed" if not self.is_active else "active"
         return self
+
+
+class DismissalRequest(BaseModel):
+    dismissal_date: datetime.date
 
 
 class EmployeeUpdate(BaseModel):
