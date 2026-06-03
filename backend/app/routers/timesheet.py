@@ -12,6 +12,11 @@ from app.models.audit_log import AuditLog
 from app.models.companies import Company
 from app.models.employees import Employee
 from app.models.timesheet_periods import TimesheetPeriod
+from app.schemas.payroll import (
+    CompanyBreakdownRead,
+    EmployeePayrollRead,
+    PayrollSummaryRead,
+)
 from app.schemas.timesheet import (
     AutofillPreview,
     AutofillRequest,
@@ -22,6 +27,7 @@ from app.schemas.timesheet import (
     TimesheetMonthResponse,
 )
 from app.schemas.timesheet_period import AuditLogRead, StatusChangeReason, TimesheetPeriodRead
+from app.services.payroll import calculate_employee_payroll
 from app.services.timesheet import (
     apply_autofill,
     build_autofill_preview,
@@ -91,13 +97,107 @@ def _build_periods_for_response(
     return periods
 
 
+# ── Payroll helper ────────────────────────────────────────────────────────────
+
+def _build_payroll_summary(
+    db: Session,
+    employees: list[Employee],
+    entries,
+    year: int,
+    month: int,
+) -> PayrollSummaryRead:
+    from decimal import Decimal
+    from app.models.production_calendars import ProductionCalendar
+
+    cal = db.query(ProductionCalendar).filter_by(year=year).first()
+    calendar_data = cal.data if cal else None
+
+    companies = db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
+    companies_by_id = {c.id: (c.code, c.name) for c in companies}
+
+    entries_by_employee: dict[int, list] = {}
+    for e in entries:
+        entries_by_employee.setdefault(e.employee_id, []).append(e)
+
+    payroll_items: list[EmployeePayrollRead] = []
+    for emp in employees:
+        emp_entries = entries_by_employee.get(emp.id, [])
+        p = calculate_employee_payroll(emp, emp_entries, calendar_data, year, month, companies_by_id)
+
+        breakdown = [
+            CompanyBreakdownRead(
+                company_id=bd.company_id,
+                company_code=bd.company_code,
+                company_name=bd.company_name,
+                hours=bd.hours,
+                base_amount=bd.base_amount,
+                overtime_amount=bd.overtime_amount,
+                holiday_amount=bd.holiday_amount,
+                total=bd.total,
+            )
+            for bd in p.breakdown_by_company
+        ]
+        payroll_items.append(EmployeePayrollRead(
+            employee_id=p.employee_id,
+            employee_name=p.employee_name,
+            rate=p.rate,
+            schedule_name=p.schedule_name,
+            total_hours=p.total_hours,
+            norm_hours=p.norm_hours,
+            delta_hours=p.delta_hours,
+            overtime_hours=p.overtime_hours,
+            holiday_hours=p.holiday_hours,
+            hourly_rate=p.hourly_rate,
+            base_amount=p.base_amount,
+            overtime_amount=p.overtime_amount,
+            holiday_amount=p.holiday_amount,
+            total_amount=p.total_amount,
+            breakdown_by_company=breakdown,
+            is_calculable=p.is_calculable,
+            reason_if_not_calculable=p.reason_if_not_calculable,
+        ))
+
+    zero = Decimal("0")
+    return PayrollSummaryRead(
+        year=year,
+        month=month,
+        employees=payroll_items,
+        total_employees=len(payroll_items),
+        total_hours=sum((p.total_hours for p in payroll_items), zero),
+        total_base_amount=sum((p.base_amount for p in payroll_items), zero),
+        total_overtime_amount=sum((p.overtime_amount for p in payroll_items), zero),
+        total_holiday_amount=sum((p.holiday_amount for p in payroll_items), zero),
+        grand_total=sum((p.total_amount for p in payroll_items), zero),
+    )
+
+
 # ── GET month ─────────────────────────────────────────────────────────────────
+
+@router.get("/{year}/{month}/payroll", response_model=PayrollSummaryRead)
+def get_payroll(
+    year: int,
+    month: int,
+    department_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    if actor.role not in ("admin", "accountant"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
+        )
+    employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
+    entries = get_month_entries(db, employees, year, month)
+    return _build_payroll_summary(db, employees, entries, year, month)
+
 
 @router.get("/{year}/{month}", response_model=TimesheetMonthResponse)
 def get_month(
     year: int,
     month: int,
     department_id: Optional[int] = Query(default=None),
+    include_payroll: bool = Query(default=False),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
@@ -112,6 +212,10 @@ def get_month(
     periods = _build_periods_for_response(db, employees, year, month, actor)
     extra_companies = compute_extra_companies_by_employee(employees, entries)
 
+    payroll = None
+    if include_payroll and actor.role in ("admin", "accountant"):
+        payroll = _build_payroll_summary(db, employees, entries, year, month)
+
     return TimesheetMonthResponse(
         year=year,
         month=month,
@@ -120,6 +224,7 @@ def get_month(
         entries=entries,
         periods=periods,
         extra_companies_by_employee=extra_companies,
+        payroll=payroll,
     )
 
 
