@@ -966,6 +966,9 @@ export function TimesheetPage() {
 
   const weekdayOf = (day: number) => WEEKDAY_SHORT[new Date(year, month - 1, day).getDay()]
 
+  const rowBorderCls = (isLastRow: boolean, isLastEmp: boolean) =>
+    isLastRow && !isLastEmp ? 'border-b-2 border-gray-300' : 'border-b border-gray-100'
+
   // Build rows per employee: default company + expanded extras
   const buildEmployeeRows = (emp: Employee): number[] => {
     const rows: number[] = []
@@ -980,6 +983,19 @@ export function TimesheetPage() {
     }
     return rows
   }
+
+  // Flat list of (emp, companyId, cIdx) rows for synchronized rendering across three tables
+  const tableRows = employees.flatMap((emp, empIdx) => {
+    const isLastEmp = empIdx === employees.length - 1
+    const empRows = buildEmployeeRows(emp)
+    if (empRows.length === 0) {
+      return [{ key: `${emp.id}_empty`, emp, cIdx: 0, totalRows: 1, companyId: null as number | null, isLastEmp }]
+    }
+    return empRows.map((cid, cIdx) => ({
+      key: `${emp.id}_${cid}`,
+      emp, cIdx, totalRows: empRows.length, companyId: cid as number | null, isLastEmp,
+    }))
+  })
 
   return (
     <div className="space-y-4">
@@ -998,247 +1014,207 @@ export function TimesheetPage() {
         />
       )}
 
-      <div className="overflow-auto rounded-xl border border-gray-200 bg-white shadow-sm">
-        <table className="min-w-full border-collapse text-xs">
-          <thead>
-            <tr className="sticky top-0 z-10 bg-white shadow-sm">
-              <th className="sticky left-0 z-20 bg-white px-3 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[280px]">
-                Сотрудник
-              </th>
-              <th className="sticky left-[280px] z-20 bg-white px-2 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[80px]">
-                Компания
-              </th>
-              {days.map((d) => (
-                <th key={d} className={`border-b border-r border-gray-200 px-1 py-1 text-center font-medium whitespace-nowrap min-w-[42px] ${dayHeaderClass(d)}`}>
-                  <div>{d}</div>
-                  <div className="text-[10px] font-normal opacity-70">{weekdayOf(d)}</div>
-                </th>
-              ))}
-              <th className="sticky right-0 z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[52px]">
-                Итого ч
-              </th>
-              {canSeeFinance && (
-                <>
-                  <th className="sticky right-[52px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[48px] text-[11px]">Норма</th>
-                  <th className="sticky right-[100px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[44px] text-[11px]">Δ</th>
-                  <th className="sticky right-[144px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[72px] text-[11px]">Оклад</th>
-                  <th className="sticky right-[216px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[68px] text-[11px]">Сверхур.</th>
-                  <th className="sticky right-[284px] z-20 bg-white border-b border-l border-gray-200 px-2 py-2 text-center font-medium text-gray-400 whitespace-nowrap min-w-[60px] text-[11px]">Праздн.</th>
-                  <th className="sticky right-[344px] z-20 bg-blue-50 border-b border-l border-gray-200 px-2 py-2 text-center font-semibold text-blue-700 whitespace-nowrap min-w-[80px] text-[11px]">Итого ₽</th>
-                </>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {employees.map((emp, empIdx) => {
-              const total = employeeTotal(emp.id)
-              const isLastEmp = empIdx === employees.length - 1
-              const locked = isRowLocked(emp.department_id)
-              const draft = isDraft(emp.department_id)
-              const empRows = buildEmployeeRows(emp)
-              const shownCompanyIds = empRows
-              const isDismissed = !emp.is_active
-              const ep = payrollByEmployee(emp.id)
+      {/* ── Three-section table: Left fixed | Center scrollable | Right fixed ── */}
+      <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+       <div className="flex">
 
-              const renderFinanceCells = (isFirstRow: boolean) => {
-                if (!canSeeFinance) return null
-                if (!isFirstRow) {
-                  return (
-                    <>
-                      <td className="sticky right-[52px] z-10 bg-white border-l border-gray-100" />
-                      <td className="sticky right-[100px] z-10 bg-white border-l border-gray-100" />
-                      <td className="sticky right-[144px] z-10 bg-white border-l border-gray-100" />
-                      <td className="sticky right-[216px] z-10 bg-white border-l border-gray-100" />
-                      <td className="sticky right-[284px] z-10 bg-white border-l border-gray-100" />
-                      <td className="sticky right-[344px] z-10 bg-blue-50 border-l border-gray-200" />
-                    </>
-                  )
-                }
-                if (!ep) return (
-                  <>
-                    <td className="sticky right-[52px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
-                    <td className="sticky right-[100px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
-                    <td className="sticky right-[144px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
-                    <td className="sticky right-[216px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
-                    <td className="sticky right-[284px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-400 text-[11px]">—</td>
-                    <td className="sticky right-[344px] z-10 bg-blue-50 border-l border-gray-200 px-1 py-1 text-center text-blue-700 font-semibold text-[11px]">—</td>
-                  </>
-                )
-                const delta = formatDelta(ep.delta_hours)
-                const notCalcTitle = ep.reason_if_not_calculable ?? ''
-                return (
-                  <>
-                    <td className="sticky right-[52px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-600 text-[11px] whitespace-nowrap">
-                      {formatHours(ep.norm_hours)}
-                    </td>
-                    <td className={`sticky right-[100px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-[11px] whitespace-nowrap ${delta.className}`}>
-                      {delta.text}
-                    </td>
-                    <td className="sticky right-[144px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-700 text-[11px] whitespace-nowrap" title={notCalcTitle}>
-                      {ep.is_calculable ? formatMoney(ep.base_amount) : <span className="text-gray-400 italic">—</span>}
-                    </td>
-                    <td className="sticky right-[216px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-700 text-[11px] whitespace-nowrap" title={notCalcTitle}>
-                      {ep.is_calculable ? formatMoney(ep.overtime_amount) : <span className="text-gray-400 italic">—</span>}
-                    </td>
-                    <td className="sticky right-[284px] z-10 bg-white border-l border-gray-200 px-1 py-1 text-center text-gray-700 text-[11px] whitespace-nowrap" title={notCalcTitle}>
-                      {ep.is_calculable ? formatMoney(ep.holiday_amount) : <span className="text-gray-400 italic">—</span>}
-                    </td>
-                    <td className="sticky right-[344px] z-10 bg-blue-50 border-l border-blue-200 px-1 py-1 text-center text-blue-700 font-semibold text-[11px] whitespace-nowrap" title={notCalcTitle}>
-                      {ep.is_calculable ? formatMoney(ep.total_amount) : <span className="text-gray-400 italic font-normal">—</span>}
-                    </td>
-                  </>
-                )
-              }
-
-              // If employee has no default and no extras, show placeholder row
-              if (empRows.length === 0) {
-                return (
-                  <tr key={`${emp.id}_empty`} className={isLastEmp ? '' : 'border-b-2 border-gray-300'}>
-                    <td className="sticky left-0 z-10 bg-white border-r border-gray-200 px-3 py-1 whitespace-nowrap font-medium text-gray-800">
-                      <div className="flex flex-col gap-0.5">
-                        <div className="flex items-center gap-1">
-                          <span>{emp.full_name}</span>
-                          {isDismissed && <span className="text-[10px] text-gray-400">(уволен)</span>}
-                          {locked && <span className={`text-[10px] rounded px-1 ${STATUS_BADGE[periodByDeptId.get(emp.department_id === null ? 'null' : String(emp.department_id))?.status ?? 'draft']}`}>🔒</span>}
-                        </div>
-                        {draft && (
-                          <CompanyDropdown
-                            companies={companies}
-                            shownCompanyIds={shownCompanyIds}
-                            onSelect={(cid) => addCompanyForEmployee(emp.id, cid)}
-                          />
-                        )}
-                      </div>
-                    </td>
-                    <td className="sticky left-[280px] z-10 border-r border-gray-200 px-2 py-1 text-gray-400 italic text-xs">
-                      не выбрана
-                    </td>
-                    {days.map((d) => (
-                      <td key={d} className="border-r border-gray-100 p-0" />
-                    ))}
-                    <td className="sticky right-0 z-10 bg-white border-l border-gray-200 px-2 py-1" />
-                    {renderFinanceCells(true)}
-                  </tr>
-                )
-              }
-
-              return empRows.map((companyId, cIdx) => {
-                const isDefault = companyId === emp.default_company_id
+        {/* ── LEFT PANEL: Employee + Company (fixed 280px) ── */}
+        <div className="shrink-0 border-r border-gray-200" style={{ width: '280px' }}>
+          <table className="w-full border-collapse text-xs table-fixed">
+            <colgroup><col style={{ width: '200px' }} /><col style={{ width: '80px' }} /></colgroup>
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200" style={{ height: '48px' }}>
+                <th className="px-3 py-2 text-left font-medium text-gray-500 border-r border-gray-200">Сотрудник</th>
+                <th className="px-2 py-2 text-left font-medium text-gray-500">Компания</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tableRows.map(({ key, emp, cIdx, totalRows, companyId, isLastEmp }) => {
                 const isFirstRow = cIdx === 0
-                const isLastRow = cIdx === empRows.length - 1
-                const rowBorder = isLastRow && !isLastEmp
-                  ? 'border-b-2 border-gray-300'
-                  : 'border-b border-gray-100'
-                const company = companies.find((c) => c.id === companyId)
-                const cc = companyColor(companyId, companies)
-                const hasHours = employeeHasHoursForCompany(emp.id, companyId)
-                const canRemove = !isDefault && !hasHours && draft
-
+                const isLastRow = cIdx === totalRows - 1
+                const isDismissed = !emp.is_active
+                const locked = isRowLocked(emp.department_id)
+                const draft = isDraft(emp.department_id)
+                const company = companyId !== null ? companies.find(c => c.id === companyId) : null
+                const cc = companyId !== null ? companyColor(companyId, companies) : COMPANY_COLORS[0]
+                const hasHours = companyId !== null ? employeeHasHoursForCompany(emp.id, companyId) : false
+                const isDefault = companyId === emp.default_company_id
+                const canRemove = !isDefault && !hasHours && draft && companyId !== null
                 return (
-                  <tr key={`${emp.id}_${companyId}`} className={rowBorder}>
-                    <td className={`sticky left-0 z-10 bg-white border-r border-gray-200 px-3 py-1 whitespace-nowrap font-medium text-gray-800 ${isFirstRow ? '' : 'text-transparent select-none'}`}>
-                      {isFirstRow ? (
-                        <div className="flex flex-col gap-0.5">
-                          <div className="flex items-center gap-1">
-                            <span>{emp.full_name}</span>
-                            {isDismissed && <span className="text-[10px] text-gray-400">(уволен)</span>}
-                            {locked && <span className={`text-[10px] rounded px-1 ${STATUS_BADGE[periodByDeptId.get(emp.department_id === null ? 'null' : String(emp.department_id))?.status ?? 'draft']}`}>🔒</span>}
+                  <tr key={`${key}_L`} className={rowBorderCls(isLastRow, isLastEmp)} style={{ height: '48px' }}>
+                    <td className="px-2 py-1 border-r border-gray-200 overflow-hidden" style={{ maxWidth: '200px' }}>
+                      {isFirstRow && (
+                        <div className="flex flex-col gap-0.5 h-full justify-center">
+                          <div className="flex items-center gap-1 min-w-0">
+                            <span className="font-medium text-gray-800 truncate text-xs leading-tight" title={emp.full_name}>{emp.full_name}</span>
+                            {isDismissed && <span className="text-[10px] text-gray-400 shrink-0">(ув.)</span>}
+                            {locked && <span className={`text-[10px] rounded px-1 shrink-0 ${STATUS_BADGE[periodByDeptId.get(emp.department_id === null ? 'null' : String(emp.department_id))?.status ?? 'draft']}`}>🔒</span>}
                           </div>
                           {draft && (
                             <CompanyDropdown
                               companies={companies}
-                              shownCompanyIds={shownCompanyIds}
+                              shownCompanyIds={buildEmployeeRows(emp)}
                               onSelect={(cid) => addCompanyForEmployee(emp.id, cid)}
                             />
                           )}
                         </div>
-                      ) : ''}
+                      )}
                     </td>
-                    <td className={`sticky left-[280px] z-10 border-r border-gray-200 px-2 py-1 whitespace-nowrap ${cc.bg} ${cc.text}`}>
-                      <div className="flex items-center gap-1">
-                        {canRemove && (
-                          <button
-                            onClick={() => removeCompanyForEmployee(emp.id, companyId)}
-                            className="text-gray-400 hover:text-red-500 text-[10px] leading-none"
-                            title="Убрать компанию"
-                          >
-                            ×
-                          </button>
-                        )}
-                        <span>{company?.code ?? companyId}</span>
-                      </div>
+                    <td className={`px-2 py-1 text-xs overflow-hidden ${cc.bg} ${cc.text}`}>
+                      {companyId !== null ? (
+                        <div className="flex items-center gap-1 h-full">
+                          {canRemove && (
+                            <button onClick={() => removeCompanyForEmployee(emp.id, companyId)} className="text-gray-400 hover:text-red-500 text-[10px] leading-none shrink-0" title="Убрать компанию">×</button>
+                          )}
+                          <span>{company?.code ?? companyId}</span>
+                        </div>
+                      ) : <span className="text-gray-400 italic">не выбрана</span>}
                     </td>
+                  </tr>
+                )
+              })}
+              {tableRows.length > 0 && (
+                <tr className="bg-gray-50 border-t-2 border-gray-300 font-semibold text-xs" style={{ height: '40px' }}>
+                  <td className="px-3 py-2 text-gray-700 border-r border-gray-200 truncate">ИТОГО: {employees.length} сотр.</td>
+                  <td className="px-2 py-2" />
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* ── CENTER: Day cells (scrollable) ── */}
+        <div className="flex-1 overflow-x-auto min-w-0">
+          <table className="border-collapse text-xs" style={{ width: `${days.length * 42}px`, minWidth: `${days.length * 42}px` }}>
+            <thead>
+              <tr className="bg-white border-b border-gray-200" style={{ height: '48px' }}>
+                {days.map((d) => (
+                  <th key={d} style={{ width: '42px', minWidth: '42px' }} className={`border-r border-gray-200 px-1 py-1 text-center font-medium ${dayHeaderClass(d)}`}>
+                    <div className="text-xs">{d}</div>
+                    <div className="text-[10px] font-normal opacity-70">{weekdayOf(d)}</div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {tableRows.map(({ key, emp, cIdx, totalRows, companyId, isLastEmp }) => {
+                const isLastRow = cIdx === totalRows - 1
+                const locked = isRowLocked(emp.department_id)
+                const cc = companyId !== null ? companyColor(companyId, companies) : COMPANY_COLORS[0]
+                return (
+                  <tr key={`${key}_C`} className={rowBorderCls(isLastRow, isLastEmp)} style={{ height: '48px' }}>
                     {days.map((d) => {
+                      if (companyId === null) return <td key={d} className="border-r border-gray-100" style={{ width: '42px' }} />
                       const workDate = toWorkDate(year, month, d)
-                      const key = makeCellKey(emp.id, workDate, companyId)
-                      const val = entryMap.get(key)
+                      const cellKey = makeCellKey(emp.id, workDate, companyId)
+                      const val = entryMap.get(cellKey)
                       return (
-                        <td key={d} className={`border-r border-gray-100 p-0 ${dayCellBg(d)} ${cc.cell}`}>
-                          <CellInput
-                            value={val}
-                            locked={locked}
-                            dayBgClass={dayCellBg(d)}
-                            onSave={(hours) => handleSaveCell(emp.id, workDate, companyId, hours, emp.department_id)}
-                          />
+                        <td key={d} className={`border-r border-gray-100 p-0 ${dayCellBg(d)} ${cc.cell}`} style={{ width: '42px' }}>
+                          <CellInput value={val} locked={locked} dayBgClass={dayCellBg(d)}
+                            onSave={(hours) => handleSaveCell(emp.id, workDate, companyId, hours, emp.department_id)} />
                         </td>
                       )
                     })}
-                    <td className={`sticky right-0 z-10 bg-white border-l border-gray-200 px-2 py-1 text-center font-semibold ${isFirstRow && total > 0 ? 'text-gray-800' : 'text-transparent select-none'}`}>
-                      {isFirstRow && total > 0 ? total : ''}
-                    </td>
-                    {renderFinanceCells(isFirstRow)}
                   </tr>
                 )
-              })
-            })}
-            {/* Footer row — always shown when employees exist */}
-            {employees.length > 0 && (
-              <tr className="sticky bottom-0 z-10 bg-gray-50 border-t-2 border-gray-300 font-semibold text-xs">
-                <td className="sticky left-0 z-20 bg-gray-50 border-r border-gray-200 px-3 py-2 whitespace-nowrap text-gray-700">
-                  ИТОГО: {employees.length} сотр.
-                </td>
-                <td className="sticky left-[280px] z-20 bg-gray-50 border-r border-gray-200 px-2 py-2" />
-                {days.map((d) => (
-                  <td key={d} className="border-r border-gray-100 p-0" />
-                ))}
-                {/* Total hours from entryMap — always accurate */}
-                <td className="sticky right-0 z-20 bg-gray-50 border-l border-gray-200 px-2 py-2 text-center text-gray-800">
-                  {totalHoursAll() || '—'}
-                </td>
-                {canSeeFinance && payroll ? (
+              })}
+              {tableRows.length > 0 && (
+                <tr className="bg-gray-50 border-t-2 border-gray-300" style={{ height: '40px' }}>
+                  {days.map((d) => <td key={d} className="border-r border-gray-100" style={{ width: '42px' }} />)}
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* ── RIGHT PANEL: Totals + Finance (fixed) ── */}
+        <div className="shrink-0 border-l border-gray-200">
+          <table className="border-collapse text-xs">
+            <colgroup>
+              <col style={{ width: '52px' }} />
+              {canSeeFinance && <><col style={{ width: '48px' }} /><col style={{ width: '40px' }} /><col style={{ width: '68px' }} /><col style={{ width: '64px' }} /><col style={{ width: '56px' }} /><col style={{ width: '76px' }} /></>}
+            </colgroup>
+            <thead>
+              <tr className="bg-white border-b border-gray-200" style={{ height: '48px' }}>
+                <th className="px-2 py-2 text-center font-medium text-gray-500 border-l border-gray-200 text-[11px]">Итого ч</th>
+                {canSeeFinance && (
                   <>
-                    <td className="sticky right-[52px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-600 whitespace-nowrap">
-                      {totalNormAll() ?? '—'}
-                    </td>
-                    <td className="sticky right-[100px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-500">—</td>
-                    <td className="sticky right-[144px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
-                      {formatMoney(payroll.total_base_amount)}
-                    </td>
-                    <td className="sticky right-[216px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
-                      {formatMoney(payroll.total_overtime_amount)}
-                    </td>
-                    <td className="sticky right-[284px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
-                      {formatMoney(payroll.total_holiday_amount)}
-                    </td>
-                    <td className="sticky right-[344px] z-20 bg-blue-100 border-l border-blue-300 px-1 py-2 text-center text-blue-800 font-bold whitespace-nowrap">
-                      {formatMoney(payroll.grand_total)}
-                    </td>
+                    <th className="px-1 py-2 text-center font-medium text-gray-400 border-l border-gray-200 text-[11px]">Норма</th>
+                    <th className="px-1 py-2 text-center font-medium text-gray-400 border-l border-gray-200 text-[11px]">Δ</th>
+                    <th className="px-1 py-2 text-center font-medium text-gray-400 border-l border-gray-200 text-[11px]">Оклад</th>
+                    <th className="px-1 py-2 text-center font-medium text-gray-400 border-l border-gray-200 text-[11px]">Сверхур.</th>
+                    <th className="px-1 py-2 text-center font-medium text-gray-400 border-l border-gray-200 text-[11px]">Праздн.</th>
+                    <th className="px-1 py-2 text-center font-semibold text-blue-700 bg-blue-50 border-l border-blue-200 text-[11px]">Итого ₽</th>
                   </>
-                ) : canSeeFinance ? (
-                  <>
-                    <td className="sticky right-[52px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
-                    <td className="sticky right-[100px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
-                    <td className="sticky right-[144px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
-                    <td className="sticky right-[216px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
-                    <td className="sticky right-[284px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
-                    <td className="sticky right-[344px] z-20 bg-blue-50 border-l border-gray-200 px-1 py-2" />
-                  </>
-                ) : null}
+                )}
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {tableRows.map(({ key, emp, cIdx, totalRows, isLastEmp }) => {
+                const isFirstRow = cIdx === 0
+                const isLastRow = cIdx === totalRows - 1
+                const total = employeeTotal(emp.id)
+                const ep = payrollByEmployee(emp.id)
+                const delta = ep ? formatDelta(ep.delta_hours) : null
+                const notCalcTitle = ep?.reason_if_not_calculable ?? ''
+                return (
+                  <tr key={`${key}_R`} className={rowBorderCls(isLastRow, isLastEmp)} style={{ height: '48px' }}>
+                    <td className="px-2 py-1 text-center font-semibold text-xs border-l border-gray-200 text-gray-800">
+                      {isFirstRow && total > 0 ? total : null}
+                    </td>
+                    {canSeeFinance && (
+                      <>
+                        <td className="px-1 py-1 text-center text-[11px] border-l border-gray-200 text-gray-600 whitespace-nowrap">
+                          {isFirstRow ? (ep ? formatHours(ep.norm_hours) : '—') : null}
+                        </td>
+                        <td className={`px-1 py-1 text-center text-[11px] border-l border-gray-200 whitespace-nowrap ${isFirstRow && delta ? delta.className : ''}`}>
+                          {isFirstRow && delta ? delta.text : null}
+                        </td>
+                        <td className="px-1 py-1 text-center text-[11px] border-l border-gray-200 text-gray-700 whitespace-nowrap" title={isFirstRow ? notCalcTitle : ''}>
+                          {isFirstRow ? (ep?.is_calculable ? formatMoney(ep.base_amount) : <span className="text-gray-400 italic">—</span>) : null}
+                        </td>
+                        <td className="px-1 py-1 text-center text-[11px] border-l border-gray-200 text-gray-700 whitespace-nowrap" title={isFirstRow ? notCalcTitle : ''}>
+                          {isFirstRow ? (ep?.is_calculable ? formatMoney(ep.overtime_amount) : <span className="text-gray-400 italic">—</span>) : null}
+                        </td>
+                        <td className="px-1 py-1 text-center text-[11px] border-l border-gray-200 text-gray-700 whitespace-nowrap" title={isFirstRow ? notCalcTitle : ''}>
+                          {isFirstRow ? (ep?.is_calculable ? formatMoney(ep.holiday_amount) : <span className="text-gray-400 italic">—</span>) : null}
+                        </td>
+                        <td className="px-1 py-1 text-center text-[11px] border-l border-blue-200 bg-blue-50 font-semibold text-blue-700 whitespace-nowrap" title={isFirstRow ? notCalcTitle : ''}>
+                          {isFirstRow ? (ep?.is_calculable ? formatMoney(ep.total_amount) : <span className="text-gray-400 italic font-normal">—</span>) : null}
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                )
+              })}
+              {/* Footer */}
+              {tableRows.length > 0 && (
+                <tr className="bg-gray-50 border-t-2 border-gray-300 font-semibold text-xs" style={{ height: '40px' }}>
+                  <td className="px-2 py-2 text-center text-gray-800 border-l border-gray-200">{totalHoursAll() || '—'}</td>
+                  {canSeeFinance && payroll ? (
+                    <>
+                      <td className="px-1 py-2 text-center text-gray-600 border-l border-gray-200 whitespace-nowrap">{totalNormAll() ?? '—'}</td>
+                      <td className="px-1 py-2 text-center text-gray-500 border-l border-gray-200">—</td>
+                      <td className="px-1 py-2 text-center text-gray-700 border-l border-gray-200 whitespace-nowrap">{formatMoney(payroll.total_base_amount)}</td>
+                      <td className="px-1 py-2 text-center text-gray-700 border-l border-gray-200 whitespace-nowrap">{formatMoney(payroll.total_overtime_amount)}</td>
+                      <td className="px-1 py-2 text-center text-gray-700 border-l border-gray-200 whitespace-nowrap">{formatMoney(payroll.total_holiday_amount)}</td>
+                      <td className="px-1 py-2 text-center text-blue-800 font-bold border-l border-blue-200 bg-blue-100 whitespace-nowrap">{formatMoney(payroll.grand_total)}</td>
+                    </>
+                  ) : canSeeFinance ? (
+                    <>
+                      <td className="border-l border-gray-200 px-1 py-2" /><td className="border-l border-gray-200 px-1 py-2" />
+                      <td className="border-l border-gray-200 px-1 py-2" /><td className="border-l border-gray-200 px-1 py-2" />
+                      <td className="border-l border-gray-200 px-1 py-2" /><td className="border-l border-blue-200 bg-blue-50 px-1 py-2" />
+                    </>
+                  ) : null}
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+       </div>{/* end flex */}
+      </div>{/* end table wrapper */}
 
       <SavingIndicator savingCount={savingCount} />
 
