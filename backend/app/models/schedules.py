@@ -17,6 +17,7 @@ class Schedule(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     hours_per_shift: Mapped[int] = mapped_column(nullable=False)
+    schedule_type: Mapped[str] = mapped_column(String(20), default="standard", nullable=False, server_default="standard")
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[str] = mapped_column(server_default=func.now())
