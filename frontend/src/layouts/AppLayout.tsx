@@ -77,7 +77,10 @@ export function AppLayout() {
         </div>
 
         <nav className="flex flex-1 flex-col gap-4 overflow-y-auto p-3">
-          <SidebarGroup title="Учёт" items={[{ to: '/dashboard', label: 'Дашборд' }]} />
+          <SidebarGroup title="Учёт" items={[
+            { to: '/dashboard', label: 'Дашборд' },
+            { to: '/timesheet', label: 'Табель' },
+          ]} />
 
           {role === 'admin' && (
             <SidebarGroup title="Справочники" items={adminItems} />

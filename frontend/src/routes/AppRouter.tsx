@@ -8,6 +8,7 @@ import { CompaniesPage } from '../pages/admin/CompaniesPage'
 import { SchedulesPage } from '../pages/admin/SchedulesPage'
 import { CalendarPage } from '../pages/admin/CalendarPage'
 import { EmployeesPage } from '../pages/admin/EmployeesPage'
+import { TimesheetPage } from '../pages/TimesheetPage'
 import { PrivateRoute } from './PrivateRoute'
 import { useAuthStore } from '../store/auth'
 import { toast } from '../store/toasts'
@@ -32,6 +33,7 @@ export function AppRouter() {
         <Route element={<PrivateRoute />}>
           <Route element={<AppLayout />}>
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/timesheet" element={<TimesheetPage />} />
             <Route path="/change-password" element={<ChangePasswordPage />} />
 
             <Route

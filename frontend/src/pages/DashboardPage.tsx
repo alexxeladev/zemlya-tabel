@@ -17,6 +17,11 @@ interface Tile {
 }
 
 const ICONS = {
+  timesheet: (
+    <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0c0 .621.504 1.125 1.125 1.125" />
+    </svg>
+  ),
   users: (
     <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
@@ -50,6 +55,7 @@ const ICONS = {
 }
 
 const ADMIN_TILES: Tile[] = [
+  { to: '/timesheet', title: 'Табель', description: 'Ввод и просмотр часов', icon: ICONS.timesheet },
   { to: '/admin/employees', title: 'Сотрудники', description: 'Карточки сотрудников и доступ', icon: ICONS.employees },
   { to: '/admin/departments', title: 'Отделы', description: 'Структура подразделений', icon: ICONS.departments },
   { to: '/admin/companies', title: 'Компании', description: 'Юридические лица группы', icon: ICONS.companies },
@@ -58,10 +64,12 @@ const ADMIN_TILES: Tile[] = [
 ]
 
 const MANAGER_TILES: Tile[] = [
+  { to: '/timesheet', title: 'Табель', description: 'Ввод часов отдела', icon: ICONS.timesheet },
   { to: '/admin/employees', title: 'Сотрудники отдела', description: 'Карточки вашего подразделения', icon: ICONS.employees },
 ]
 
 const ACCOUNTANT_TILES: Tile[] = [
+  { to: '/timesheet', title: 'Табель', description: 'Просмотр табеля', icon: ICONS.timesheet },
   { to: '/admin/departments', title: 'Отделы', description: 'Просмотр подразделений', icon: ICONS.departments },
   { to: '/admin/companies', title: 'Компании', description: 'Юридические лица', icon: ICONS.companies },
   { to: '/admin/schedules', title: 'Графики работы', description: 'Режимы работы', icon: ICONS.schedules },

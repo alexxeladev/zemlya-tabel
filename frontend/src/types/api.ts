@@ -1,5 +1,27 @@
 export type UserRole = 'admin' | 'manager' | 'accountant' | 'employee'
 
+export interface TimesheetEntry {
+  employee_id: number
+  work_date: string  // YYYY-MM-DD
+  company_id: number
+  hours: number  // decimal as number
+}
+
+export interface TimesheetMonthResponse {
+  year: number
+  month: number
+  employees: Employee[]
+  companies: Company[]
+  entries: TimesheetEntry[]
+}
+
+export interface TimesheetCellInput {
+  employee_id: number
+  work_date: string  // YYYY-MM-DD
+  company_id: number
+  hours: number
+}
+
 export interface MonthData {
   month: number
   days: string
