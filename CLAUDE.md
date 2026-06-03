@@ -120,6 +120,14 @@ pytest -v --tb=short
 sudo chown -R <user>:<user> <папка>
 ```
 
+### Миграции Alembic — всегда применять после создания
+После создания файла миграции **обязательно** применить её и проверить:
+```bash
+alembic upgrade head
+alembic current  # должен совпадать с head
+```
+Миграция без применения создаёт расхождение между моделью SQLAlchemy и реальной схемой БД — API падает при старте или при первом обращении к изменённой таблице. Не коммитить миграцию без прогона `upgrade head`.
+
 ## Производственный календарь
 
 - **Источник:** xmlcalendar.ru — `https://xmlcalendar.ru/data/ru/{year}/calendar.json`
@@ -175,6 +183,10 @@ sudo chown -R <user>:<user> <папка>
 - Период создаётся lazy при первом GET месяца (`get_or_create_period`)
 - NULL-department: accountant может закрыть сразу из draft (нет manager-а, pending_review пропускается)
 - Partial unique index в PG: один период на (department_id, year, month), NULL обрабатывается отдельным index
+
+## Правила работы
+
+- Если задача говорит «не реализовывать X» — не реализовывать X. Если кажется что X всё же нужен — спросить пользователя, не делать тихо.
 
 ## Правило 3 попыток
 
