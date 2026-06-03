@@ -80,6 +80,7 @@ export function AppLayout() {
           <SidebarGroup title="Учёт" items={[
             { to: '/dashboard', label: 'Дашборд' },
             { to: '/timesheet', label: 'Табель' },
+            ...((role === 'admin' || role === 'accountant') ? [{ to: '/admin/payroll', label: 'Расчёт ЗП' }] : []),
           ]} />
 
           {role === 'admin' && (

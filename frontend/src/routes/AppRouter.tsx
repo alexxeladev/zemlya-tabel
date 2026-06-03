@@ -8,6 +8,7 @@ import { CompaniesPage } from '../pages/admin/CompaniesPage'
 import { SchedulesPage } from '../pages/admin/SchedulesPage'
 import { CalendarPage } from '../pages/admin/CalendarPage'
 import { EmployeesPage } from '../pages/admin/EmployeesPage'
+import { PayrollPage } from '../pages/admin/PayrollPage'
 import { TimesheetPage } from '../pages/TimesheetPage'
 import { PrivateRoute } from './PrivateRoute'
 import { useAuthStore } from '../store/auth'
@@ -73,6 +74,14 @@ export function AppRouter() {
               element={
                 <RoleRoute allow={['admin']}>
                   <CalendarPage />
+                </RoleRoute>
+              }
+            />
+            <Route
+              path="/admin/payroll"
+              element={
+                <RoleRoute allow={['admin', 'accountant']}>
+                  <PayrollPage />
                 </RoleRoute>
               }
             />

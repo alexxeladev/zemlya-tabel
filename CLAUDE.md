@@ -184,6 +184,18 @@ alembic current  # должен совпадать с head
 - NULL-department: accountant может закрыть сразу из draft (нет manager-а, pending_review пропускается)
 - Partial unique index в PG: один период на (department_id, year, month), NULL обрабатывается отдельным index
 
+## Payroll (расчёт ЗП)
+
+- Считаем **брутто к начислению** — НДФЛ/страховые/премии/авансы — задача 1С
+- **Только `Decimal`**, никаких `float`. Округление `ROUND_HALF_EVEN` до целых рублей.
+- Формула: `base = rate × min(1, fact/norm)`, `overtime = max(0, fact−norm) × (rate/norm) × 1.5`, `holiday = holiday_hours × (rate/norm) × 0.5` (доплата сверх базы, т.к. база уже включает праздники)
+- Норма только для `schedule_type="standard"`. Shift-графики → `is_calculable=False`.
+- Распределение по компаниям: base/overtime — пропорционально часам; holiday — пропорционально праздничным часам по компании.
+- Видят только admin / accountant. На бэке принудительная проверка — игнорировать `?include_payroll=true` от manager/employee.
+- Эндпоинт: `GET /api/timesheet/{year}/{month}/payroll`, параметр `?include_payroll=true` у основного GET.
+- Сервис: `app/services/payroll.py` — чистая функция `calculate_employee_payroll`, не лезет в БД.
+- Фронт: Decimal с бэка приходят как строки; `formatMoney()` / `formatHours()` в `frontend/src/utils/money.ts`.
+
 ## Правила работы
 
 - Если задача говорит «не реализовывать X» — не реализовывать X. Если кажется что X всё же нужен — спросить пользователя, не делать тихо.
