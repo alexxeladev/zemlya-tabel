@@ -147,6 +147,16 @@ sudo chown -R <user>:<user> <папка>
 - Один сотрудник может иметь несколько ячеек в один день на разные компании
 - Unique constraint: `(employee_id, work_date, company_id)`
 
+## Timesheet Periods
+
+- Workflow: `draft → pending_review → closed`; возвраты: `pending_review → draft` (accountant+admin), `closed → draft` (только admin)
+- Все возвраты и переоткрытие — обязательный `reason` (≥3 символа), audit log
+- Период привязан к `(department_id, year, month)`. NULL department_id — отдельная группа «Без отдела»
+- Ячейки (cells) можно редактировать **только в draft**. Admin тоже подчиняется — должен reopen чтобы править
+- Период создаётся lazy при первом GET месяца (`get_or_create_period`)
+- NULL-department: accountant может закрыть сразу из draft (нет manager-а, pending_review пропускается)
+- Partial unique index в PG: один период на (department_id, year, month), NULL обрабатывается отдельным index
+
 ## Правило 3 попыток
 
 Если ты столкнулся с проблемой которую не получается решить (тест падает, ошибка установки, синтаксическая ошибка которую исправить не выходит, миграция не применяется и т.п.) — даю тебе 3 попытки.

@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '../store/auth'
 import { toast } from '../store/toasts'
-import type { Company, Department, MonthSummary, TimesheetEntry, TimesheetMonthResponse } from '../types/api'
+import type {
+  AuditLogEntry,
+  Company,
+  Department,
+  MonthSummary,
+  TimesheetEntry,
+  TimesheetMonthResponse,
+  TimesheetPeriod,
+} from '../types/api'
 import { timesheetApi } from '../api/timesheet'
-import { apiClient } from '../api/client'
-import { ApiError } from '../api/client'
+import { apiClient, ApiError } from '../api/client'
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const MONTH_NAMES = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -29,39 +38,366 @@ function companyColor(companyId: number, companies: Company[]) {
   return COMPANY_COLORS[Math.max(0, idx) % COMPANY_COLORS.length]
 }
 
-interface CellKey {
-  employeeId: number
-  workDate: string
-  companyId: number
+const STATUS_LABELS: Record<string, string> = {
+  draft: 'Черновик',
+  pending_review: 'На проверке',
+  closed: 'Закрыт',
 }
 
-function makeCellKey(k: CellKey) {
-  return `${k.employeeId}_${k.workDate}_${k.companyId}`
+const STATUS_BADGE: Record<string, string> = {
+  draft: 'bg-gray-100 text-gray-700',
+  pending_review: 'bg-yellow-100 text-yellow-800',
+  closed: 'bg-green-100 text-green-800',
 }
+
+const ACTION_LABELS: Record<string, string> = {
+  period_submitted: 'отправил на проверку',
+  period_returned: 'вернул на доработку',
+  period_closed: 'закрыл период',
+  period_reopened: 'переоткрыл период',
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 type EntryMap = Map<string, number>
+
+function makeCellKey(employeeId: number, workDate: string, companyId: number) {
+  return `${employeeId}_${workDate}_${companyId}`
+}
 
 function buildEntryMap(entries: TimesheetEntry[]): EntryMap {
   const m = new Map<string, number>()
   for (const e of entries) {
-    m.set(makeCellKey({ employeeId: e.employee_id, workDate: e.work_date, companyId: e.company_id }), parseFloat(e.hours as unknown as string))
+    m.set(makeCellKey(e.employee_id, e.work_date, e.company_id), parseFloat(e.hours as unknown as string))
   }
   return m
 }
 
-function padDate(n: number) {
-  return String(n).padStart(2, '0')
-}
-
-function toWorkDate(year: number, month: number, day: number): string {
+function padDate(n: number) { return String(n).padStart(2, '0') }
+function toWorkDate(year: number, month: number, day: number) {
   return `${year}-${padDate(month)}-${padDate(day)}`
 }
 
-interface SavingIndicatorProps {
-  savingCount: number
+function formatDateTime(iso: string | null): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return `${d.getDate()} ${MONTH_NAMES[d.getMonth()].toLowerCase()} ${d.getFullYear()}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
 }
 
-function SavingIndicator({ savingCount }: SavingIndicatorProps) {
+// ── ReasonModal ───────────────────────────────────────────────────────────────
+
+interface ReasonModalProps {
+  title: string
+  onConfirm: (reason: string) => Promise<void>
+  onClose: () => void
+}
+
+function ReasonModal({ title, onConfirm, onClose }: ReasonModalProps) {
+  const [reason, setReason] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (reason.trim().length < 3) return
+    setLoading(true)
+    try {
+      await onConfirm(reason.trim())
+      onClose()
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+        <h2 className="mb-4 text-lg font-semibold text-gray-900">{title}</h2>
+        <form onSubmit={handleSubmit}>
+          <textarea
+            autoFocus
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Укажите причину (минимум 3 символа)"
+            className="w-full rounded-lg border border-gray-300 p-3 text-sm outline-none focus:ring-2 focus:ring-blue-400 resize-none"
+            rows={4}
+            maxLength={500}
+          />
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50"
+            >
+              Отмена
+            </button>
+            <button
+              type="submit"
+              disabled={reason.trim().length < 3 || loading}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              Подтвердить
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ── PeriodHistory ─────────────────────────────────────────────────────────────
+
+function PeriodHistory({ periodId }: { periodId: number }) {
+  const [open, setOpen] = useState(false)
+  const [history, setHistory] = useState<AuditLogEntry[]>([])
+  const [loading, setLoading] = useState(false)
+
+  const load = async () => {
+    if (history.length > 0) return
+    setLoading(true)
+    try {
+      setHistory(await timesheetApi.getPeriodHistory(periodId))
+    } catch {
+      toast.error('Не удалось загрузить историю')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const toggle = () => {
+    if (!open) load()
+    setOpen((v) => !v)
+  }
+
+  return (
+    <div className="mt-2 border-t border-gray-100 pt-2">
+      <button
+        onClick={toggle}
+        className="text-xs text-blue-600 hover:underline"
+      >
+        {open ? 'Скрыть историю' : 'История'}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1">
+          {loading && <p className="text-xs text-gray-400">Загрузка...</p>}
+          {!loading && history.length === 0 && (
+            <p className="text-xs text-gray-400">История пуста</p>
+          )}
+          {history.map((h) => (
+            <div key={h.id} className="text-xs text-gray-600">
+              <span className="text-gray-400">{formatDateTime(h.created_at)}</span>
+              {' — '}
+              <span className="font-medium">{h.actor_name ?? `#${h.actor_id}`}</span>
+              {' '}
+              {ACTION_LABELS[h.action] ?? h.action}
+              {h.reason ? <span className="italic text-gray-500">: «{h.reason}»</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── PeriodCard ────────────────────────────────────────────────────────────────
+
+interface PeriodCardProps {
+  period: TimesheetPeriod
+  onAction: (period: TimesheetPeriod) => void
+  onFilterDept?: (deptId: number | null) => void
+  showFilterBtn?: boolean
+}
+
+function PeriodCard({ period, onAction, onFilterDept, showFilterBtn }: PeriodCardProps) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-gray-900 text-sm truncate">
+              {period.department_name ?? 'Без отдела'}
+            </span>
+            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE[period.status]}`}>
+              {STATUS_LABELS[period.status]}
+            </span>
+          </div>
+          {period.submitted_by_name && (
+            <p className="mt-1 text-xs text-gray-500">
+              Отправлено {formatDateTime(period.submitted_at)} — {period.submitted_by_name}
+            </p>
+          )}
+          {period.closed_by_name && (
+            <p className="text-xs text-gray-500">
+              Закрыто {formatDateTime(period.closed_at)} — {period.closed_by_name}
+            </p>
+          )}
+          <PeriodHistory periodId={period.id} />
+        </div>
+
+        <div className="flex flex-col gap-1 shrink-0">
+          {showFilterBtn && onFilterDept && (
+            <button
+              onClick={() => onFilterDept(period.department_id)}
+              className="rounded px-2 py-1 text-xs text-blue-600 hover:bg-blue-50"
+            >
+              Только этот
+            </button>
+          )}
+          {period.can_submit && (
+            <button
+              onClick={() => onAction(period)}
+              className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+              data-action="submit"
+            >
+              Отправить на проверку
+            </button>
+          )}
+          {period.can_close && (
+            <button
+              onClick={() => onAction(period)}
+              className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700"
+              data-action="close"
+            >
+              {period.department_id === null ? 'Закрыть' : 'Утвердить'}
+            </button>
+          )}
+          {period.can_return && (
+            <button
+              onClick={() => onAction(period)}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+              data-action="return"
+            >
+              Вернуть на доработку
+            </button>
+          )}
+          {period.can_reopen && (
+            <button
+              onClick={() => onAction(period)}
+              className="rounded-lg border border-orange-300 px-3 py-1.5 text-xs text-orange-700 hover:bg-orange-50"
+              data-action="reopen"
+            >
+              Переоткрыть для правок
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── PeriodPanel ───────────────────────────────────────────────────────────────
+
+interface PeriodPanelProps {
+  periods: TimesheetPeriod[]
+  onPeriodsChange: (updated: TimesheetPeriod[]) => void
+  onFilterDept: (deptId: number | null) => void
+}
+
+function PeriodPanel({ periods, onPeriodsChange, onFilterDept }: PeriodPanelProps) {
+  const [modal, setModal] = useState<{
+    period: TimesheetPeriod
+    action: 'submit' | 'close' | 'return' | 'reopen'
+  } | null>(null)
+  const [collapsed, setCollapsed] = useState(periods.length > 3)
+
+  const handleAction = (period: TimesheetPeriod) => {
+    // Determine which action to take based on period flags
+    if (period.can_submit) setModal({ period, action: 'submit' })
+    else if (period.can_close) setModal({ period, action: 'close' })
+    else if (period.can_return) setModal({ period, action: 'return' })
+    else if (period.can_reopen) setModal({ period, action: 'reopen' })
+  }
+
+  // This is called when clicking specific action buttons
+  const handleCardAction = (period: TimesheetPeriod) => {
+    handleAction(period)
+  }
+
+  const handleConfirm = async (reason?: string) => {
+    if (!modal) return
+    const { period, action } = modal
+    let updated: TimesheetPeriod
+    try {
+      if (action === 'submit') {
+        updated = await timesheetApi.submitPeriod(period.id)
+        toast.success('Отправлено на проверку')
+      } else if (action === 'close') {
+        updated = await timesheetApi.closePeriod(period.id)
+        toast.success('Период закрыт')
+      } else if (action === 'return') {
+        updated = await timesheetApi.returnPeriod(period.id, reason!)
+        toast.success('Возвращено на доработку')
+      } else {
+        updated = await timesheetApi.reopenPeriod(period.id, reason!)
+        toast.success('Период переоткрыт')
+      }
+      onPeriodsChange(periods.map((p) => (p.id === updated.id ? updated : p)))
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Ошибка'
+      toast.error(msg)
+      throw err
+    }
+  }
+
+  // Determine the current action button label for cards
+  // PeriodCard handles its own button rendering with data-action attributes
+  // We need to intercept clicks by matching the button's data-action
+
+  if (periods.length === 0) return null
+
+  const visiblePeriods = collapsed ? periods.slice(0, 2) : periods
+  const showMultiple = periods.length > 1
+
+  return (
+    <>
+      <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+            Статусы периодов
+          </span>
+          {periods.length > 3 && (
+            <button
+              onClick={() => setCollapsed((v) => !v)}
+              className="text-xs text-blue-600 hover:underline"
+            >
+              {collapsed ? `Показать все (${periods.length})` : 'Свернуть'}
+            </button>
+          )}
+        </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {visiblePeriods.map((period) => (
+            <PeriodCard
+              key={period.id}
+              period={period}
+              onAction={handleCardAction}
+              onFilterDept={onFilterDept}
+              showFilterBtn={showMultiple}
+            />
+          ))}
+        </div>
+      </div>
+
+      {modal && (modal.action === 'return' || modal.action === 'reopen') && (
+        <ReasonModal
+          title={modal.action === 'return' ? 'Причина возврата на доработку' : 'Причина переоткрытия'}
+          onConfirm={(reason) => handleConfirm(reason)}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {modal && (modal.action === 'submit' || modal.action === 'close') && (
+        // No reason needed — confirm immediately
+        (() => {
+          handleConfirm()
+          setModal(null)
+          return null
+        })()
+      )}
+    </>
+  )
+}
+
+// ── SavingIndicator ───────────────────────────────────────────────────────────
+
+function SavingIndicator({ savingCount }: { savingCount: number }) {
   if (savingCount === 0) return null
   return (
     <div className="fixed bottom-4 right-4 flex items-center gap-2 rounded-lg bg-white px-3 py-2 shadow-lg border border-gray-200 text-sm text-gray-600">
@@ -74,14 +410,16 @@ function SavingIndicator({ savingCount }: SavingIndicatorProps) {
   )
 }
 
+// ── CellInput ─────────────────────────────────────────────────────────────────
+
 interface CellInputProps {
   value: number | undefined
   onSave: (v: number) => Promise<void>
-  disabled?: boolean
+  locked: boolean
   dayBgClass: string
 }
 
-function CellInput({ value, onSave, disabled, dayBgClass }: CellInputProps) {
+function CellInput({ value, onSave, locked, dayBgClass }: CellInputProps) {
   const [localVal, setLocalVal] = useState(value !== undefined ? String(value) : '')
   const prevRef = useRef(value !== undefined ? String(value) : '')
 
@@ -92,11 +430,9 @@ function CellInput({ value, onSave, disabled, dayBgClass }: CellInputProps) {
   }, [value])
 
   const handleBlur = async () => {
+    if (locked) return
     const num = localVal === '' ? 0 : parseFloat(localVal)
-    if (isNaN(num)) {
-      setLocalVal(prevRef.current)
-      return
-    }
+    if (isNaN(num)) { setLocalVal(prevRef.current); return }
     if (String(num) === prevRef.current || (num === 0 && prevRef.current === '')) return
     await onSave(num)
   }
@@ -107,11 +443,21 @@ function CellInput({ value, onSave, disabled, dayBgClass }: CellInputProps) {
       e.currentTarget.blur()
     } else if (e.key === 'Enter') {
       e.currentTarget.blur()
-      // Move to next row same column
-      const allInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[data-tabelcell]'))
-      const idx = allInputs.indexOf(e.currentTarget)
-      if (idx >= 0 && idx + 1 < allInputs.length) allInputs[idx + 1].focus()
+      const all = Array.from(document.querySelectorAll<HTMLInputElement>('input[data-tabelcell]'))
+      const idx = all.indexOf(e.currentTarget)
+      if (idx >= 0 && idx + 1 < all.length) all[idx + 1].focus()
     }
+  }
+
+  if (locked) {
+    return (
+      <div
+        className={`w-full h-full min-h-[2rem] px-1 flex items-center justify-center text-center text-sm cursor-not-allowed select-none bg-gray-50 text-gray-400 ${dayBgClass}`}
+        title="Период закрыт для редактирования"
+      >
+        {value !== undefined && value > 0 ? value : ''}
+      </div>
+    )
   }
 
   return (
@@ -121,15 +467,59 @@ function CellInput({ value, onSave, disabled, dayBgClass }: CellInputProps) {
       min={0}
       max={24}
       step={0.5}
-      disabled={disabled}
       value={localVal}
       onChange={(e) => setLocalVal(e.target.value)}
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
-      className={`w-full h-full min-h-[2rem] px-1 text-center text-sm outline-none focus:ring-1 focus:ring-blue-400 focus:rounded ${dayBgClass} disabled:cursor-not-allowed`}
+      className={`w-full h-full min-h-[2rem] px-1 text-center text-sm outline-none focus:ring-1 focus:ring-blue-400 focus:rounded ${dayBgClass}`}
     />
   )
 }
+
+// ── TimesheetHeader ───────────────────────────────────────────────────────────
+
+interface TimesheetHeaderProps {
+  year: number
+  month: number
+  onPrev: () => void
+  onNext: () => void
+  canFilterDept: boolean
+  departments: Department[]
+  departmentId: number | undefined
+  onDeptChange: (id: number | undefined) => void
+}
+
+function TimesheetHeader({
+  year, month, onPrev, onNext,
+  canFilterDept, departments, departmentId, onDeptChange,
+}: TimesheetHeaderProps) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-5 py-3 shadow-sm">
+      <h1 className="text-lg font-bold text-gray-900">Табель</h1>
+      <div className="flex items-center gap-2">
+        <button onClick={onPrev} className="rounded-md p-1 text-gray-500 hover:bg-gray-100">←</button>
+        <span className="min-w-[120px] text-center text-sm font-medium text-gray-700">
+          {MONTH_NAMES[month - 1]} {year}
+        </span>
+        <button onClick={onNext} className="rounded-md p-1 text-gray-500 hover:bg-gray-100">→</button>
+      </div>
+      {canFilterDept && departments.length > 0 && (
+        <select
+          value={departmentId ?? ''}
+          onChange={(e) => onDeptChange(e.target.value === '' ? undefined : Number(e.target.value))}
+          className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+        >
+          <option value="">Все отделы</option>
+          {departments.map((d) => (
+            <option key={d.id} value={d.id}>{d.name}</option>
+          ))}
+        </select>
+      )}
+    </div>
+  )
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
 
 export function TimesheetPage() {
   const user = useAuthStore((s) => s.user)
@@ -141,6 +531,7 @@ export function TimesheetPage() {
   const [data, setData] = useState<TimesheetMonthResponse | null>(null)
   const [calendar, setCalendar] = useState<MonthSummary | null>(null)
   const [entryMap, setEntryMap] = useState<EntryMap>(new Map())
+  const [periods, setPeriods] = useState<TimesheetPeriod[]>([])
   const [savingCount, setSavingCount] = useState(0)
   const [loading, setLoading] = useState(true)
 
@@ -161,6 +552,7 @@ export function TimesheetPage() {
       setData(monthData)
       setCalendar(calData)
       setEntryMap(buildEntryMap(monthData.entries))
+      setPeriods(monthData.periods)
     } catch {
       toast.error('Не удалось загрузить табель')
     } finally {
@@ -170,13 +562,30 @@ export function TimesheetPage() {
 
   useEffect(() => { loadData() }, [loadData])
 
+  // Build map: department_id (as string key) → period
+  const periodByDeptId = new Map<string, TimesheetPeriod>()
+  for (const p of periods) {
+    periodByDeptId.set(p.department_id === null ? 'null' : String(p.department_id), p)
+  }
+
+  const isRowLocked = (deptId: number | null): boolean => {
+    const key = deptId === null ? 'null' : String(deptId)
+    const period = periodByDeptId.get(key)
+    if (!period) return false
+    return period.status !== 'draft'
+  }
+
   const handleSaveCell = useCallback(async (
-    employeeId: number, workDate: string, companyId: number, hours: number
+    employeeId: number, workDate: string, companyId: number, hours: number, deptId: number | null
   ) => {
-    const key = makeCellKey({ employeeId, workDate, companyId })
+    if (isRowLocked(deptId)) {
+      toast.error('Период закрыт, обновите страницу')
+      return
+    }
+
+    const key = makeCellKey(employeeId, workDate, companyId)
     const prevVal = entryMap.get(key)
 
-    // Optimistic update
     setEntryMap((prev) => {
       const next = new Map(prev)
       if (hours === 0) next.delete(key)
@@ -188,18 +597,20 @@ export function TimesheetPage() {
     try {
       await timesheetApi.saveCell({ employee_id: employeeId, work_date: workDate, company_id: companyId, hours })
     } catch (err) {
-      // Rollback
       setEntryMap((prev) => {
         const next = new Map(prev)
         if (prevVal !== undefined) next.set(key, prevVal)
         else next.delete(key)
         return next
       })
-      const msg = err instanceof ApiError ? err.message : 'Ошибка сохранения'
+      const msg = err instanceof ApiError
+        ? (err.status === 409 ? 'Период закрыт, обновите страницу' : err.message)
+        : 'Ошибка сохранения'
       toast.error(msg)
     } finally {
       setSavingCount((n) => n - 1)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entryMap])
 
   const prevMonth = () => {
@@ -212,13 +623,8 @@ export function TimesheetPage() {
   }
 
   if (loading) {
-    return (
-      <div className="flex h-64 items-center justify-center text-gray-400">
-        Загрузка...
-      </div>
-    )
+    return <div className="flex h-64 items-center justify-center text-gray-400">Загрузка...</div>
   }
-
   if (!data) return null
 
   const { employees, companies } = data
@@ -234,11 +640,9 @@ export function TimesheetPage() {
   if (employees.length === 0) {
     return (
       <div className="space-y-4">
-        <TimesheetHeader
-          year={year} month={month} onPrev={prevMonth} onNext={nextMonth}
+        <TimesheetHeader year={year} month={month} onPrev={prevMonth} onNext={nextMonth}
           canFilterDept={canFilterDept} departments={departments}
-          departmentId={departmentId} onDeptChange={setDepartmentId}
-        />
+          departmentId={departmentId} onDeptChange={setDepartmentId} />
         <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-500">
           Нет сотрудников в отделе
         </div>
@@ -246,15 +650,12 @@ export function TimesheetPage() {
     )
   }
 
-  // Build days array
   const daysInMonth = new Date(year, month, 0).getDate()
   const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
 
-  // Day type helpers
-  const getDayType = (day: number): 'holiday' | 'short' | 'work' => {
+  const getDayType = (day: number) => {
     if (!calendar) return 'work'
-    const info = calendar.days.find((d) => d.day === day)
-    return info?.type ?? 'work'
+    return calendar.days.find((d) => d.day === day)?.type ?? 'work'
   }
 
   const dayHeaderClass = (day: number) => {
@@ -271,7 +672,6 @@ export function TimesheetPage() {
     return ''
   }
 
-  // Employee totals
   const employeeTotal = (empId: number) => {
     let sum = 0
     for (const [key, hours] of entryMap.entries()) {
@@ -280,19 +680,22 @@ export function TimesheetPage() {
     return sum
   }
 
-  const weekdayOf = (day: number) => {
-    return WEEKDAY_SHORT[new Date(year, month - 1, day).getDay()]
-  }
+  const weekdayOf = (day: number) => WEEKDAY_SHORT[new Date(year, month - 1, day).getDay()]
 
   return (
     <div className="space-y-4">
-      <TimesheetHeader
-        year={year} month={month} onPrev={prevMonth} onNext={nextMonth}
+      <TimesheetHeader year={year} month={month} onPrev={prevMonth} onNext={nextMonth}
         canFilterDept={canFilterDept} departments={departments}
-        departmentId={departmentId} onDeptChange={setDepartmentId}
-      />
+        departmentId={departmentId} onDeptChange={setDepartmentId} />
 
-      {/* Scrollable grid */}
+      {periods.length > 0 && (
+        <PeriodPanel
+          periods={periods}
+          onPeriodsChange={setPeriods}
+          onFilterDept={(id) => setDepartmentId(id === null ? undefined : id)}
+        />
+      )}
+
       <div className="overflow-auto rounded-xl border border-gray-200 bg-white shadow-sm">
         <table className="min-w-full border-collapse text-xs">
           <thead>
@@ -304,10 +707,7 @@ export function TimesheetPage() {
                 Компания
               </th>
               {days.map((d) => (
-                <th
-                  key={d}
-                  className={`border-b border-r border-gray-200 px-1 py-1 text-center font-medium whitespace-nowrap min-w-[42px] ${dayHeaderClass(d)}`}
-                >
+                <th key={d} className={`border-b border-r border-gray-200 px-1 py-1 text-center font-medium whitespace-nowrap min-w-[42px] ${dayHeaderClass(d)}`}>
                   <div>{d}</div>
                   <div className="text-[10px] font-normal opacity-70">{weekdayOf(d)}</div>
                 </th>
@@ -321,41 +721,48 @@ export function TimesheetPage() {
             {employees.map((emp, empIdx) => {
               const total = employeeTotal(emp.id)
               const isLastEmp = empIdx === employees.length - 1
+              const locked = isRowLocked(emp.department_id)
+
               return companies.map((company, cIdx) => {
                 const isFirstRow = cIdx === 0
                 const isLastRow = cIdx === companies.length - 1
-                const rowBorderBottom = isLastRow && !isLastEmp ? 'border-b-2 border-gray-300' : 'border-b border-gray-100'
+                const rowBorder = isLastRow && !isLastEmp
+                  ? 'border-b-2 border-gray-300'
+                  : 'border-b border-gray-100'
                 const cc = companyColor(company.id, companies)
 
                 return (
-                  <tr key={`${emp.id}_${company.id}`} className={rowBorderBottom}>
-                    {/* Employee name — only first row of employee block */}
+                  <tr key={`${emp.id}_${company.id}`} className={rowBorder}>
                     <td className={`sticky left-0 z-10 bg-white border-r border-gray-200 px-3 py-1 whitespace-nowrap font-medium text-gray-800 ${isFirstRow ? '' : 'text-transparent select-none'}`}>
-                      {isFirstRow ? emp.full_name : ''}
+                      {isFirstRow ? (
+                        <div className="flex items-center gap-1">
+                          <span>{emp.full_name}</span>
+                          {locked && (
+                            <span className={`text-[10px] rounded px-1 ${STATUS_BADGE[periodByDeptId.get(emp.department_id === null ? 'null' : String(emp.department_id))?.status ?? 'draft']}`}>
+                              🔒
+                            </span>
+                          )}
+                        </div>
+                      ) : ''}
                     </td>
-
-                    {/* Company name */}
                     <td className={`sticky left-[140px] z-10 border-r border-gray-200 px-2 py-1 whitespace-nowrap ${cc.bg} ${cc.text}`}>
                       {company.code}
                     </td>
-
-                    {/* Day cells */}
                     {days.map((d) => {
                       const workDate = toWorkDate(year, month, d)
-                      const key = makeCellKey({ employeeId: emp.id, workDate, companyId: company.id })
+                      const key = makeCellKey(emp.id, workDate, company.id)
                       const val = entryMap.get(key)
                       return (
                         <td key={d} className={`border-r border-gray-100 p-0 ${dayCellBg(d)} ${cc.cell}`}>
                           <CellInput
                             value={val}
+                            locked={locked}
                             dayBgClass={dayCellBg(d)}
-                            onSave={(hours) => handleSaveCell(emp.id, workDate, company.id, hours)}
+                            onSave={(hours) => handleSaveCell(emp.id, workDate, company.id, hours, emp.department_id)}
                           />
                         </td>
                       )
                     })}
-
-                    {/* Total — only first row */}
                     <td className={`sticky right-0 z-10 bg-white border-l border-gray-200 px-2 py-1 text-center font-semibold ${isFirstRow && total > 0 ? 'text-gray-800' : 'text-transparent select-none'}`}>
                       {isFirstRow && total > 0 ? total : ''}
                     </td>
@@ -368,61 +775,6 @@ export function TimesheetPage() {
       </div>
 
       <SavingIndicator savingCount={savingCount} />
-    </div>
-  )
-}
-
-interface TimesheetHeaderProps {
-  year: number
-  month: number
-  onPrev: () => void
-  onNext: () => void
-  canFilterDept: boolean
-  departments: Department[]
-  departmentId: number | undefined
-  onDeptChange: (id: number | undefined) => void
-}
-
-function TimesheetHeader({
-  year, month, onPrev, onNext,
-  canFilterDept, departments, departmentId, onDeptChange,
-}: TimesheetHeaderProps) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-5 py-3 shadow-sm">
-      <h1 className="text-lg font-bold text-gray-900">Табель</h1>
-
-      <div className="flex items-center gap-2">
-        <button
-          onClick={onPrev}
-          className="rounded-md p-1 text-gray-500 hover:bg-gray-100 transition-colors"
-          aria-label="Предыдущий месяц"
-        >
-          ←
-        </button>
-        <span className="min-w-[120px] text-center text-sm font-medium text-gray-700">
-          {MONTH_NAMES[month - 1]} {year}
-        </span>
-        <button
-          onClick={onNext}
-          className="rounded-md p-1 text-gray-500 hover:bg-gray-100 transition-colors"
-          aria-label="Следующий месяц"
-        >
-          →
-        </button>
-      </div>
-
-      {canFilterDept && departments.length > 0 && (
-        <select
-          value={departmentId ?? ''}
-          onChange={(e) => onDeptChange(e.target.value === '' ? undefined : Number(e.target.value))}
-          className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
-        >
-          <option value="">Все отделы</option>
-          {departments.map((d) => (
-            <option key={d.id} value={d.id}>{d.name}</option>
-          ))}
-        </select>
-      )}
     </div>
   )
 }

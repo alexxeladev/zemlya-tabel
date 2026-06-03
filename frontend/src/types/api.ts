@@ -13,6 +13,7 @@ export interface TimesheetMonthResponse {
   employees: Employee[]
   companies: Company[]
   entries: TimesheetEntry[]
+  periods: TimesheetPeriod[]
 }
 
 export interface TimesheetCellInput {
@@ -20,6 +21,41 @@ export interface TimesheetCellInput {
   work_date: string  // YYYY-MM-DD
   company_id: number
   hours: number
+}
+
+export type PeriodStatus = 'draft' | 'pending_review' | 'closed'
+
+export interface TimesheetPeriod {
+  id: number
+  department_id: number | null
+  department_name: string | null
+  year: number
+  month: number
+  status: PeriodStatus
+  submitted_at: string | null
+  submitted_by_name: string | null
+  reviewed_at: string | null
+  reviewed_by_name: string | null
+  closed_at: string | null
+  closed_by_name: string | null
+  can_edit: boolean
+  can_submit: boolean
+  can_close: boolean
+  can_return: boolean
+  can_reopen: boolean
+}
+
+export interface AuditLogEntry {
+  id: number
+  actor_id: number
+  actor_name: string | null
+  entity_type: string
+  entity_id: number | null
+  action: string
+  before: unknown
+  after: unknown
+  reason: string | null
+  created_at: string
 }
 
 export interface MonthData {
