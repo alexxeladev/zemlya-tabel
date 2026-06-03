@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.models.companies import Company
     from app.models.departments import Department
     from app.models.schedules import Schedule
+    from app.models.timesheet_entries import TimesheetEntry
 
 
 class EmployeeRole(str, enum.Enum):
@@ -60,3 +61,6 @@ class Employee(Base):
     department: Mapped[Optional[Department]] = relationship("Department", back_populates="employees")
     schedule: Mapped[Optional[Schedule]] = relationship("Schedule", back_populates="employees")
     default_company: Mapped[Optional[Company]] = relationship("Company", back_populates="employees")
+    timesheet_entries: Mapped[list[TimesheetEntry]] = relationship(
+        "TimesheetEntry", back_populates="employee", cascade="all, delete-orphan"
+    )

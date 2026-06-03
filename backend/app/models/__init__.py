@@ -4,6 +4,7 @@ from app.models.departments import Department
 from app.models.employees import Employee, EmployeeRole
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
+from app.models.timesheet_entries import TimesheetEntry
 
 __all__ = [
     "AuditLog",
@@ -13,4 +14,5 @@ __all__ = [
     "EmployeeRole",
     "ProductionCalendar",
     "Schedule",
+    "TimesheetEntry",
 ]
