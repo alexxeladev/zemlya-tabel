@@ -652,27 +652,41 @@ interface CompanyDropdownProps {
 
 function CompanyDropdown({ companies, shownCompanyIds, onSelect }: CompanyDropdownProps) {
   const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+  const btnRef = useRef<HTMLButtonElement>(null)
   const available = companies.filter((c) => !shownCompanyIds.includes(c.id))
 
   if (available.length === 0) return null
 
+  const handleOpen = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect()
+      setPos({ top: r.bottom + 4, left: r.left })
+    }
+    setOpen((v) => !v)
+  }
+
   return (
     <div className="relative inline-block">
       <button
-        onClick={() => setOpen((v) => !v)}
+        ref={btnRef}
+        onClick={handleOpen}
         className="rounded text-[10px] px-1.5 py-0.5 border border-blue-200 text-blue-600 hover:bg-blue-50 whitespace-nowrap"
       >
         + компания
       </button>
       {open && (
         <>
-          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full z-40 mt-1 min-w-[120px] rounded-lg border border-gray-200 bg-white shadow-lg py-1">
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div
+            className="fixed z-50 min-w-[160px] max-h-44 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg py-1"
+            style={{ top: pos.top, left: pos.left }}
+          >
             {available.map((c) => (
               <button
                 key={c.id}
                 onClick={() => { onSelect(c.id); setOpen(false) }}
-                className="w-full px-3 py-1.5 text-left text-sm hover:bg-gray-50 text-gray-700"
+                className="w-full px-3 py-1.5 text-left text-sm hover:bg-gray-50 text-gray-700 whitespace-nowrap"
               >
                 {c.code} — {c.name}
               </button>
@@ -935,6 +949,21 @@ export function TimesheetPage() {
   const payrollByEmployee = (empId: number): EmployeePayroll | null =>
     payroll?.employees.find((e) => e.employee_id === empId) ?? null
 
+  const totalHoursAll = (): number => {
+    let s = 0
+    for (const v of entryMap.values()) s += v
+    return s
+  }
+
+  const totalNormAll = (): number | null => {
+    if (!payroll) return null
+    let s = 0
+    for (const ep of payroll.employees) {
+      if (ep.norm_hours !== null) s += parseFloat(ep.norm_hours)
+    }
+    return s
+  }
+
   const weekdayOf = (day: number) => WEEKDAY_SHORT[new Date(year, month - 1, day).getDay()]
 
   // Build rows per employee: default company + expanded extras
@@ -973,10 +1002,10 @@ export function TimesheetPage() {
         <table className="min-w-full border-collapse text-xs">
           <thead>
             <tr className="sticky top-0 z-10 bg-white shadow-sm">
-              <th className="sticky left-0 z-20 bg-white px-3 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[160px]">
+              <th className="sticky left-0 z-20 bg-white px-3 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[280px]">
                 Сотрудник
               </th>
-              <th className="sticky left-[160px] z-20 bg-white px-2 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[80px]">
+              <th className="sticky left-[280px] z-20 bg-white px-2 py-2 text-left font-medium text-gray-500 whitespace-nowrap border-b border-r border-gray-200 min-w-[80px]">
                 Компания
               </th>
               {days.map((d) => (
@@ -1081,7 +1110,7 @@ export function TimesheetPage() {
                         )}
                       </div>
                     </td>
-                    <td className="sticky left-[160px] z-10 border-r border-gray-200 px-2 py-1 text-gray-400 italic text-xs">
+                    <td className="sticky left-[280px] z-10 border-r border-gray-200 px-2 py-1 text-gray-400 italic text-xs">
                       не выбрана
                     </td>
                     {days.map((d) => (
@@ -1125,7 +1154,7 @@ export function TimesheetPage() {
                         </div>
                       ) : ''}
                     </td>
-                    <td className={`sticky left-[160px] z-10 border-r border-gray-200 px-2 py-1 whitespace-nowrap ${cc.bg} ${cc.text}`}>
+                    <td className={`sticky left-[280px] z-10 border-r border-gray-200 px-2 py-1 whitespace-nowrap ${cc.bg} ${cc.text}`}>
                       <div className="flex items-center gap-1">
                         {canRemove && (
                           <button
@@ -1162,33 +1191,49 @@ export function TimesheetPage() {
                 )
               })
             })}
-            {/* Footer row */}
-            {payroll && canSeeFinance && (
+            {/* Footer row — always shown when employees exist */}
+            {employees.length > 0 && (
               <tr className="sticky bottom-0 z-10 bg-gray-50 border-t-2 border-gray-300 font-semibold text-xs">
                 <td className="sticky left-0 z-20 bg-gray-50 border-r border-gray-200 px-3 py-2 whitespace-nowrap text-gray-700">
-                  ИТОГО: {payroll.total_employees} сотр.
+                  ИТОГО: {employees.length} сотр.
                 </td>
-                <td className="sticky left-[160px] z-20 bg-gray-50 border-r border-gray-200 px-2 py-2" />
+                <td className="sticky left-[280px] z-20 bg-gray-50 border-r border-gray-200 px-2 py-2" />
                 {days.map((d) => (
                   <td key={d} className="border-r border-gray-100 p-0" />
                 ))}
-                <td className="sticky right-0 z-20 bg-gray-50 border-l border-gray-200 px-2 py-2 text-center text-gray-700">
-                  {formatHours(payroll.total_hours)}
+                {/* Total hours from entryMap — always accurate */}
+                <td className="sticky right-0 z-20 bg-gray-50 border-l border-gray-200 px-2 py-2 text-center text-gray-800">
+                  {totalHoursAll() || '—'}
                 </td>
-                <td className="sticky right-[52px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-500">—</td>
-                <td className="sticky right-[100px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-500">—</td>
-                <td className="sticky right-[144px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
-                  {formatMoney(payroll.total_base_amount)}
-                </td>
-                <td className="sticky right-[216px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
-                  {formatMoney(payroll.total_overtime_amount)}
-                </td>
-                <td className="sticky right-[284px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
-                  {formatMoney(payroll.total_holiday_amount)}
-                </td>
-                <td className="sticky right-[344px] z-20 bg-blue-100 border-l border-blue-300 px-1 py-2 text-center text-blue-800 font-bold whitespace-nowrap">
-                  {formatMoney(payroll.grand_total)}
-                </td>
+                {canSeeFinance && payroll ? (
+                  <>
+                    <td className="sticky right-[52px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-600 whitespace-nowrap">
+                      {totalNormAll() ?? '—'}
+                    </td>
+                    <td className="sticky right-[100px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-500">—</td>
+                    <td className="sticky right-[144px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
+                      {formatMoney(payroll.total_base_amount)}
+                    </td>
+                    <td className="sticky right-[216px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
+                      {formatMoney(payroll.total_overtime_amount)}
+                    </td>
+                    <td className="sticky right-[284px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2 text-center text-gray-700 whitespace-nowrap">
+                      {formatMoney(payroll.total_holiday_amount)}
+                    </td>
+                    <td className="sticky right-[344px] z-20 bg-blue-100 border-l border-blue-300 px-1 py-2 text-center text-blue-800 font-bold whitespace-nowrap">
+                      {formatMoney(payroll.grand_total)}
+                    </td>
+                  </>
+                ) : canSeeFinance ? (
+                  <>
+                    <td className="sticky right-[52px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
+                    <td className="sticky right-[100px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
+                    <td className="sticky right-[144px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
+                    <td className="sticky right-[216px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
+                    <td className="sticky right-[284px] z-20 bg-gray-50 border-l border-gray-200 px-1 py-2" />
+                    <td className="sticky right-[344px] z-20 bg-blue-50 border-l border-gray-200 px-1 py-2" />
+                  </>
+                ) : null}
               </tr>
             )}
           </tbody>
