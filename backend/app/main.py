@@ -14,6 +14,7 @@ from app.routers.companies import router as companies_router
 from app.routers.departments import router as departments_router
 from app.routers.employees import router as employees_router
 from app.routers.schedules import router as schedules_router
+from app.routers.timesheet import router as timesheet_router
 from app.services.calendar import CalendarFetchError, ensure_calendar
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ app.include_router(companies_router, prefix="/api/companies", tags=["companies"]
 app.include_router(schedules_router, prefix="/api/schedules", tags=["schedules"])
 app.include_router(employees_router, prefix="/api/employees", tags=["employees"])
 app.include_router(calendar_router, prefix="/api/calendar", tags=["calendar"])
+app.include_router(timesheet_router, prefix="/api/timesheet", tags=["timesheet"])
 
 
 @app.get("/health")
