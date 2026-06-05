@@ -178,6 +178,7 @@ export function TimesheetPage() {
   const user = useAuthStore((s: any) => s.user);
   const role: string | null = user?.role ?? null;
   const canSeeMoney = role === 'admin' || role === 'accountant';
+  const canExport = role === 'admin' || role === 'accountant' || role === 'manager';
 
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -186,6 +187,7 @@ export function TimesheetPage() {
   const [data, setData] = useState<MonthResponse | null>(null);
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [departmentFilter, setDepartmentFilter] = useState<number | null>(null);
 
   // ── Загрузка данных ──
@@ -335,6 +337,25 @@ export function TimesheetPage() {
     [data, entriesByEmpDay, saveSlot]
   );
 
+  // ── Excel export ──
+  const handleExportExcel = async () => {
+    setExporting(true);
+    try {
+      const blob = await timesheetApi.exportExcel(year, month, departmentFilter ?? undefined);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `timesheet_T13_${year}_${String(month).padStart(2, '0')}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Файл сохранён');
+    } catch (err: any) {
+      toast.error('Ошибка экспорта: ' + (err?.message ?? err));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // ── Period actions ──
   const submitPeriod = async (periodId: number) => {
     try {
@@ -466,6 +487,19 @@ export function TimesheetPage() {
               }
             >
               Заполнить по графику
+            </button>
+          )}
+
+          {canExport && (
+            <button
+              onClick={handleExportExcel}
+              disabled={exporting}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-green-600 text-green-700 hover:bg-green-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              {exporting ? 'Экспорт…' : 'Excel'}
             </button>
           )}
         </div>

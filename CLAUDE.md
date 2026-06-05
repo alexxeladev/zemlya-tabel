@@ -196,6 +196,18 @@ alembic current  # должен совпадать с head
 - Сервис: `app/services/payroll.py` — чистая функция `calculate_employee_payroll`, не лезет в БД.
 - Фронт: Decimal с бэка приходят как строки; `formatMoney()` / `formatHours()` в `frontend/src/utils/money.ts`.
 
+## Экспорт
+
+- **Excel (форма Т-13)** через openpyxl: `app/services/timesheet_export.py` → `generate_t13_excel(db, actor, year, month, department_id?) → bytes`
+- Эндпоинт: `GET /api/timesheet/{year}/{month}/export/excel?department_id=N`
+- Права: admin, accountant, manager (только свой отдел)
+- Одна строка в таблице = один сотрудник × одна компания (у кого N компаний — N строк; ФИО/должность/таб.№ — merged cells по N строкам)
+- Сотрудники без entries в периоде — пропускаются
+- Праздники: красный фон (`FFFFCCCC`), сокращённые: жёлтый (`FFFFF2CC`)
+- Название организации захардкожено: «ДЕВЕЛОПМЕНТ ГРУППА «ЗЕМЛЯ МО»» — потом вынесем в настройки
+- **XML-экспорт не реализован** — ждёт требований 1С
+- Финансовые данные в Excel НЕ выгружаются — только часы
+
 ## Правила работы
 
 - Если задача говорит «не реализовывать X» — не реализовывать X. Если кажется что X всё же нужен — спросить пользователя, не делать тихо.

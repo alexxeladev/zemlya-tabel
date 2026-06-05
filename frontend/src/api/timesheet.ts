@@ -69,4 +69,14 @@ export const timesheetApi = {
     })
     return data
   },
+
+  async exportExcel(year: number, month: number, departmentId?: number): Promise<Blob> {
+    const params: Record<string, unknown> = {}
+    if (departmentId !== undefined) params.department_id = departmentId
+    const { data } = await apiClient.get<Blob>(`/api/timesheet/${year}/${month}/export/excel`, {
+      params,
+      responseType: 'blob',
+    })
+    return data
+  },
 }
