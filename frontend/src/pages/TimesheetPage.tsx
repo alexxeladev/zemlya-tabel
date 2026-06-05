@@ -781,75 +781,49 @@ export function TimesheetPage() {
               </tr>
             )}
 
-            {/* ===== ИТОГО по компаниям ===== */}
-            {visibleEmployees.length > 0 && data.companies.length > 0 && (
-              <>
-                <tr>
-                  <td
-                    className="sticky left-0 bg-gray-50 border border-gray-200 px-3 py-2 text-xs uppercase tracking-wide text-gray-500 font-semibold"
-                    colSpan={3 + numDays + 1 + (canSeeMoney ? 6 : 0)}
-                    style={{ minWidth: 200, zIndex: 10 }}
-                  >
-                    По компаниям
-                  </td>
-                </tr>
-                {data.companies.map((c) => {
-                  const col = getCompanyColor(c.id, data.companies);
-                  const hours = companyTotals.get(c.id) ?? 0;
-                  // Money по компании — суммируем из payroll.breakdown_by_company
-                  let money = 0;
-                  if (canSeeMoney && data.payroll) {
-                    for (const pe of data.payroll.employees) {
-                      const b = pe.breakdown_by_company?.find((x) => x.company_id === c.id);
-                      if (b) money += num(b.total);
-                    }
-                  }
-                  return (
-                    <tr key={c.id}>
-                      <td
-                        className="sticky left-0 bg-white border border-gray-200 px-3 py-2 text-xs"
-                        style={{
-                          color: col.color,
-                          minWidth: 200,
-                          zIndex: 10,
-                        }}
-                      >
-                        <span
-                          className="inline-block w-2 h-2 rounded-full mr-2"
-                          style={{ background: col.color }}
-                        />
-                        {c.code} — {c.name}
-                      </td>
-                      <td
-                        className="border border-gray-200 px-2 py-2"
-                        colSpan={2 + numDays}
-                      ></td>
-                      <td
-                        className="border border-gray-200 px-3 py-2 text-center font-mono font-semibold"
-                        style={{ color: col.color }}
-                      >
-                        {fmtHours(hours)}
-                      </td>
-                      {canSeeMoney && (
-                        <>
-                          <td className="border border-gray-200 px-2 py-2" colSpan={5}></td>
-                          <td
-                            className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold"
-                            style={{ color: col.color }}
-                          >
-                            {fmtMoney(money > 0 ? String(money) : null)}
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  );
-                })}
-              </>
-            )}
           </tbody>
         </table>
       </div>
       </div>
+
+      {/* ───── Сводка по компаниям (вне скролла, не ездит горизонтально) ───── */}
+      {visibleEmployees.length > 0 && data.companies.length > 0 && (
+        <div className="flex-shrink-0 border-t-2 border-gray-300 bg-white">
+          <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200">
+            По компаниям
+          </div>
+          {data.companies.map((c) => {
+            const col = getCompanyColor(c.id, data.companies);
+            const hours = companyTotals.get(c.id) ?? 0;
+            let money = 0;
+            if (canSeeMoney && data.payroll) {
+              for (const pe of data.payroll.employees) {
+                const b = pe.breakdown_by_company?.find((x) => x.company_id === c.id);
+                if (b) money += num(b.total);
+              }
+            }
+            return (
+              <div
+                key={c.id}
+                className="flex items-center gap-4 px-3 py-1.5 text-xs border-b border-gray-100"
+              >
+                <span className="flex items-center gap-1.5 w-52 font-mono" style={{ color: col.color }}>
+                  <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ background: col.color }} />
+                  {c.code} — {c.name}
+                </span>
+                <span className="w-16 text-center font-mono font-semibold" style={{ color: col.color }}>
+                  {fmtHours(hours)} ч
+                </span>
+                {canSeeMoney && (
+                  <span className="text-right font-mono font-semibold" style={{ color: col.color }}>
+                    {fmtMoney(money > 0 ? String(money) : null)}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
