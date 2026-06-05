@@ -501,7 +501,8 @@ export function TimesheetPage() {
       </div>
 
       {/* ───── Скролл-контейнер с таблицей ───── */}
-      <div className="flex-1 overflow-auto bg-white min-h-0 min-w-0">
+      <div className="flex-1 relative min-h-0 min-w-0">
+      <div className="absolute inset-0 overflow-auto bg-white">
         <table
           className="border-collapse text-xs"
           style={{ minWidth: 'max-content' }}
@@ -847,6 +848,7 @@ export function TimesheetPage() {
             )}
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   );
