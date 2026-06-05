@@ -69,9 +69,9 @@ export function AppLayout() {
   ]
 
   return (
-    <div className="flex min-h-screen bg-gray-50">
+    <div className="flex h-screen overflow-hidden bg-gray-50">
       {/* Sidebar */}
-      <aside className="fixed inset-y-0 left-0 flex w-60 flex-col border-r border-gray-200 bg-white">
+      <aside className="fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-gray-200 bg-white">
         <div className="flex h-14 items-center border-b border-gray-200 px-4">
           <span className="text-lg font-bold text-blue-700">Табель</span>
         </div>
@@ -114,8 +114,8 @@ export function AppLayout() {
       </aside>
 
       {/* Main content */}
-      <div className="ml-60 flex flex-1 flex-col">
-        <main className="flex-1 p-6">
+      <div className="ml-60 flex flex-1 flex-col overflow-hidden">
+        <main className="flex-1 overflow-hidden p-6">
           <Outlet />
         </main>
       </div>
