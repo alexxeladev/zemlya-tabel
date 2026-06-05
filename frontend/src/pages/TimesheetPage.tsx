@@ -403,7 +403,7 @@ export function TimesheetPage() {
   });
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden min-w-0">
       {/* ───── Header: переключатель месяца, фильтры, действия ───── */}
       <div className="flex-shrink-0 px-6 py-4 border-b border-gray-200 bg-white flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2">
@@ -501,7 +501,7 @@ export function TimesheetPage() {
       </div>
 
       {/* ───── Скролл-контейнер с таблицей ───── */}
-      <div className="flex-1 overflow-auto bg-white min-h-0">
+      <div className="flex-1 overflow-auto bg-white min-h-0 min-w-0">
         <table
           className="border-collapse text-xs"
           style={{ minWidth: 'max-content' }}

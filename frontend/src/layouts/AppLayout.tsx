@@ -114,8 +114,8 @@ export function AppLayout() {
       </aside>
 
       {/* Main content */}
-      <div className="ml-60 flex flex-1 flex-col overflow-hidden">
-        <main className="flex-1 overflow-hidden p-6">
+      <div className="ml-60 flex flex-1 flex-col overflow-hidden min-w-0">
+        <main className="flex-1 overflow-hidden min-w-0 p-6">
           <Outlet />
         </main>
       </div>
