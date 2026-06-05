@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -425,3 +425,41 @@ def get_period_history(
             )
         )
     return result
+
+
+# ── Excel export ──────────────────────────────────────────────────────────────
+
+@router.get("/{year}/{month}/export/excel")
+def export_excel(
+    year: int,
+    month: int,
+    department_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Экспорт табеля в Excel формата Т-13."""
+    if actor.role not in ("admin", "accountant", "manager"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
+        )
+    if actor.role == "manager" and department_id is not None:
+        if actor.department_id != department_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
+
+    from app.services.timesheet_export import generate_t13_excel
+    excel_bytes = generate_t13_excel(db, actor, year, month, department_id)
+
+    log_action(
+        db, actor, "timesheet", None, "timesheet_exported_excel",
+        after={"year": year, "month": month, "department_id": department_id},
+    )
+    db.commit()
+
+    filename = f"timesheet_T13_{year}_{month:02d}.xlsx"
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
