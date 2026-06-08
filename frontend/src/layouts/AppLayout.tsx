@@ -91,9 +91,6 @@ export function AppLayout() {
           )}
           {role === 'accountant' && (
             <SidebarGroup title="Справочники" items={[
-              { to: '/admin/departments', label: 'Отделы' },
-              { to: '/admin/companies', label: 'Компании' },
-              { to: '/admin/schedules', label: 'Графики работы' },
               { to: '/admin/employees', label: 'Сотрудники' },
             ]} />
           )}

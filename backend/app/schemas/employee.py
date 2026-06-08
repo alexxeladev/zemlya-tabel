@@ -83,6 +83,7 @@ class EmployeeUpdate(BaseModel):
     is_active: Optional[bool] = None
     hire_date: Optional[datetime.date] = None
     dismissal_date: Optional[datetime.date] = None
+    is_system_admin: Optional[bool] = None
 
 
 class EmployeeAccessGrant(BaseModel):

@@ -367,6 +367,36 @@ export function TimesheetPage() {
     }
   };
 
+  const closePeriod = async (periodId: number) => {
+    try {
+      await timesheetApi.closePeriod(periodId);
+      toast.success('Период закрыт');
+      reload();
+    } catch (err: any) {
+      toast.error('Не удалось закрыть: ' + (err?.message ?? err));
+    }
+  };
+
+  const returnPeriod = async (periodId: number, reason: string) => {
+    try {
+      await timesheetApi.returnPeriod(periodId, reason);
+      toast.success('Период возвращён на доработку');
+      reload();
+    } catch (err: any) {
+      toast.error('Не удалось вернуть: ' + (err?.message ?? err));
+    }
+  };
+
+  const reopenPeriod = async (periodId: number, reason: string) => {
+    try {
+      await timesheetApi.reopenPeriod(periodId, reason);
+      toast.success('Период переоткрыт');
+      reload();
+    } catch (err: any) {
+      toast.error('Не удалось переоткрыть: ' + (err?.message ?? err));
+    }
+  };
+
   // ── Расчёт итогов по дням и компаниям ──
   const dayTotals = useMemo(() => {
     const numDays = daysInMonth(year, month);
@@ -475,6 +505,9 @@ export function TimesheetPage() {
                 key={p.id}
                 period={p}
                 onSubmit={() => submitPeriod(p.id)}
+                onClose={() => closePeriod(p.id)}
+                onReturn={(reason) => returnPeriod(p.id, reason)}
+                onReopen={(reason) => reopenPeriod(p.id, reason)}
               />
             );
           })}
@@ -897,10 +930,21 @@ function DeltaCell({ delta }: { delta: number }) {
 function PeriodBadge({
   period,
   onSubmit,
+  onClose,
+  onReturn,
+  onReopen,
 }: {
   period: Period;
   onSubmit: () => void;
+  onClose: () => void;
+  onReturn: (reason: string) => void;
+  onReopen: (reason: string) => void;
 }) {
+  const [returnReason, setReturnReason] = useState('');
+  const [reopenReason, setReopenReason] = useState('');
+  const [showReturn, setShowReturn] = useState(false);
+  const [showReopen, setShowReopen] = useState(false);
+
   const status = period.status;
   const label =
     status === 'draft'
@@ -914,11 +958,13 @@ function PeriodBadge({
       : status === 'pending_review'
       ? 'bg-yellow-100 text-yellow-800'
       : 'bg-green-100 text-green-800';
+
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 flex-wrap">
       <span className={`px-2 py-1 rounded text-xs font-medium ${cls}`}>
         {period.department_name ?? 'Без отдела'}: {label}
       </span>
+
       {period.can_submit && (
         <button
           onClick={onSubmit}
@@ -926,6 +972,81 @@ function PeriodBadge({
         >
           Отправить на проверку
         </button>
+      )}
+
+      {period.can_close && (
+        <button
+          onClick={onClose}
+          className="px-3 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700"
+        >
+          Закрыть
+        </button>
+      )}
+
+      {period.can_return && !showReturn && (
+        <button
+          onClick={() => setShowReturn(true)}
+          className="px-3 py-1.5 text-sm rounded border border-orange-400 text-orange-700 hover:bg-orange-50"
+        >
+          Вернуть
+        </button>
+      )}
+      {period.can_return && showReturn && (
+        <div className="flex items-center gap-1">
+          <input
+            autoFocus
+            value={returnReason}
+            onChange={(e) => setReturnReason(e.target.value)}
+            placeholder="Причина возврата…"
+            className="border border-gray-300 rounded px-2 py-1 text-xs w-44 focus:outline-none focus:ring-1 focus:ring-orange-400"
+          />
+          <button
+            onClick={() => { onReturn(returnReason); setShowReturn(false); setReturnReason(''); }}
+            disabled={returnReason.trim().length < 3}
+            className="px-2 py-1 text-xs rounded bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-40"
+          >
+            ОК
+          </button>
+          <button
+            onClick={() => { setShowReturn(false); setReturnReason(''); }}
+            className="px-2 py-1 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {period.can_reopen && !showReopen && (
+        <button
+          onClick={() => setShowReopen(true)}
+          className="px-3 py-1.5 text-sm rounded border border-red-400 text-red-700 hover:bg-red-50"
+        >
+          Переоткрыть
+        </button>
+      )}
+      {period.can_reopen && showReopen && (
+        <div className="flex items-center gap-1">
+          <input
+            autoFocus
+            value={reopenReason}
+            onChange={(e) => setReopenReason(e.target.value)}
+            placeholder="Причина переоткрытия…"
+            className="border border-gray-300 rounded px-2 py-1 text-xs w-44 focus:outline-none focus:ring-1 focus:ring-red-400"
+          />
+          <button
+            onClick={() => { onReopen(reopenReason); setShowReopen(false); setReopenReason(''); }}
+            disabled={reopenReason.trim().length < 3}
+            className="px-2 py-1 text-xs rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-40"
+          >
+            ОК
+          </button>
+          <button
+            onClick={() => { setShowReopen(false); setReopenReason(''); }}
+            className="px-2 py-1 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+          >
+            ✕
+          </button>
+        </div>
       )}
     </div>
   );

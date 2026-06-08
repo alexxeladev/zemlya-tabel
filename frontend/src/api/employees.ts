@@ -38,6 +38,7 @@ export const updateEmployee = (id: number, data: Partial<{
   is_active: boolean
   hire_date: string | null
   dismissal_date: string | null
+  is_system_admin: boolean
 }>) => apiClient.patch<Employee>(`/api/employees/${id}`, data).then((r) => r.data)
 
 export const deleteEmployee = (id: number) =>
