@@ -360,6 +360,77 @@ def test_export_holiday_cell_has_red_fill(
     assert red_fill_found, "Не найдена красная заливка для дня 12"
 
 
+def test_export_overtime_and_company_total_columns(
+    client: TestClient,
+    admin_emp: Employee,
+    dept: Department,
+    company_alpha: Company,
+    company_beta: Company,
+    db_session: Session,
+):
+    """Колонки переработки и итогов по компаниям считаются корректно."""
+    from app.models.schedules import Schedule
+    from app.services.timesheet_export import _company_col, _overtime_col, _total_col
+
+    sch = Schedule(name="5/2", hours_per_shift=8, is_active=True, schedule_type="standard")
+    db_session.add(sch)
+    db_session.commit()
+    db_session.refresh(sch)
+
+    emp = Employee(
+        full_name="Сверхурочный Работник",
+        tab_number="9999",
+        department_id=dept.id,
+        schedule_id=sch.id,
+        is_active=True,
+    )
+    db_session.add(emp)
+    db_session.commit()
+    db_session.refresh(emp)
+
+    # День 1 (Пн) — 10ч в Альфа (переработка 2ч); День 3 (Ср) — 8ч в Бета (без переработки)
+    db_session.add(TimesheetEntry(employee_id=emp.id, work_date=date(YEAR, MONTH, 1),
+                                  company_id=company_alpha.id, hours=10))
+    db_session.add(TimesheetEntry(employee_id=emp.id, work_date=date(YEAR, MONTH, 3),
+                                  company_id=company_beta.id, hours=8))
+    db_session.commit()
+
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.get(
+        f"/api/timesheet/{YEAR}/{MONTH}/export/excel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    wb = _get_workbook(resp)
+    ws = wb.active
+
+    # Заголовок переработки присутствует
+    header_text = " ".join(
+        str(cell.value) for row in ws.iter_rows() for cell in row if cell.value is not None
+    )
+    assert "перераб" in header_text
+    assert "ООО Альфа" in header_text
+    assert "ООО Бета" in header_text
+
+    # Находим первую строку данных сотрудника (по col=5 = "ООО Альфа")
+    start_row = None
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.column == 5 and cell.value == "ООО Альфа":
+                start_row = cell.row
+                break
+        if start_row:
+            break
+    assert start_row is not None
+
+    total_days = 30  # июнь
+    # alpha создана раньше beta → индекс 0 / 1
+    assert ws.cell(row=start_row, column=_overtime_col(total_days)).value == 2
+    assert ws.cell(row=start_row, column=_company_col(total_days, 0)).value == 10
+    assert ws.cell(row=start_row, column=_company_col(total_days, 1)).value == 8
+    # Общий итог за месяц = сумма по компаниям = 18
+    assert ws.cell(row=start_row, column=_total_col(total_days)).value == 10  # строка Альфа
+
+
 def test_export_forbidden_for_employee(
     client: TestClient,
     worker_emp: Employee,
