@@ -26,7 +26,12 @@ from app.schemas.timesheet import (
     TimesheetEntryRead,
     TimesheetMonthResponse,
 )
-from app.schemas.timesheet_period import AuditLogRead, StatusChangeReason, TimesheetPeriodRead
+from app.schemas.timesheet_period import (
+    AuditLogRead,
+    StatusChangeReason,
+    TasksResponse,
+    TimesheetPeriodRead,
+)
 from app.services.payroll import calculate_employee_payroll
 from app.services.timesheet import (
     apply_autofill,
@@ -41,6 +46,7 @@ from app.services.timesheet_periods import (
     PeriodLockedException,
     close_period,
     get_or_create_period,
+    list_review_tasks,
     make_period_read,
     reopen_period,
     return_to_draft,
@@ -171,6 +177,20 @@ def _build_payroll_summary(
     )
 
 
+# ── Tasks inbox (Bug 3) ───────────────────────────────────────────────────────
+
+@router.get("/tasks", response_model=TasksResponse)
+def get_review_tasks(
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Inbox для accountant/admin: периоды на проверке + недавно закрытые."""
+    if actor.role not in ("admin", "accountant"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    pending, closed = list_review_tasks(db)
+    return TasksResponse(pending_review=pending, recently_closed=closed)
+
+
 # ── GET month ─────────────────────────────────────────────────────────────────
 
 @router.get("/{year}/{month}/payroll", response_model=PayrollSummaryRead)
@@ -181,12 +201,15 @@ def get_payroll(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    if actor.role not in ("admin", "accountant"):
+    if actor.role not in ("admin", "accountant", "manager"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
     if not (1 <= month <= 12) or not (2000 <= year <= 2100):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
+    # Manager видит только свой отдел — запрос финансов чужого отдела запрещён
+    if actor.role == "manager" and department_id is not None and department_id != actor.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
     return _build_payroll_summary(db, employees, entries, year, month)
@@ -213,7 +236,7 @@ def get_month(
     extra_companies = compute_extra_companies_by_employee(employees, entries)
 
     payroll = None
-    if include_payroll and actor.role in ("admin", "accountant"):
+    if include_payroll and actor.role in ("admin", "accountant", "manager"):
         payroll = _build_payroll_summary(db, employees, entries, year, month)
 
     return TimesheetMonthResponse(

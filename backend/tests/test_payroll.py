@@ -403,7 +403,7 @@ def _add_entries(
             employee_id=employee_id,
             work_date=date(2026, 5, day),
             company_id=company_id,
-            hours=Decimal(h),
+            hours=int(h),
         ))
     db.commit()
 
@@ -429,9 +429,21 @@ class TestPayrollEndpointAccess:
                           headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200
 
-    def test_manager_forbidden(self, client: TestClient, manager_pay: Employee):
+    def test_manager_can_get_own_department(self, client: TestClient, manager_pay: Employee,
+                                             worker: Employee, calendar_2026: ProductionCalendar):
         token = get_token(client, "paymgr@example.com", "mgr123")
         resp = client.get("/api/timesheet/2026/5/payroll",
+                          headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        data = resp.json()
+        # видит только сотрудников своего отдела
+        emp_ids = {e["employee_id"] for e in data["employees"]}
+        assert worker.id in emp_ids
+
+    def test_manager_forbidden_foreign_department(self, client: TestClient, manager_pay: Employee,
+                                                  calendar_2026: ProductionCalendar):
+        token = get_token(client, "paymgr@example.com", "mgr123")
+        resp = client.get(f"/api/timesheet/2026/5/payroll?department_id={manager_pay.department_id + 999}",
                           headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 403
 
@@ -445,8 +457,26 @@ class TestPayrollEndpointAccess:
         assert data["payroll"] is not None
         assert data["payroll"]["year"] == 2026
 
-    def test_include_payroll_ignored_for_manager(self, client: TestClient, manager_pay: Employee):
+    def test_include_payroll_for_manager(self, client: TestClient, manager_pay: Employee,
+                                         calendar_2026: ProductionCalendar):
         token = get_token(client, "paymgr@example.com", "mgr123")
+        resp = client.get("/api/timesheet/2026/5?include_payroll=true",
+                          headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        assert resp.json()["payroll"] is not None
+
+    def test_include_payroll_ignored_for_employee(self, client: TestClient, db_session: Session):
+        emp = Employee(
+            full_name="Pay Employee",
+            email="payemp@example.com",
+            hashed_password=hash_password("emp123"),
+            role="employee",
+            is_active=True,
+            must_change_password=False,
+        )
+        db_session.add(emp)
+        db_session.commit()
+        token = get_token(client, "payemp@example.com", "emp123")
         resp = client.get("/api/timesheet/2026/5?include_payroll=true",
                           headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200

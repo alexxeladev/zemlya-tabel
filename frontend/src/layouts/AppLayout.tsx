@@ -79,8 +79,9 @@ export function AppLayout() {
         <nav className="flex flex-1 flex-col gap-4 overflow-y-auto p-3">
           <SidebarGroup title="Учёт" items={[
             { to: '/dashboard', label: 'Дашборд' },
+            ...((role === 'admin' || role === 'accountant') ? [{ to: '/tasks', label: 'Задачи' }] : []),
             { to: '/timesheet', label: 'Табель' },
-            ...((role === 'admin' || role === 'accountant') ? [{ to: '/admin/payroll', label: 'Расчёт ЗП' }] : []),
+            ...((role === 'admin' || role === 'accountant' || role === 'manager') ? [{ to: '/admin/payroll', label: 'Расчёт ЗП' }] : []),
           ]} />
 
           {role === 'admin' && (

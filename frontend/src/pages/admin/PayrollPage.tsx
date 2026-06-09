@@ -99,9 +99,11 @@ export function PayrollPage() {
     else setMonth((m) => m + 1)
   }
 
-  if (user?.role !== 'admin' && user?.role !== 'accountant') {
+  if (user?.role !== 'admin' && user?.role !== 'accountant' && user?.role !== 'manager') {
     return <div className="p-8 text-center text-red-500">Нет доступа</div>
   }
+
+  const isManager = user?.role === 'manager'
 
   return (
     <div className="space-y-4">
@@ -116,7 +118,7 @@ export function PayrollPage() {
           <button onClick={nextMonth} className="rounded-md p-1 text-gray-500 hover:bg-gray-100">→</button>
         </div>
         <div className="flex items-center gap-2">
-          {departments.length > 0 && (
+          {!isManager && departments.length > 0 && (
             <select
               value={departmentId ?? ''}
               onChange={(e) => setDepartmentId(e.target.value === '' ? undefined : Number(e.target.value))}

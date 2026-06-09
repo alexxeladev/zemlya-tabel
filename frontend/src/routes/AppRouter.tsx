@@ -10,6 +10,7 @@ import { CalendarPage } from '../pages/admin/CalendarPage'
 import { EmployeesPage } from '../pages/admin/EmployeesPage'
 import { PayrollPage } from '../pages/admin/PayrollPage'
 import { TimesheetPage } from '../pages/TimesheetPage'
+import { TasksPage } from '../pages/TasksPage'
 import { PrivateRoute } from './PrivateRoute'
 import { useAuthStore } from '../store/auth'
 import { toast } from '../store/toasts'
@@ -35,6 +36,14 @@ export function AppRouter() {
           <Route element={<AppLayout />}>
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/timesheet" element={<TimesheetPage />} />
+            <Route
+              path="/tasks"
+              element={
+                <RoleRoute allow={['admin', 'accountant']}>
+                  <TasksPage />
+                </RoleRoute>
+              }
+            />
             <Route path="/change-password" element={<ChangePasswordPage />} />
 
             <Route
@@ -80,7 +89,7 @@ export function AppRouter() {
             <Route
               path="/admin/payroll"
               element={
-                <RoleRoute allow={['admin', 'accountant']}>
+                <RoleRoute allow={['admin', 'accountant', 'manager']}>
                   <PayrollPage />
                 </RoleRoute>
               }

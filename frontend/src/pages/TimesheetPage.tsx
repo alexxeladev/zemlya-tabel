@@ -16,11 +16,13 @@
 // При смене компании в слоте — два запроса (удалить старый, создать новый).
 // При hours=0 — слот удаляется (бэк удаляет запись).
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { Fragment, useEffect, useMemo, useState, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toasts';
 import { timesheetApi } from '../api/timesheet';
 import { apiClient } from '../api/client';
+import { listDepartments } from '../api/departments';
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
@@ -177,18 +179,30 @@ function fmtMoney(value: string | null): string {
 export function TimesheetPage() {
   const user = useAuthStore((s: any) => s.user);
   const role: string | null = user?.role ?? null;
-  const canSeeMoney = role === 'admin' || role === 'accountant';
+  const canSeeMoney = role === 'admin' || role === 'accountant' || role === 'manager';
   const canExport = role === 'admin' || role === 'accountant' || role === 'manager';
+  const canSelectDept = role === 'admin' || role === 'accountant';
 
+  // ── Начальное состояние из URL (?year=&month=&department_id=) — для перехода из «Задач» ──
+  const [searchParams] = useSearchParams();
   const now = new Date();
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [year, setYear] = useState(() => {
+    const y = parseInt(searchParams.get('year') ?? '', 10);
+    return y >= 2000 && y <= 2100 ? y : now.getFullYear();
+  });
+  const [month, setMonth] = useState(() => {
+    const m = parseInt(searchParams.get('month') ?? '', 10);
+    return m >= 1 && m <= 12 ? m : now.getMonth() + 1;
+  });
+  const [departmentFilter, setDepartmentFilter] = useState<number | null>(() => {
+    const d = parseInt(searchParams.get('department_id') ?? '', 10);
+    return Number.isFinite(d) ? d : null;
+  });
 
   const [data, setData] = useState<MonthResponse | null>(null);
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [departmentFilter, setDepartmentFilter] = useState<number | null>(null);
 
   // ── Загрузка данных ──
   const reload = useCallback(async () => {
@@ -253,23 +267,58 @@ export function TimesheetPage() {
     return map;
   }, [data]);
 
+  // ── Видимые сотрудники (бэк уже исключил системных админов и применил видимость) ──
+  const visibleEmployees = useMemo(() => {
+    if (!data) return [] as Employee[];
+    return data.employees.filter((e) => !e.is_system_admin);
+  }, [data]);
+
+  const visibleEmpIds = useMemo(
+    () => new Set(visibleEmployees.map((e) => e.id)),
+    [visibleEmployees]
+  );
+
+  // ── Группировка по отделам (Bug 5): только при «Все отделы» для admin/accountant ──
+  const grouped = canSelectDept && departmentFilter === null;
+  const groups = useMemo(() => {
+    const byDept = new Map<number | null, Employee[]>();
+    for (const e of visibleEmployees) {
+      const k = e.department_id ?? null;
+      if (!byDept.has(k)) byDept.set(k, []);
+      byDept.get(k)!.push(e);
+    }
+    const entries = Array.from(byDept.entries());
+    entries.sort((a, b) => {
+      if (a[0] === null) return 1; // «Без отдела» — в самый низ
+      if (b[0] === null) return -1;
+      const na = a[1][0]?.department?.name ?? '';
+      const nb = b[1][0]?.department?.name ?? '';
+      return na.localeCompare(nb, 'ru');
+    });
+    return entries.map(([deptId, emps]) => ({
+      deptId,
+      name: deptId === null ? 'Без отдела' : emps[0]?.department?.name ?? `Отдел ${deptId}`,
+      employees: emps,
+      period: data?.periods.find((p) => p.department_id === deptId) ?? null,
+    }));
+  }, [visibleEmployees, data]);
+
   // ── Видны ли все периоды в draft? Для autofill / submit ──
   const allEditable = useMemo(() => {
     if (!data?.periods?.length) return true;
     return data.periods.every((p) => p.can_edit);
   }, [data]);
 
-  // ── Список доступных отделов (для admin/accountant) ──
-  const departments = useMemo(() => {
-    if (!data) return [];
-    const seen = new Map<number, string>();
-    for (const e of data.employees) {
-      if (e.department_id != null && e.department?.name) {
-        seen.set(e.department_id, e.department.name);
-      }
-    }
-    return Array.from(seen.entries()).map(([id, name]) => ({ id, name }));
-  }, [data]);
+  // ── Список отделов для селектора (стабильный, грузим отдельно от выдачи табеля) ──
+  const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
+  useEffect(() => {
+    if (!canSelectDept) return;
+    listDepartments()
+      .then((list) =>
+        setDepartments(list.filter((d) => d.is_active).map((d) => ({ id: d.id, name: d.name })))
+      )
+      .catch(() => setDepartments([]));
+  }, [canSelectDept]);
 
   // ── Действия со слотами ──
   const saveSlot = useCallback(
@@ -398,25 +447,28 @@ export function TimesheetPage() {
   };
 
   // ── Расчёт итогов по дням и компаниям ──
+  // Итоги считаем ТОЛЬКО по entries видимых сотрудников (Bug 6)
   const dayTotals = useMemo(() => {
     const numDays = daysInMonth(year, month);
     const totals: number[] = new Array(numDays + 1).fill(0);
     if (!data) return totals;
     for (const e of data.entries) {
+      if (!visibleEmpIds.has(e.employee_id)) continue;
       const d = parseInt(e.work_date.slice(-2), 10);
       totals[d] += num(e.hours);
     }
     return totals;
-  }, [data, year, month]);
+  }, [data, year, month, visibleEmpIds]);
 
   const companyTotals = useMemo(() => {
     const totals = new Map<number, number>();
     if (!data) return totals;
     for (const e of data.entries) {
+      if (!visibleEmpIds.has(e.employee_id)) continue;
       totals.set(e.company_id, (totals.get(e.company_id) ?? 0) + num(e.hours));
     }
     return totals;
-  }, [data]);
+  }, [data, visibleEmpIds]);
 
   // ── Переключение месяца ──
   const prevMonth = () => {
@@ -445,13 +497,155 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // отфильтрованный список сотрудников
-  const visibleEmployees = data.employees.filter((e) => {
-    if (e.is_system_admin) return false;
-    if (!e.is_active) return false;
-    if (departmentFilter !== null && e.department_id !== departmentFilter) return false;
-    return true;
-  });
+  const totalCols = 3 + numDays + (canSeeMoney ? 7 : 1);
+
+  const renderEmployeeRow = (emp: Employee) => {
+    const pay = payrollByEmp.get(emp.id);
+    const empTotal = num(pay?.total_hours, 0) || sumEmployeeHours(emp.id, data.entries);
+    const periodEditable = periodForDept(emp.department_id)?.can_edit ?? false;
+    const noSchedule = !emp.schedule;
+
+    return (
+      <tr
+        key={emp.id}
+        className="hover:bg-blue-50/30"
+        title={noSchedule ? 'График не задан, автозаполнение по графику недоступно' : undefined}
+      >
+        {/* ── Sticky-колонка сотрудника ── */}
+        <td
+          className="sticky left-0 bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900"
+          style={{ minWidth: 200, zIndex: 10 }}
+          title={emp.full_name}
+        >
+          <div className="truncate max-w-[200px]">{emp.full_name}</div>
+        </td>
+        <td className="border border-gray-200 px-2 py-2 text-xs text-gray-600">
+          {emp.department?.name ?? '—'}
+        </td>
+        <td className="border border-gray-200 px-2 py-2 text-xs text-center font-mono text-gray-600">
+          {noSchedule ? (
+            <span className="italic text-gray-400 font-sans">не задан</span>
+          ) : (
+            emp.schedule?.name
+          )}
+        </td>
+
+        {/* ── Дни ── */}
+        {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => {
+          const t = dayTypes[d];
+          const slots = entriesByEmpDay.get(`${emp.id}:${d}`) ?? [];
+          const isOff = t === 'weekend' || t === 'holiday';
+
+          const bgClass =
+            t === 'holiday'
+              ? 'bg-red-50/40'
+              : t === 'short'
+              ? 'bg-yellow-50/40'
+              : t === 'weekend'
+              ? 'bg-gray-50/60'
+              : '';
+
+          return (
+            <td
+              key={d}
+              className={`border border-gray-200 align-top p-1 ${bgClass}`}
+              style={{ minWidth: 60 }}
+            >
+              <div className="flex flex-col gap-1">
+                {slots.map((slot) => (
+                  <SlotChip
+                    key={`${slot.employee_id}-${slot.work_date}-${slot.company_id}`}
+                    slot={slot}
+                    companies={data.companies}
+                    disabled={!periodEditable}
+                    onHoursChange={(h) => saveSlot(emp.id, d, slot.company_id, h)}
+                    onCompanyChange={(newCompId) =>
+                      changeSlotCompany(emp.id, d, slot.company_id, newCompId, num(slot.hours))
+                    }
+                    onDelete={() => saveSlot(emp.id, d, slot.company_id, 0)}
+                  />
+                ))}
+                {periodEditable && !isOff && (
+                  <button
+                    type="button"
+                    onClick={() => addSlot(emp.id, d)}
+                    className="text-[10px] text-gray-400 border border-dashed border-gray-300 rounded px-1 py-0.5 hover:text-blue-600 hover:border-blue-300"
+                    title="Добавить слот"
+                  >
+                    +
+                  </button>
+                )}
+                {periodEditable && isOff && slots.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={() => addSlot(emp.id, d)}
+                    className="text-[10px] text-gray-300 border border-dashed border-gray-200 rounded px-1 py-0.5 hover:text-amber-600 hover:border-amber-300"
+                    title="Добавить работу в выходной/праздник"
+                  >
+                    +
+                  </button>
+                )}
+              </div>
+            </td>
+          );
+        })}
+
+        {/* ── Итого часов ── */}
+        <td className="border border-gray-200 px-3 py-2 text-center font-mono font-semibold bg-gray-50">
+          {fmtHours(empTotal)}
+        </td>
+
+        {/* ── Финансы ── */}
+        {canSeeMoney && (
+          <>
+            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
+              {pay?.norm_hours ? fmtHours(num(pay.norm_hours)) : '—'}
+            </td>
+            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
+              {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
+            </td>
+            <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
+              {fmtMoney(pay?.base_amount ?? null)}
+            </td>
+            <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
+              {fmtMoney(pay?.overtime_amount ?? null)}
+            </td>
+            <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
+              {fmtMoney(pay?.holiday_amount ?? null)}
+            </td>
+            <td className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
+              {fmtMoney(pay?.total_amount ?? null)}
+            </td>
+          </>
+        )}
+      </tr>
+    );
+  };
+
+  const renderGroupDivider = (
+    deptId: number | null,
+    name: string,
+    period: Period | null
+  ) => (
+    <tr key={`group-${deptId ?? 'null'}`}>
+      <td colSpan={totalCols} className="bg-slate-100 border border-gray-300 p-0">
+        <div className="sticky left-0 flex items-center gap-3 px-3 py-2 w-fit">
+          <span className="text-sm font-bold uppercase tracking-wide text-gray-700">
+            {name}
+          </span>
+          {period && (
+            <PeriodBadge
+              period={period}
+              onSubmit={() => submitPeriod(period.id)}
+              onClose={() => closePeriod(period.id)}
+              onReturn={(reason) => returnPeriod(period.id, reason)}
+              onReopen={(reason) => reopenPeriod(period.id, reason)}
+            />
+          )}
+        </div>
+      </td>
+    </tr>
+  );
 
   return (
     <div className="h-full flex flex-col overflow-hidden min-w-0">
@@ -478,7 +672,7 @@ export function TimesheetPage() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {canSeeMoney && departments.length > 1 && (
+          {canSelectDept && departments.length > 0 && (
             <select
               className="border border-gray-300 rounded px-2 py-1 text-sm"
               value={departmentFilter ?? ''}
@@ -495,22 +689,21 @@ export function TimesheetPage() {
             </select>
           )}
 
-          {/* Статусы периодов */}
-          {data.periods.map((p) => {
-            const isSelected = departmentFilter === p.department_id;
-            const showAlways = data.periods.length === 1 || isSelected;
-            if (!showAlways && data.periods.length > 1) return null;
-            return (
-              <PeriodBadge
-                key={p.id}
-                period={p}
-                onSubmit={() => submitPeriod(p.id)}
-                onClose={() => closePeriod(p.id)}
-                onReturn={(reason) => returnPeriod(p.id, reason)}
-                onReopen={(reason) => reopenPeriod(p.id, reason)}
-              />
-            );
-          })}
+          {/* Статусы периодов в шапке — только когда НЕ группируем (один отдел в выдаче) */}
+          {!grouped &&
+            data.periods.map((p) => {
+              if (departmentFilter !== null && p.department_id !== departmentFilter) return null;
+              return (
+                <PeriodBadge
+                  key={p.id}
+                  period={p}
+                  onSubmit={() => submitPeriod(p.id)}
+                  onClose={() => closePeriod(p.id)}
+                  onReturn={(reason) => returnPeriod(p.id, reason)}
+                  onReopen={(reason) => reopenPeriod(p.id, reason)}
+                />
+              );
+            })}
 
           {allEditable && (
             <button
@@ -682,127 +875,14 @@ export function TimesheetPage() {
               </tr>
             )}
 
-            {visibleEmployees.map((emp) => {
-              const pay = payrollByEmp.get(emp.id);
-              const empTotal = num(pay?.total_hours, 0) || sumEmployeeHours(emp.id, data.entries);
-              const periodEditable = periodForDept(emp.department_id)?.can_edit ?? false;
-
-              return (
-                <tr key={emp.id} className="hover:bg-blue-50/30">
-                  {/* ── Sticky-колонка сотрудника ── */}
-                  <td
-                    className="sticky left-0 bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900"
-                    style={{ minWidth: 200, zIndex: 10 }}
-                    title={emp.full_name}
-                  >
-                    <div className="truncate max-w-[200px]">{emp.full_name}</div>
-                  </td>
-                  <td className="border border-gray-200 px-2 py-2 text-xs text-gray-600">
-                    {emp.department?.name ?? '—'}
-                  </td>
-                  <td className="border border-gray-200 px-2 py-2 text-xs text-center font-mono text-gray-600">
-                    {emp.schedule?.name ?? '—'}
-                  </td>
-
-                  {/* ── Дни ── */}
-                  {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => {
-                    const t = dayTypes[d];
-                    const slots = entriesByEmpDay.get(`${emp.id}:${d}`) ?? [];
-                    const isOff = t === 'weekend' || t === 'holiday';
-
-                    const bgClass =
-                      t === 'holiday'
-                        ? 'bg-red-50/40'
-                        : t === 'short'
-                        ? 'bg-yellow-50/40'
-                        : t === 'weekend'
-                        ? 'bg-gray-50/60'
-                        : '';
-
-                    return (
-                      <td
-                        key={d}
-                        className={`border border-gray-200 align-top p-1 ${bgClass}`}
-                        style={{ minWidth: 60 }}
-                      >
-                        <div className="flex flex-col gap-1">
-                          {slots.map((slot) => (
-                            <SlotChip
-                              key={`${slot.employee_id}-${slot.work_date}-${slot.company_id}`}
-                              slot={slot}
-                              companies={data.companies}
-                              disabled={!periodEditable}
-                              onHoursChange={(h) =>
-                                saveSlot(emp.id, d, slot.company_id, h)
-                              }
-                              onCompanyChange={(newCompId) =>
-                                changeSlotCompany(
-                                  emp.id,
-                                  d,
-                                  slot.company_id,
-                                  newCompId,
-                                  num(slot.hours)
-                                )
-                              }
-                              onDelete={() => saveSlot(emp.id, d, slot.company_id, 0)}
-                            />
-                          ))}
-                          {periodEditable && !isOff && (
-                            <button
-                              type="button"
-                              onClick={() => addSlot(emp.id, d)}
-                              className="text-[10px] text-gray-400 border border-dashed border-gray-300 rounded px-1 py-0.5 hover:text-blue-600 hover:border-blue-300"
-                              title="Добавить слот"
-                            >
-                              +
-                            </button>
-                          )}
-                          {periodEditable && isOff && slots.length === 0 && (
-                            <button
-                              type="button"
-                              onClick={() => addSlot(emp.id, d)}
-                              className="text-[10px] text-gray-300 border border-dashed border-gray-200 rounded px-1 py-0.5 hover:text-amber-600 hover:border-amber-300"
-                              title="Добавить работу в выходной/праздник"
-                            >
-                              +
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    );
-                  })}
-
-                  {/* ── Итого часов ── */}
-                  <td className="border border-gray-200 px-3 py-2 text-center font-mono font-semibold bg-gray-50">
-                    {fmtHours(empTotal)}
-                  </td>
-
-                  {/* ── Финансы ── */}
-                  {canSeeMoney && (
-                    <>
-                      <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
-                        {pay?.norm_hours ? fmtHours(num(pay.norm_hours)) : '—'}
-                      </td>
-                      <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
-                        {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
-                      </td>
-                      <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
-                        {fmtMoney(pay?.base_amount ?? null)}
-                      </td>
-                      <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
-                        {fmtMoney(pay?.overtime_amount ?? null)}
-                      </td>
-                      <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
-                        {fmtMoney(pay?.holiday_amount ?? null)}
-                      </td>
-                      <td className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
-                        {fmtMoney(pay?.total_amount ?? null)}
-                      </td>
-                    </>
-                  )}
-                </tr>
-              );
-            })}
+            {grouped
+              ? groups.map((g) => (
+                  <Fragment key={`grp-${g.deptId ?? 'null'}`}>
+                    {renderGroupDivider(g.deptId, g.name, g.period)}
+                    {g.employees.map((emp) => renderEmployeeRow(emp))}
+                  </Fragment>
+                ))
+              : visibleEmployees.map((emp) => renderEmployeeRow(emp))}
 
             {/* ===== ИТОГО строка ===== */}
             {visibleEmployees.length > 0 && (
@@ -1078,11 +1158,14 @@ function SlotChip({
   }, [slot.hours]);
 
   const handleBlur = () => {
-    const n = parseFloat(hours);
-    if (Number.isNaN(n) || n < 0) {
+    const parsed = parseFloat(hours);
+    if (Number.isNaN(parsed) || parsed < 0) {
       setHours(String(slot.hours));
       return;
     }
+    // Часы только целые — округляем введённое значение
+    const n = Math.min(24, Math.round(parsed));
+    if (String(n) !== hours) setHours(String(n));
     if (n === num(slot.hours)) return;
     onHoursChange(n);
   };
@@ -1121,7 +1204,7 @@ function SlotChip({
         disabled={disabled}
         min={0}
         max={24}
-        step={0.5}
+        step={1}
         className="bg-transparent border-0 outline-none text-center w-9 text-[11px] font-mono"
         style={{ color: col.color }}
       />
