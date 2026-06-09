@@ -30,6 +30,8 @@ const ROLE_LABELS: Record<string, string> = {
   employee: 'Сотрудник',
 }
 
+const MANAGER_LOCK_TIP = 'Только администратор может изменить'
+
 const ROLE_OPTIONS = [
   { value: 'admin', label: 'Администратор' },
   { value: 'manager', label: 'Руководитель' },
@@ -244,6 +246,8 @@ export function EmployeesPage() {
   }
 
   const noDepMsg = isManager() && !user?.department_id
+  const isMgr = isManager()
+  const canEdit = canAdmin() || isMgr  // admin или manager (своего отдела) могут править карточку
 
   return (
     <div>
@@ -298,7 +302,7 @@ export function EmployeesPage() {
             <Th>График</Th>
             <Th>Доступ</Th>
             <Th>Статус</Th>
-            {canAdmin() && <Th>Действия</Th>}
+            {canEdit && <Th>Действия</Th>}
           </tr>
         </thead>
         <tbody>
@@ -309,6 +313,14 @@ export function EmployeesPage() {
                 {e.full_name}
                 {e.is_system_admin && (
                   <span className="ml-2 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700">Системный</span>
+                )}
+                {!e.is_system_admin && !e.schedule_id && (
+                  <span
+                    className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700"
+                    title="График не задан, автозаполнение по графику недоступно"
+                  >
+                    Нет графика
+                  </span>
                 )}
               </Td>
               <Td>{e.position ?? '—'}</Td>
@@ -328,14 +340,14 @@ export function EmployeesPage() {
                   : <Badge variant="gray">Уволен {e.dismissal_date ? `с ${e.dismissal_date}` : ''}</Badge>
                 }
               </Td>
-              {canAdmin() && (
+              {canEdit && (
                 <Td>
                   <div className="flex gap-2">
                     <Button size="sm" variant="secondary" onClick={() => openEdit(e)}>Изменить</Button>
-                    {!e.is_system_admin && e.is_active && (
+                    {canAdmin() && !e.is_system_admin && e.is_active && (
                       <Button size="sm" variant="danger" onClick={() => { setDismissTarget(e); setDismissDate(new Date().toISOString().slice(0, 10)) }}>Уволить</Button>
                     )}
-                    {!e.is_system_admin && !e.is_active && (
+                    {canAdmin() && !e.is_system_admin && !e.is_active && (
                       <Button size="sm" variant="secondary" onClick={() => onRehire(e)}>Принять обратно</Button>
                     )}
                   </div>
@@ -364,13 +376,18 @@ export function EmployeesPage() {
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Личная информация</p>
             <div className="flex flex-col gap-3">
               {[
-                { name: 'tab_number' as const, label: 'Табельный номер' },
-                { name: 'full_name' as const, label: 'ФИО *' },
-                { name: 'position' as const, label: 'Должность' },
-              ].map(({ name, label }) => (
+                { name: 'tab_number' as const, label: 'Табельный номер', locked: isMgr },
+                { name: 'full_name' as const, label: 'ФИО *', locked: false },
+                { name: 'position' as const, label: 'Должность', locked: false },
+              ].map(({ name, label, locked }) => (
                 <div key={name} className="flex flex-col gap-1">
                   <label className="text-sm font-medium text-gray-700">{label}</label>
-                  <input {...form.register(name)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <input
+                    {...form.register(name)}
+                    disabled={locked}
+                    title={locked ? MANAGER_LOCK_TIP : undefined}
+                    className={`rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${locked ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}`}
+                  />
                   {form.formState.errors[name] && <p className="text-xs text-red-600">{form.formState.errors[name]?.message}</p>}
                 </div>
               ))}
@@ -381,9 +398,23 @@ export function EmployeesPage() {
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Структура</p>
             <div className="flex flex-col gap-3">
-              <Select label="Отдел" options={deptOptions} {...form.register('department_id')} />
+              <Select
+                label="Отдел"
+                options={deptOptions}
+                {...form.register('department_id')}
+                disabled={isMgr}
+                title={isMgr ? MANAGER_LOCK_TIP : undefined}
+                className={isMgr ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}
+              />
               <Select label="График" options={scheduleOptions} {...form.register('schedule_id')} />
-              <Select label="Основная компания" options={companyOptions} {...form.register('default_company_id')} />
+              <Select
+                label="Основная компания"
+                options={companyOptions}
+                {...form.register('default_company_id')}
+                disabled={isMgr}
+                title={isMgr ? MANAGER_LOCK_TIP : undefined}
+                className={isMgr ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : ''}
+              />
             </div>
           </div>
 
@@ -405,7 +436,7 @@ export function EmployeesPage() {
                   <input readOnly value={editTarget.dismissal_date ?? ''} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500" />
                 </div>
               )}
-              {editTarget && !editTarget.is_system_admin && editTarget.is_active && (
+              {!isMgr && editTarget && !editTarget.is_system_admin && editTarget.is_active && (
                 <div className="pt-1">
                   <Button
                     type="button"
@@ -417,7 +448,7 @@ export function EmployeesPage() {
                   </Button>
                 </div>
               )}
-              {editTarget && !editTarget.is_system_admin && !editTarget.is_active && (
+              {!isMgr && editTarget && !editTarget.is_system_admin && !editTarget.is_active && (
                 <div className="pt-1">
                   <Button
                     type="button"
@@ -432,7 +463,8 @@ export function EmployeesPage() {
             </div>
           </div>
 
-          {/* Section 4 — Access */}
+          {/* Section 4 — Access (manager не управляет доступом) */}
+          {!isMgr && (
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Доступ в систему</p>
             <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer mb-3">
@@ -506,6 +538,7 @@ export function EmployeesPage() {
               </div>
             )}
           </div>
+          )}
         </form>
       </Modal>
 
