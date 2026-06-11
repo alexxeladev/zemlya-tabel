@@ -5,7 +5,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
-from app.services.calendar import is_holiday, norm_hours_for_period
+from app.services.calendar import is_holiday, is_short_day, norm_hours_for_period
 
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
@@ -70,9 +70,10 @@ def calculate_employee_payroll(
     if companies_by_id is None:
         companies_by_id = {}
 
-    # Aggregate hours by company; detect holiday hours per company
+    # Aggregate hours by company and by date; detect holiday hours per company.
     company_hours: dict[int, Decimal] = {}
     company_holiday_hours: dict[int, Decimal] = {}
+    hours_by_date: dict[date, Decimal] = {}
     total_hours = _ZERO
     total_holiday_hours = _ZERO
 
@@ -84,6 +85,7 @@ def calculate_employee_payroll(
             company_hours[cid] = _ZERO
             company_holiday_hours[cid] = _ZERO
         company_hours[cid] += h
+        hours_by_date[entry.work_date] = hours_by_date.get(entry.work_date, _ZERO) + h
 
         if calendar_data is not None and is_holiday(
             calendar_data, entry.work_date.month, entry.work_date.day
@@ -119,12 +121,26 @@ def calculate_employee_payroll(
         is_calculable = False
         reason = "Не задан оклад"
 
-    # Hours stats (always computed when norm is available)
+    # Переработка строго по дням (правка 3.9-2): для каждого рабочего дня
+    # сравниваем фактические часы с дневной нормой графика. Праздничные/выходные
+    # часы — отдельная категория, в переработку и базу оклада не идут.
     delta_hours: Decimal | None = None
     overtime_hours = _ZERO
+    regular_credited_hours = _ZERO
     if norm_hours is not None:
         delta_hours = total_hours - norm_hours
-        overtime_hours = max(_ZERO, delta_hours)
+
+    if calendar_data is not None and schedule is not None and schedule.schedule_type != "shift":
+        hps = Decimal(str(schedule.hours_per_shift))
+        for d, day_hours in hours_by_date.items():
+            if is_holiday(calendar_data, d.month, d.day):
+                continue  # праздничные часы оплачиваются по правилам выходных
+            daily_norm = hps - _ONE if is_short_day(calendar_data, d.month, d.day) else hps
+            if day_hours > daily_norm:
+                overtime_hours += day_hours - daily_norm
+                regular_credited_hours += daily_norm
+            else:
+                regular_credited_hours += day_hours
 
     # Financial amounts
     hourly_rate: Decimal | None = None
@@ -134,9 +150,12 @@ def calculate_employee_payroll(
 
     if is_calculable and rate is not None and norm_hours is not None and norm_hours > _ZERO:
         hourly_rate = rate / norm_hours
-        base_amount = rate if total_hours >= norm_hours else rate * total_hours / norm_hours
+        # Оклад от зачётных будних часов, но не больше полного оклада.
+        base_amount = rate * min(_ONE, regular_credited_hours / norm_hours)
         overtime_amount = overtime_hours * hourly_rate * _ONE_HALF
-        holiday_amount = total_holiday_hours * hourly_rate * _HALF
+        # Праздничные/выходные часы — полная доплата (по умолчанию ×1.5).
+        # Персональная настройка коэффициента/фикс-ставки — правка 3.9-3.
+        holiday_amount = total_holiday_hours * hourly_rate * _ONE_HALF
 
     base_amount = _round(base_amount)
     overtime_amount = _round(overtime_amount)

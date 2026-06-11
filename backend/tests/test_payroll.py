@@ -133,9 +133,69 @@ class TestOvertime:
         assert p.total_amount == Decimal("80000") + expected_overtime
 
 
+class TestPerDayOvertime:
+    """Правка 3.9-2: переработка считается строго по каждому дню."""
+
+    def test_single_day_overtime(self):
+        """10ч в один рабочий день при норме 8 → переработка 2ч за этот день."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        entries = [make_entry(work_date=date(2026, 5, 2), hours=Decimal("10"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
+
+        assert p.overtime_hours == Decimal("2")
+        # зачётных будних 8ч из нормы 176 → база = 80000*8/176
+        expected_base = (Decimal("80000") * Decimal("8") / Decimal("176")).quantize(Decimal("1"))
+        assert p.base_amount == expected_base
+
+    def test_undertime_day_does_not_reduce_overtime(self):
+        """День 10ч (переработка 2) + день 6ч (недоработка) → переработка остаётся 2ч."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        entries = [
+            make_entry(work_date=date(2026, 5, 2), hours=Decimal("10")),
+            make_entry(work_date=date(2026, 5, 5), hours=Decimal("6")),
+        ]
+
+        p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
+
+        # переработка только из дня с 10ч, день с 6ч в минус не уходит
+        assert p.overtime_hours == Decimal("2")
+        # зачётных будних: 8 (из дня 10ч) + 6 (из дня 6ч) = 14
+        assert p.total_hours == Decimal("16")
+
+    def test_exact_daily_norm_no_overtime(self):
+        """Ровно 8ч каждый день → переработки нет даже если месячная сумма растёт."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        entries = [make_entry(work_date=date(2026, 5, d)) for d in MAY_BASIC_WORKDAYS]
+
+        p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
+
+        assert p.overtime_hours == Decimal("0")
+        assert p.base_amount == Decimal("80000")
+
+    def test_short_day_daily_norm_is_seven(self):
+        """В сокращённый день норма 7ч: 8ч → 1ч переработки."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        # May 8 — сокращённый в MAY_WITH_HOLIDAY
+        entries = [make_entry(work_date=date(2026, 5, 8), hours=Decimal("8"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
+
+        assert p.overtime_hours == Decimal("1")
+
+
 class TestHolidayHours:
     def test_holiday_hours_get_extra_pay(self):
-        """8h on May 1 (holiday) → holiday_amount = 8 * hourly * 0.5 on top of base"""
+        """8h on May 1 (holiday) → holiday_amount = 8 * hourly * 1.5 (полная доплата).
+
+        База оклада праздничные часы НЕ включает (правка 3.9-2), поэтому
+        праздничные оплачиваются полным коэффициентом (по умолчанию 1.5),
+        а не доплатой 0.5 как раньше.
+        """
         schedule = make_schedule(8)
         emp = make_employee(schedule=schedule)
         # norm in MAY_WITH_HOLIDAY = 167h; add 8h on May 1 (holiday)
@@ -145,8 +205,10 @@ class TestHolidayHours:
 
         assert p.is_calculable is True
         assert p.holiday_hours == Decimal("8")
+        # Праздничные часы не идут в зачёт оклада
+        assert p.base_amount == Decimal("0")
         hourly = Decimal("80000") / Decimal("167")
-        expected_holiday = (Decimal("8") * hourly * Decimal("0.5")).quantize(Decimal("1"))
+        expected_holiday = (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
         assert p.holiday_amount == expected_holiday
 
     def test_short_day_has_no_holiday_extra(self):
