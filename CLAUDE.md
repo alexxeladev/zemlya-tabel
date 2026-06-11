@@ -188,10 +188,14 @@ alembic current  # должен совпадать с head
 
 - Считаем **брутто к начислению** — НДФЛ/страховые/премии/авансы — задача 1С
 - **Только `Decimal`**, никаких `float`. Округление `ROUND_HALF_EVEN` до целых рублей.
-- Формула: `base = rate × min(1, fact/norm)`, `overtime = max(0, fact−norm) × (rate/norm) × 1.5`, `holiday = holiday_hours × (rate/norm) × 0.5` (доплата сверх базы, т.к. база уже включает праздники)
+- **Переработка строго по дням** (задача 3.9): для каждого рабочего дня дневная норма = `hours_per_shift` (в сокращённый день −1). `overtime_day = max(0, факт_дня − дневная_норма)`, переработка месяца = сумма по дням. Недоработка в один день НЕ уменьшает переработку другого.
+- **База оклада** от зачётных будних часов: `base = rate × min(1, зачётные_будние / norm)`, где зачётные = сумма `min(факт_дня, дневная_норма)` по будням. Праздничные/выходные часы в базу и в переработку НЕ входят.
+- `overtime = overtime_hours × (rate/norm) × 1.5`
+- **Праздничные/выходные часы — отдельная категория**, оплата per-employee (задача 3.9): `weekend_pay_type = coefficient` → `holiday_hours × (rate/norm) × коэффициент` (0 = не платить, дефолт 1.5); `fixed_rate` → `holiday_hours × фикс_ставка` (не зависит от оклада). Поля `weekend_pay_type / weekend_coefficient / weekend_fixed_rate` в модели Employee.
+- `norm_days` (рабочих дней по календарю) и `fact_days` (дней с часами) — справочные, в деньгах не участвуют.
 - Норма только для `schedule_type="standard"`. Shift-графики → `is_calculable=False`.
-- Распределение по компаниям: base/overtime — пропорционально часам; holiday — пропорционально праздничным часам по компании.
-- Видят только admin / accountant. На бэке принудительная проверка — игнорировать `?include_payroll=true` от manager/employee.
+- Распределение по компаниям: base/overtime — пропорционально часам; holiday — пропорционально праздничным часам по компании. У каждой компании есть `percent` (доля часов сотрудника).
+- Видят только admin / accountant / **manager** (свой отдел). На бэке принудительная проверка — игнорировать `?include_payroll=true` от employee.
 - Эндпоинт: `GET /api/timesheet/{year}/{month}/payroll`, параметр `?include_payroll=true` у основного GET.
 - Сервис: `app/services/payroll.py` — чистая функция `calculate_employee_payroll`, не лезет в БД.
 - Фронт: Decimal с бэка приходят как строки; `formatMoney()` / `formatHours()` в `frontend/src/utils/money.ts`.
