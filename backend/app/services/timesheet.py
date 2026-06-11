@@ -303,7 +303,7 @@ def build_autofill_preview(
                 employee_id=emp.id,
                 work_date=work_date,
                 company_id=emp.default_company_id,
-                hours=Decimal(str(hours)),
+                hours=hours,
             ))
 
     db.commit()  # commit any lazily-created periods

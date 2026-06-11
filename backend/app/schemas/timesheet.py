@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,14 +16,14 @@ class TimesheetEntryRead(BaseModel):
     employee_id: int
     work_date: date
     company_id: int
-    hours: Decimal
+    hours: int
 
 
 class TimesheetCellInput(BaseModel):
     employee_id: int
     work_date: date
     company_id: int
-    hours: Decimal = Field(ge=0, le=24)
+    hours: int = Field(ge=0, le=24)
 
 
 class TimesheetMonthQuery(BaseModel):

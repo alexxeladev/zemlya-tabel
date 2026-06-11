@@ -142,7 +142,20 @@ def test_admin_saves_any_employee(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200
-    assert resp.json()["hours"] == "8.00"
+    assert resp.json()["hours"] == 8
+
+
+def test_fractional_hours_rejected(
+    client: TestClient, admin_user: Employee, employee_user: Employee, company_a: Company
+):
+    """Часы только целые — дробное значение отвергается валидатором (422)."""
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.put(
+        "/api/timesheet/cell",
+        json=_cell(employee_user.id, company_a.id, hours=4.5),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422
 
 
 def test_manager_saves_own_dept(
@@ -345,7 +358,7 @@ def test_get_month_returns_entries(
     assert data["year"] == 2026
     assert data["month"] == 5
     assert len(data["entries"]) == 1
-    assert data["entries"][0]["hours"] == "8.00"
+    assert data["entries"][0]["hours"] == 8
 
 
 def test_manager_sees_only_own_dept(
