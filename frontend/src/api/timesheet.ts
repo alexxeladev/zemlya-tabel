@@ -1,7 +1,12 @@
-import type { AuditLogEntry, AutofillPreview, PayrollSummary, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
+import type { AuditLogEntry, AutofillPreview, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
 export const timesheetApi = {
+  async getTasks(): Promise<TasksResponse> {
+    const { data } = await apiClient.get<TasksResponse>('/api/timesheet/tasks')
+    return data
+  },
+
   async getMonth(
     year: number,
     month: number,

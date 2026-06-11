@@ -32,6 +32,26 @@ class StatusChangeReason(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class PeriodTaskRead(BaseModel):
+    """Строка inbox-страницы «Задачи» для бухгалтера."""
+    period_id: int
+    department_id: int | None
+    department_name: str
+    year: int
+    month: int
+    status: PeriodStatus
+    submitted_by_name: str | None
+    submitted_at: datetime | None
+    closed_by_name: str | None
+    closed_at: datetime | None
+    total_hours: int
+
+
+class TasksResponse(BaseModel):
+    pending_review: list[PeriodTaskRead]
+    recently_closed: list[PeriodTaskRead]
+
+
 class AuditLogRead(BaseModel):
     id: int
     actor_id: int

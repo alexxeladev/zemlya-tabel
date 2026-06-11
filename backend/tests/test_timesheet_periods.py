@@ -8,6 +8,7 @@ from app.models.audit_log import AuditLog
 from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
+from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
 from tests.conftest import get_token
 
@@ -182,6 +183,125 @@ def null_draft_period(db_session: Session) -> TimesheetPeriod:
     db_session.commit()
     db_session.refresh(p)
     return p
+
+
+# ── can_* flags (Bug 1) ───────────────────────────────────────────────────────
+
+def test_accountant_flags_on_pending(
+    accountant_user: Employee, pending_period_a: TimesheetPeriod
+):
+    """Accountant видит can_close и can_return на pending_review."""
+    from app.services.timesheet_periods import make_period_read
+    read = make_period_read(pending_period_a, accountant_user)
+    assert read.can_close is True
+    assert read.can_return is True
+    assert read.can_submit is False
+    assert read.can_reopen is False
+
+
+def test_admin_can_reopen_closed(
+    admin_user: Employee, closed_period_a: TimesheetPeriod
+):
+    from app.services.timesheet_periods import make_period_read
+    read = make_period_read(closed_period_a, admin_user)
+    assert read.can_reopen is True
+
+
+def test_accountant_cannot_reopen_closed_flag(
+    accountant_user: Employee, closed_period_a: TimesheetPeriod
+):
+    """Только admin переоткрывает — у accountant can_reopen=False."""
+    from app.services.timesheet_periods import make_period_read
+    read = make_period_read(closed_period_a, accountant_user)
+    assert read.can_reopen is False
+
+
+def test_accountant_can_close_null_draft_flag(
+    accountant_user: Employee, null_draft_period: TimesheetPeriod
+):
+    """Accountant: период без отдела можно закрыть напрямую из draft."""
+    from app.services.timesheet_periods import make_period_read
+    read = make_period_read(null_draft_period, accountant_user)
+    assert read.can_close is True
+    assert read.can_submit is False
+
+
+def test_accountant_no_actions_on_dept_draft_flag(
+    accountant_user: Employee, draft_period_a: TimesheetPeriod
+):
+    """Accountant на draft отдела — никаких действий (он не отправляет)."""
+    from app.services.timesheet_periods import make_period_read
+    read = make_period_read(draft_period_a, accountant_user)
+    assert read.can_submit is False
+    assert read.can_close is False
+    assert read.can_return is False
+    assert read.can_reopen is False
+
+
+def test_manager_no_actions_on_pending_flag(
+    manager_a: Employee, pending_period_a: TimesheetPeriod
+):
+    """Manager уже отправил — на pending_review никаких действий."""
+    from app.services.timesheet_periods import make_period_read
+    read = make_period_read(pending_period_a, manager_a)
+    assert read.can_submit is False
+    assert read.can_close is False
+    assert read.can_return is False
+
+
+# ── Tasks inbox (Bug 3) ───────────────────────────────────────────────────────
+
+def test_tasks_lists_pending_for_accountant(
+    client: TestClient, accountant_user: Employee, pending_period_a: TimesheetPeriod
+):
+    token = get_token(client, "accountant@example.com", "acc123456")
+    resp = client.get("/api/timesheet/tasks", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    pending_ids = [p["period_id"] for p in data["pending_review"]]
+    assert pending_period_a.id in pending_ids
+    row = next(p for p in data["pending_review"] if p["period_id"] == pending_period_a.id)
+    assert row["department_name"] == "Dept A"
+    assert row["submitted_by_name"] == "Manager A"
+
+
+def test_tasks_lists_recently_closed(
+    client: TestClient, accountant_user: Employee, closed_period_a: TimesheetPeriod
+):
+    token = get_token(client, "accountant@example.com", "acc123456")
+    resp = client.get("/api/timesheet/tasks", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    closed_ids = [p["period_id"] for p in resp.json()["recently_closed"]]
+    assert closed_period_a.id in closed_ids
+
+
+def test_tasks_total_hours_aggregate(
+    client: TestClient, accountant_user: Employee, employee_a: Employee,
+    company: Company, pending_period_a: TimesheetPeriod, db_session: Session
+):
+    """total_hours агрегирует часы сотрудников отдела за период."""
+    from datetime import date
+    db_session.add(TimesheetEntry(
+        employee_id=employee_a.id, work_date=date(YEAR, MONTH, 5),
+        company_id=company.id, hours=8,
+    ))
+    db_session.add(TimesheetEntry(
+        employee_id=employee_a.id, work_date=date(YEAR, MONTH, 6),
+        company_id=company.id, hours=7,
+    ))
+    db_session.commit()
+    token = get_token(client, "accountant@example.com", "acc123456")
+    resp = client.get("/api/timesheet/tasks", headers={"Authorization": f"Bearer {token}"})
+    row = next(p for p in resp.json()["pending_review"] if p["period_id"] == pending_period_a.id)
+    assert row["total_hours"] == 15
+
+
+def test_tasks_forbidden_for_manager(
+    client: TestClient, manager_a: Employee
+):
+    token = get_token(client, "manager_a@example.com", "mgr123456")
+    resp = client.get("/api/timesheet/tasks", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
 
 
 # ── Auto-creation ─────────────────────────────────────────────────────────────

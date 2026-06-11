@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
+import calendar as _cal
+from datetime import date, datetime
 
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
 from app.models.employees import Employee
+from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
-from app.schemas.timesheet_period import TimesheetPeriodRead
+from app.schemas.timesheet_period import PeriodTaskRead, TimesheetPeriodRead
 
 
 class PeriodLockedException(Exception):
@@ -116,6 +118,66 @@ def get_or_create_period(
 
 def can_edit_cells(period: TimesheetPeriod) -> bool:
     return period.status == "draft"
+
+
+# ── Tasks inbox (Bug 3) ────────────────────────────────────────────────────────
+
+def _period_total_hours(db: Session, period: TimesheetPeriod) -> int:
+    """Сумма часов всех сотрудников отдела за период (контекст для accountant)."""
+    days_in_month = _cal.monthrange(period.year, period.month)[1]
+    start = date(period.year, period.month, 1)
+    end = date(period.year, period.month, days_in_month)
+    q = (
+        db.query(TimesheetEntry)
+        .join(Employee, TimesheetEntry.employee_id == Employee.id)
+        .filter(
+            Employee.is_system_admin == False,  # noqa: E712
+            TimesheetEntry.work_date >= start,
+            TimesheetEntry.work_date <= end,
+        )
+    )
+    if period.department_id is None:
+        q = q.filter(Employee.department_id.is_(None))
+    else:
+        q = q.filter(Employee.department_id == period.department_id)
+    return sum(int(e.hours) for e in q.all())
+
+
+def _make_period_task(db: Session, period: TimesheetPeriod) -> PeriodTaskRead:
+    return PeriodTaskRead(
+        period_id=period.id,
+        department_id=period.department_id,
+        department_name=period.department.name if period.department else "Без отдела",
+        year=period.year,
+        month=period.month,
+        status=period.status,
+        submitted_by_name=period.submitted_by.full_name if period.submitted_by else None,
+        submitted_at=period.submitted_at,
+        closed_by_name=period.closed_by.full_name if period.closed_by else None,
+        closed_at=period.closed_at,
+        total_hours=_period_total_hours(db, period),
+    )
+
+
+def list_review_tasks(db: Session, closed_limit: int = 10):
+    """Периоды, ждущие действия accountant: pending_review + последние закрытые."""
+    pending = (
+        db.query(TimesheetPeriod)
+        .filter(TimesheetPeriod.status == "pending_review")
+        .order_by(TimesheetPeriod.submitted_at.asc())
+        .all()
+    )
+    closed = (
+        db.query(TimesheetPeriod)
+        .filter(TimesheetPeriod.status == "closed")
+        .order_by(TimesheetPeriod.closed_at.desc())
+        .limit(closed_limit)
+        .all()
+    )
+    return (
+        [_make_period_task(db, p) for p in pending],
+        [_make_period_task(db, p) for p in closed],
+    )
 
 
 # ── Workflow transitions ──────────────────────────────────────────────────────

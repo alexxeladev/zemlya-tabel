@@ -1,5 +1,7 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
+import { timesheetApi } from '../api/timesheet'
 import type { UserRole } from '../types/api'
 
 const ROLE_LABELS: Record<UserRole, string> = {
@@ -91,9 +93,36 @@ function TileCard({ tile }: { tile: Tile }) {
   )
 }
 
+function PendingReviewCard() {
+  const [count, setCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    timesheetApi
+      .getTasks()
+      .then((r) => setCount(r.pending_review.length))
+      .catch(() => setCount(null))
+  }, [])
+
+  return (
+    <Link
+      to="/tasks"
+      className="flex items-center justify-between rounded-xl border border-yellow-200 bg-yellow-50 p-5 shadow-sm transition-shadow hover:shadow-md"
+    >
+      <div>
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-yellow-700">На проверке</h3>
+        <p className="mt-1 text-3xl font-bold text-yellow-800">{count ?? '…'}</p>
+        <p className="mt-1 text-sm text-yellow-700">табелей ждут вашего действия</p>
+      </div>
+      <span className="text-yellow-600">→</span>
+    </Link>
+  )
+}
+
 export function DashboardPage() {
   const user = useAuthStore((s) => s.user)
   if (!user) return null
+
+  const showPending = user.role === 'admin' || user.role === 'accountant'
 
   const tiles =
     user.role === 'admin'
@@ -110,6 +139,12 @@ export function DashboardPage() {
         <h1 className="text-2xl font-bold text-gray-900">Здравствуйте, {user.full_name}!</h1>
         <p className="mt-1 text-sm text-gray-500">{user.role ? ROLE_LABELS[user.role] : ''}</p>
       </div>
+
+      {showPending && (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <PendingReviewCard />
+        </div>
+      )}
 
       {tiles.length > 0 ? (
         <div>
