@@ -223,6 +223,50 @@ class TestHolidayHours:
         assert p.holiday_amount == Decimal("0")
 
 
+class TestWeekendPay:
+    """Правка 3.9-3: оплата выходных/праздничных per-employee."""
+
+    def _holiday_emp(self, pay_type="coefficient", coeff=None, fixed=None):
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        emp.weekend_pay_type = pay_type
+        emp.weekend_coefficient = coeff
+        emp.weekend_fixed_rate = fixed
+        return emp
+
+    def test_coefficient_1_5(self):
+        emp = self._holiday_emp("coefficient", coeff=Decimal("1.5"))
+        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+        p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
+        hourly = Decimal("80000") / Decimal("167")
+        expected = (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
+        assert p.holiday_amount == expected
+
+    def test_coefficient_zero_not_paid(self):
+        emp = self._holiday_emp("coefficient", coeff=Decimal("0"))
+        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+        p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
+        # часы видны, но доплаты нет
+        assert p.holiday_hours == Decimal("8")
+        assert p.holiday_amount == Decimal("0")
+
+    def test_fixed_rate_740(self):
+        """Фикс-ставка 740 ₽/ч, 8ч в выходной → 5920 ₽."""
+        emp = self._holiday_emp("fixed_rate", fixed=Decimal("740"))
+        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+        p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
+        assert p.holiday_amount == Decimal("5920")
+
+    def test_default_coefficient_when_unset(self):
+        """Поля не заданы (None) → коэффициент по умолчанию 1.5."""
+        emp = make_employee(schedule=make_schedule(8))  # без weekend_* атрибутов = None
+        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+        p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
+        hourly = Decimal("80000") / Decimal("167")
+        expected = (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
+        assert p.holiday_amount == expected
+
+
 class TestNotCalculable:
     def test_no_rate(self):
         emp = make_employee(rate=None, schedule=make_schedule())

@@ -1,4 +1,4 @@
-import type { Employee, UserRole } from '../types/api'
+import type { Employee, UserRole, WeekendPayType } from '../types/api'
 import { apiClient } from './client'
 
 export interface EmployeeListParams {
@@ -21,6 +21,9 @@ export const createEmployee = (data: {
   schedule_id?: number | null
   default_company_id?: number | null
   rate?: string | null
+  weekend_pay_type?: WeekendPayType
+  weekend_coefficient?: string | null
+  weekend_fixed_rate?: string | null
   is_active?: boolean
   hire_date?: string | null
   dismissal_date?: string | null
@@ -35,6 +38,9 @@ export const updateEmployee = (id: number, data: Partial<{
   schedule_id: number | null
   default_company_id: number | null
   rate: string | null
+  weekend_pay_type: WeekendPayType
+  weekend_coefficient: string | null
+  weekend_fixed_rate: string | null
   is_active: boolean
   hire_date: string | null
   dismissal_date: string | null

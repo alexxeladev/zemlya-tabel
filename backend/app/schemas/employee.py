@@ -12,6 +12,7 @@ from app.schemas.department import DepartmentRead
 from app.schemas.schedule import ScheduleRead
 
 EmployeeRoleType = Literal["admin", "manager", "accountant", "employee"]
+WeekendPayType = Literal["coefficient", "fixed_rate"]
 
 
 class EmployeeAccessCreate(BaseModel):
@@ -36,6 +37,9 @@ class EmployeeBase(BaseModel):
     schedule_id: Optional[int] = None
     default_company_id: Optional[int] = None
     rate: Optional[Decimal] = None
+    weekend_pay_type: WeekendPayType = "coefficient"
+    weekend_coefficient: Optional[Decimal] = None
+    weekend_fixed_rate: Optional[Decimal] = None
     is_active: bool = True
     hire_date: Optional[datetime.date] = None
     dismissal_date: Optional[datetime.date] = None
@@ -80,6 +84,9 @@ class EmployeeUpdate(BaseModel):
     schedule_id: Optional[int] = None
     default_company_id: Optional[int] = None
     rate: Optional[Decimal] = None
+    weekend_pay_type: Optional[WeekendPayType] = None
+    weekend_coefficient: Optional[Decimal] = None
+    weekend_fixed_rate: Optional[Decimal] = None
     is_active: Optional[bool] = None
     hire_date: Optional[datetime.date] = None
     dismissal_date: Optional[datetime.date] = None

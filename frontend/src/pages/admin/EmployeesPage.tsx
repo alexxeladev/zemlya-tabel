@@ -47,6 +47,9 @@ const schema = z.object({
   schedule_id: z.coerce.number().optional(),
   default_company_id: z.coerce.number().optional(),
   rate: z.string().optional(),
+  weekend_pay_type: z.enum(['coefficient', 'fixed_rate']).default('coefficient'),
+  weekend_coefficient: z.string().optional(),
+  weekend_fixed_rate: z.string().optional(),
   is_active: z.boolean().default(true),
   hire_date: z.string().optional(),
   dismissal_date: z.string().optional(),
@@ -99,6 +102,7 @@ export function EmployeesPage() {
 
   const form = useForm<FormInput, unknown, FormData>({ resolver: zodResolver(schema) })
   const hasAccess = form.watch('has_access')
+  const weekendType = form.watch('weekend_pay_type')
 
   const deptOptions = [
     { value: 0, label: '— без отдела —' },
@@ -118,7 +122,8 @@ export function EmployeesPage() {
       tab_number: '', full_name: '', position: '',
       department_id: isManager() ? (user?.department_id ?? undefined) : undefined,
       schedule_id: undefined, default_company_id: undefined,
-      rate: '', is_active: true, hire_date: '', dismissal_date: '',
+      rate: '', weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
+      is_active: true, hire_date: '', dismissal_date: '',
       has_access: false, email: '', role: 'employee', initial_password: '', is_system_admin: false,
     })
     setShowCreate(true)
@@ -134,6 +139,9 @@ export function EmployeesPage() {
       schedule_id: e.schedule_id ?? undefined,
       default_company_id: e.default_company_id ?? undefined,
       rate: e.rate ?? '',
+      weekend_pay_type: e.weekend_pay_type ?? 'coefficient',
+      weekend_coefficient: e.weekend_coefficient ?? '',
+      weekend_fixed_rate: e.weekend_fixed_rate ?? '',
       is_active: e.is_active,
       hire_date: e.hire_date ?? '',
       dismissal_date: e.dismissal_date ?? '',
@@ -161,6 +169,9 @@ export function EmployeesPage() {
         schedule_id: data.schedule_id || null,
         default_company_id: data.default_company_id || null,
         rate: data.rate || null,
+        weekend_pay_type: data.weekend_pay_type,
+        weekend_coefficient: data.weekend_pay_type === 'coefficient' ? (data.weekend_coefficient || null) : null,
+        weekend_fixed_rate: data.weekend_pay_type === 'fixed_rate' ? (data.weekend_fixed_rate || null) : null,
         is_active: data.is_active,
         hire_date: data.hire_date || null,
         dismissal_date: data.dismissal_date || null,
@@ -465,6 +476,43 @@ export function EmployeesPage() {
                   >
                     Принять обратно
                   </Button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Section 3b — Weekend / holiday pay (правка 3.9-3) */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Оплата выходных и праздничных</p>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="radio" value="coefficient" {...form.register('weekend_pay_type')} />
+                  По коэффициенту
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="radio" value="fixed_rate" {...form.register('weekend_pay_type')} />
+                  Фиксированная ставка за час
+                </label>
+              </div>
+              {weekendType === 'fixed_rate' ? (
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Ставка за час в выходной (₽)</label>
+                  <input
+                    {...form.register('weekend_fixed_rate')}
+                    placeholder="740"
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Коэффициент оплаты выходных</label>
+                  <input
+                    {...form.register('weekend_coefficient')}
+                    placeholder="1.5"
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <p className="text-xs text-gray-400">1.5 = полуторный, 2 = двойной, 0 = не оплачивается дополнительно</p>
                 </div>
               )}
             </div>

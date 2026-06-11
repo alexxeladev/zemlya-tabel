@@ -1,5 +1,6 @@
 import secrets
 import string
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -34,6 +35,9 @@ def _to_dict(emp: Employee) -> dict:
         "schedule_id": emp.schedule_id,
         "default_company_id": emp.default_company_id,
         "rate": str(emp.rate) if emp.rate is not None else None,
+        "weekend_pay_type": emp.weekend_pay_type,
+        "weekend_coefficient": str(emp.weekend_coefficient) if emp.weekend_coefficient is not None else None,
+        "weekend_fixed_rate": str(emp.weekend_fixed_rate) if emp.weekend_fixed_rate is not None else None,
         "is_active": emp.is_active,
         "email": emp.email,
         "role": emp.role,
@@ -117,6 +121,14 @@ def create_employee(
         schedule_id=payload.schedule_id,
         default_company_id=payload.default_company_id,
         rate=payload.rate,
+        weekend_pay_type=payload.weekend_pay_type,
+        # default 1.5 для coefficient, чтобы не хранить NULL при старом поведении
+        weekend_coefficient=(
+            payload.weekend_coefficient
+            if payload.weekend_coefficient is not None or payload.weekend_pay_type != "coefficient"
+            else Decimal("1.5")
+        ),
+        weekend_fixed_rate=payload.weekend_fixed_rate,
         is_active=payload.is_active,
         hire_date=payload.hire_date,
         dismissal_date=payload.dismissal_date,

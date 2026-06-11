@@ -41,6 +41,18 @@ class Employee(Base):
 
     # Finance (nullable)
     rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+
+    # Оплата выходных/праздничных часов (правка 3.9-3) — per-employee.
+    # weekend_pay_type: "coefficient" → coefficient × часовая ставка;
+    #                   "fixed_rate"  → фиксированная ставка за час.
+    weekend_pay_type: Mapped[str] = mapped_column(
+        String(20), default="coefficient", server_default="coefficient", nullable=False
+    )
+    weekend_coefficient: Mapped[Decimal | None] = mapped_column(
+        Numeric(4, 2), default=Decimal("1.5"), server_default="1.5", nullable=True
+    )
+    weekend_fixed_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     hire_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
     dismissal_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)

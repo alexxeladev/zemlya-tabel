@@ -17,6 +17,29 @@ def _round(value: Decimal) -> Decimal:
     return value.quantize(_ONE, rounding=ROUND_HALF_EVEN)
 
 
+def _weekend_pay(employee: Employee, holiday_hours: Decimal, hourly_rate: Decimal) -> Decimal:
+    """
+    Оплата праздничных/выходных часов по настройкам конкретного сотрудника
+    (правка 3.9-3). По умолчанию — коэффициент 1.5.
+      - coefficient: holiday_hours × hourly_rate × коэффициент (0 = не оплачивается)
+      - fixed_rate:  holiday_hours × фикс_ставка (не зависит от оклада)
+    """
+    if holiday_hours <= _ZERO:
+        return _ZERO
+
+    pay_type = getattr(employee, "weekend_pay_type", None) or "coefficient"
+
+    if pay_type == "fixed_rate":
+        fixed = getattr(employee, "weekend_fixed_rate", None)
+        if fixed is None:
+            return _ZERO
+        return holiday_hours * Decimal(str(fixed))
+
+    coeff = getattr(employee, "weekend_coefficient", None)
+    coeff = _ONE_HALF if coeff is None else Decimal(str(coeff))
+    return holiday_hours * hourly_rate * coeff
+
+
 @dataclass
 class CompanyBreakdown:
     company_id: int
@@ -153,9 +176,8 @@ def calculate_employee_payroll(
         # Оклад от зачётных будних часов, но не больше полного оклада.
         base_amount = rate * min(_ONE, regular_credited_hours / norm_hours)
         overtime_amount = overtime_hours * hourly_rate * _ONE_HALF
-        # Праздничные/выходные часы — полная доплата (по умолчанию ×1.5).
-        # Персональная настройка коэффициента/фикс-ставки — правка 3.9-3.
-        holiday_amount = total_holiday_hours * hourly_rate * _ONE_HALF
+        # Праздничные/выходные — по персональным настройкам сотрудника (правка 3.9-3).
+        holiday_amount = _weekend_pay(employee, total_holiday_hours, hourly_rate)
 
     base_amount = _round(base_amount)
     overtime_amount = _round(overtime_amount)

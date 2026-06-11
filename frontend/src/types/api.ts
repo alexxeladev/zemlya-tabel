@@ -1,4 +1,5 @@
 export type UserRole = 'admin' | 'manager' | 'accountant' | 'employee'
+export type WeekendPayType = 'coefficient' | 'fixed_rate'
 
 export interface CompanyBreakdown {
   company_id: number
@@ -105,6 +106,25 @@ export interface TimesheetPeriod {
   can_reopen: boolean
 }
 
+export interface PeriodTask {
+  period_id: number
+  department_id: number | null
+  department_name: string
+  year: number
+  month: number
+  status: PeriodStatus
+  submitted_by_name: string | null
+  submitted_at: string | null
+  closed_by_name: string | null
+  closed_at: string | null
+  total_hours: number
+}
+
+export interface TasksResponse {
+  pending_review: PeriodTask[]
+  recently_closed: PeriodTask[]
+}
+
 export interface AuditLogEntry {
   id: number
   actor_id: number
@@ -188,6 +208,9 @@ export interface Employee {
   schedule_id: number | null
   default_company_id: number | null
   rate: string | null
+  weekend_pay_type: WeekendPayType
+  weekend_coefficient: string | null
+  weekend_fixed_rate: string | null
   is_active: boolean
   status: 'active' | 'dismissed'
   hire_date: string | null
