@@ -45,3 +45,8 @@ dist/
 
 # Logs
 *.log
+
+# Local junk (WSL download artifacts, editor backups)
+*Zone.Identifier
+*.bak
+*.backup
