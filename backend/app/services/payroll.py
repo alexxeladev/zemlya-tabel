@@ -16,6 +16,8 @@ _ZERO = Decimal("0")
 _ONE = Decimal("1")
 _HALF = Decimal("0.5")
 _ONE_HALF = Decimal("1.5")
+_HUNDRED = Decimal("100")
+_PERCENT_Q = Decimal("0.1")
 
 
 def _round(value: Decimal) -> Decimal:
@@ -51,6 +53,7 @@ class CompanyBreakdown:
     company_code: str
     company_name: str
     hours: Decimal
+    percent: Decimal
     base_amount: Decimal
     overtime_amount: Decimal
     holiday_amount: Decimal
@@ -206,6 +209,7 @@ def calculate_employee_payroll(
         for cid in sorted(company_hours.keys()):
             comp_hours = company_hours[cid]
             proportion = comp_hours / total_hours
+            percent = (proportion * _HUNDRED).quantize(_PERCENT_Q, rounding=ROUND_HALF_EVEN)
             comp_base = _round(base_amount * proportion)
             comp_overtime = _round(overtime_amount * proportion)
             if total_holiday_hours > _ZERO:
@@ -219,6 +223,7 @@ def calculate_employee_payroll(
                 company_code=code,
                 company_name=name,
                 hours=comp_hours,
+                percent=percent,
                 base_amount=comp_base,
                 overtime_amount=comp_overtime,
                 holiday_amount=comp_holiday,

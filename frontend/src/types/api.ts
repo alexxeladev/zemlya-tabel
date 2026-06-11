@@ -6,6 +6,7 @@ export interface CompanyBreakdown {
   company_code: string
   company_name: string
   hours: string
+  percent: string
   base_amount: string
   overtime_amount: string
   holiday_amount: string

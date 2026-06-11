@@ -357,6 +357,10 @@ class TestCompanyBreakdown:
         bd_b = next(b for b in p.breakdown_by_company if b.company_id == 2)
         assert bd_a.base_amount == Decimal("40000")
         assert bd_b.base_amount == Decimal("40000")
+        # Правка 3.9-5: процент по компаниям
+        assert bd_a.percent == Decimal("50.0")
+        assert bd_b.percent == Decimal("50.0")
+        assert bd_a.percent + bd_b.percent == Decimal("100.0")
 
     def test_no_entries_empty_breakdown(self):
         schedule = make_schedule(8)

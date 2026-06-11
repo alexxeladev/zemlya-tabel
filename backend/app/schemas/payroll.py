@@ -10,6 +10,7 @@ class CompanyBreakdownRead(BaseModel):
     company_code: str
     company_name: str
     hours: Decimal
+    percent: Decimal
     base_amount: Decimal
     overtime_amount: Decimal
     holiday_amount: Decimal

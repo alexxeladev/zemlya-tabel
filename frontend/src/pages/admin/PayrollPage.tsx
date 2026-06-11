@@ -11,11 +11,17 @@ const MONTH_NAMES = [
   'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
 ]
 
+function formatPercent(value: string): string {
+  const n = Number(value)
+  if (Number.isNaN(n)) return ''
+  return Number.isInteger(n) ? String(n) : n.toFixed(1)
+}
+
 function BreakdownRow({ bd }: { bd: CompanyBreakdown }) {
   return (
     <tr className="text-[11px] bg-gray-50 text-gray-500">
       <td className="pl-10 pr-3 py-1 whitespace-nowrap">{bd.company_code} — {bd.company_name}</td>
-      <td className="px-2 py-1 text-center">{formatHours(bd.hours)}</td>
+      <td className="px-2 py-1 text-center whitespace-nowrap">{formatHours(bd.hours)} <span className="text-gray-400">({formatPercent(bd.percent)}%)</span></td>
       <td className="px-2 py-1 text-center" />
       <td className="px-2 py-1 text-center" />
       <td className="px-2 py-1 text-center" />
