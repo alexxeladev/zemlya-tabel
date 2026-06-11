@@ -18,6 +18,8 @@ function BreakdownRow({ bd }: { bd: CompanyBreakdown }) {
       <td className="px-2 py-1 text-center">{formatHours(bd.hours)}</td>
       <td className="px-2 py-1 text-center" />
       <td className="px-2 py-1 text-center" />
+      <td className="px-2 py-1 text-center" />
+      <td className="px-2 py-1 text-center" />
       <td className="px-2 py-1 text-center">{formatMoney(bd.base_amount)}</td>
       <td className="px-2 py-1 text-center">{formatMoney(bd.overtime_amount)}</td>
       <td className="px-2 py-1 text-center">{formatMoney(bd.holiday_amount)}</td>
@@ -48,6 +50,8 @@ function EmployeeRow({ ep }: { ep: EmployeePayroll }) {
         <td className="px-2 py-2 text-center text-sm text-gray-700">{formatHours(ep.total_hours)}</td>
         <td className="px-2 py-2 text-center text-sm text-gray-600">{formatHours(ep.norm_hours)}</td>
         <td className={`px-2 py-2 text-center text-sm ${delta.className}`}>{delta.text}</td>
+        <td className="px-2 py-2 text-center text-sm text-gray-600">{ep.norm_days ?? '—'}</td>
+        <td className="px-2 py-2 text-center text-sm text-gray-700">{ep.fact_days}</td>
         <td className="px-2 py-2 text-center text-sm text-gray-700">
           {ep.is_calculable ? formatMoney(ep.base_amount) : <span className="text-gray-400">—</span>}
         </td>
@@ -168,6 +172,8 @@ export function PayrollPage() {
                   <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[60px]">Часов</th>
                   <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[60px]">Норма</th>
                   <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[44px]">Δ</th>
+                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[60px]" title="Рабочих дней по производственному календарю">Норма дн.</th>
+                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[60px]" title="Дней, в которые есть отметки часов">Факт дн.</th>
                   <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[80px]">Оклад</th>
                   <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[80px]">Сверхур.</th>
                   <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[80px]">Праздн.</th>
@@ -177,7 +183,7 @@ export function PayrollPage() {
               <tbody>
                 {data.employees.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
                       Нет сотрудников
                     </td>
                   </tr>
@@ -190,6 +196,8 @@ export function PayrollPage() {
                 <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold text-xs">
                   <td className="px-3 py-2 text-gray-700">Итого</td>
                   <td className="px-2 py-2 text-center text-gray-700">{formatHours(data.total_hours)}</td>
+                  <td className="px-2 py-2 text-center" />
+                  <td className="px-2 py-2 text-center" />
                   <td className="px-2 py-2 text-center" />
                   <td className="px-2 py-2 text-center" />
                   <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_base_amount)}</td>

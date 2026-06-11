@@ -5,7 +5,12 @@ from decimal import ROUND_HALF_EVEN, Decimal
 
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
-from app.services.calendar import is_holiday, is_short_day, norm_hours_for_period
+from app.services.calendar import (
+    is_holiday,
+    is_short_day,
+    norm_hours_for_period,
+    workdays_in_month,
+)
 
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
@@ -65,6 +70,9 @@ class EmployeePayroll:
     overtime_hours: Decimal
     holiday_hours: Decimal
 
+    norm_days: int | None
+    fact_days: int
+
     hourly_rate: Decimal | None
 
     base_amount: Decimal
@@ -115,6 +123,14 @@ def calculate_employee_payroll(
         ):
             company_holiday_hours[cid] += h
             total_holiday_hours += h
+
+    # Норма/факт дней (правка 3.9-4) — справочные, в деньгах не участвуют.
+    # Норма дней = рабочих дней по календарю (сокращённые считаются как полный день).
+    # Факт дней = дней, в которых есть хотя бы один час работы (по всем компаниям).
+    norm_days: int | None = (
+        workdays_in_month(calendar_data, year, month) if calendar_data is not None else None
+    )
+    fact_days = len(hours_by_date)
 
     # Determine calculability and norm
     schedule = employee.schedule
@@ -219,6 +235,8 @@ def calculate_employee_payroll(
         delta_hours=delta_hours,
         overtime_hours=overtime_hours,
         holiday_hours=total_holiday_hours,
+        norm_days=norm_days,
+        fact_days=fact_days,
         hourly_rate=hourly_rate,
         base_amount=base_amount,
         overtime_amount=overtime_amount,

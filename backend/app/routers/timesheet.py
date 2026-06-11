@@ -153,6 +153,8 @@ def _build_payroll_summary(
             delta_hours=p.delta_hours,
             overtime_hours=p.overtime_hours,
             holiday_hours=p.holiday_hours,
+            norm_days=p.norm_days,
+            fact_days=p.fact_days,
             hourly_rate=p.hourly_rate,
             base_amount=p.base_amount,
             overtime_amount=p.overtime_amount,

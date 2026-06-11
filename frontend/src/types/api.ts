@@ -22,6 +22,8 @@ export interface EmployeePayroll {
   delta_hours: string | null
   overtime_hours: string
   holiday_hours: string
+  norm_days: number | null
+  fact_days: number
   hourly_rate: string | null
   base_amount: string
   overtime_amount: string

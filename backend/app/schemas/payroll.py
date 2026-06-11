@@ -27,6 +27,8 @@ class EmployeePayrollRead(BaseModel):
     delta_hours: Decimal | None
     overtime_hours: Decimal
     holiday_hours: Decimal
+    norm_days: int | None
+    fact_days: int
     hourly_rate: Decimal | None
 
     base_amount: Decimal

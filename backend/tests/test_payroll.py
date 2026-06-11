@@ -188,6 +188,36 @@ class TestPerDayOvertime:
         assert p.overtime_hours == Decimal("1")
 
 
+class TestNormFactDays:
+    """Правка 3.9-4: справочные колонки норма/факт дней."""
+
+    def test_norm_days_counts_workdays(self):
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        p = calculate_employee_payroll(emp, [], MAY_BASIC, 2026, 5)
+        # MAY_BASIC: 22 рабочих дня
+        assert p.norm_days == 22
+        assert p.fact_days == 0
+
+    def test_fact_days_counts_distinct_days_with_hours(self):
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        # 3 разных дня, на один из них две компании — это всё равно 1 день
+        entries = [
+            make_entry(company_id=1, work_date=date(2026, 5, 5), hours=Decimal("4")),
+            make_entry(company_id=2, work_date=date(2026, 5, 5), hours=Decimal("4")),
+            make_entry(company_id=1, work_date=date(2026, 5, 6), hours=Decimal("8")),
+            make_entry(company_id=1, work_date=date(2026, 5, 7), hours=Decimal("8")),
+        ]
+        p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
+        assert p.fact_days == 3
+
+    def test_norm_days_none_without_calendar(self):
+        emp = make_employee(schedule=make_schedule(8))
+        p = calculate_employee_payroll(emp, [], calendar_data=None, year=2026, month=5)
+        assert p.norm_days is None
+
+
 class TestHolidayHours:
     def test_holiday_hours_get_extra_pay(self):
         """8h on May 1 (holiday) → holiday_amount = 8 * hourly * 1.5 (полная доплата).
