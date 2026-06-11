@@ -140,8 +140,8 @@ def create_employee(
 
 # ── Update ─────────────────────────────────────────────────────────────────────
 
-# Поля, которые manager может редактировать у сотрудников своего отдела
-_MANAGER_EDITABLE_FIELDS = {"full_name", "position", "schedule_id", "rate", "hire_date"}
+# Правка 3.9-1: manager может только просматривать сотрудников. Любое изменение —
+# только admin (откат правки 3.8, где manager редактировал свой отдел).
 
 
 @router.patch("/{emp_id}", response_model=EmployeeRead)
@@ -149,29 +149,13 @@ def update_employee(
     emp_id: int,
     payload: EmployeeUpdate,
     db: Session = Depends(get_db),
-    actor: Employee = Depends(get_current_user),
+    actor: Employee = Depends(_admin_only),
 ):
-    if actor.role not in ("admin", "manager"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
-
     emp = db.get(Employee, emp_id)
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     data = payload.model_dump(exclude_unset=True)
-
-    if actor.role == "manager":
-        # Manager редактирует только сотрудников своего отдела
-        if emp.department_id != actor.department_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-        # Перевод в другой отдел запрещён; совпадающее значение просто игнорируем
-        if "department_id" in data and data["department_id"] != emp.department_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Manager не может изменить отдел сотрудника",
-            )
-        # Остальные запрещённые поля молча отбрасываем
-        data = {k: v for k, v in data.items() if k in _MANAGER_EDITABLE_FIELDS}
 
     before = _to_dict(emp)
     for field, value in data.items():

@@ -247,7 +247,9 @@ export function EmployeesPage() {
 
   const noDepMsg = isManager() && !user?.department_id
   const isMgr = isManager()
-  const canEdit = canAdmin() || isMgr  // admin или manager (своего отдела) могут править карточку
+  // Правка 3.9-1: manager только просматривает. Редактировать карточку может только admin.
+  const readOnly = !canAdmin()
+  const canEdit = canAdmin() || isMgr  // admin правит, manager открывает карточку на просмотр
 
   return (
     <div>
@@ -343,7 +345,7 @@ export function EmployeesPage() {
               {canEdit && (
                 <Td>
                   <div className="flex gap-2">
-                    <Button size="sm" variant="secondary" onClick={() => openEdit(e)}>Изменить</Button>
+                    <Button size="sm" variant="secondary" onClick={() => openEdit(e)}>{readOnly ? 'Просмотр' : 'Изменить'}</Button>
                     {canAdmin() && !e.is_system_admin && e.is_active && (
                       <Button size="sm" variant="danger" onClick={() => { setDismissTarget(e); setDismissDate(new Date().toISOString().slice(0, 10)) }}>Уволить</Button>
                     )}
@@ -362,15 +364,20 @@ export function EmployeesPage() {
       <Modal
         isOpen={showCreate || !!editTarget}
         onClose={closeModal}
-        title={editTarget ? `Изменить: ${editTarget.full_name}` : 'Добавить сотрудника'}
+        title={editTarget ? `${readOnly ? 'Просмотр' : 'Изменить'}: ${editTarget.full_name}` : 'Добавить сотрудника'}
         actions={
-          <>
-            <Button type="button" variant="ghost" onClick={closeModal}>Отмена</Button>
-            <Button type="submit" form="emp-form" loading={form.formState.isSubmitting}>Сохранить</Button>
-          </>
+          readOnly ? (
+            <Button type="button" onClick={closeModal}>Закрыть</Button>
+          ) : (
+            <>
+              <Button type="button" variant="ghost" onClick={closeModal}>Отмена</Button>
+              <Button type="submit" form="emp-form" loading={form.formState.isSubmitting}>Сохранить</Button>
+            </>
+          )
         }
       >
         <form id="emp-form" onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4 max-h-[70vh] overflow-y-auto pr-1">
+          <fieldset disabled={readOnly} className="contents">
           {/* Section 1 — Personal */}
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Личная информация</p>
@@ -539,6 +546,7 @@ export function EmployeesPage() {
             )}
           </div>
           )}
+          </fieldset>
         </form>
       </Modal>
 

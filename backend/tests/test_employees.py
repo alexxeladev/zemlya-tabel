@@ -295,7 +295,7 @@ def test_manager_cannot_see_other_dept_employee(client: TestClient, db_session):
     assert resp.status_code == 404
 
 
-# ── Manager edit (task 3.8) ─────────────────────────────────────────────────────
+# ── Manager read-only (task 3.9, правка 1 — откат 3.8) ──────────────────────────
 
 def _mgr(db_session, dept_id, email="mgr@example.com"):
     mgr = Employee(
@@ -312,7 +312,8 @@ def _mgr(db_session, dept_id, email="mgr@example.com"):
     return mgr
 
 
-def test_manager_can_edit_allowed_fields(client: TestClient, db_session):
+def test_manager_cannot_edit_own_department(client: TestClient, db_session):
+    """Правка 3.9-1: manager больше НЕ может редактировать своих сотрудников."""
     dept1, dept2, company, schedule = _fixtures(db_session)
     emp = _emp(db_session, "Иванов", dept_id=dept1.id)
     _mgr(db_session, dept1.id)
@@ -320,66 +321,10 @@ def test_manager_can_edit_allowed_fields(client: TestClient, db_session):
     token = get_token(client, "mgr@example.com", "password123")
     resp = client.patch(
         f"/api/employees/{emp.id}",
-        json={"full_name": "Иванов Иван", "position": "Инженер",
-              "schedule_id": schedule.id, "rate": "75000", "hire_date": "2026-01-15"},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["full_name"] == "Иванов Иван"
-    assert data["position"] == "Инженер"
-    assert data["schedule_id"] == schedule.id
-    from decimal import Decimal
-    assert Decimal(data["rate"]) == Decimal("75000")
-    assert data["hire_date"] == "2026-01-15"
-
-
-def test_manager_forbidden_fields_ignored(client: TestClient, db_session):
-    dept1, dept2, company, schedule = _fixtures(db_session)
-    emp = _emp(db_session, "Иванов", dept_id=dept1.id, tab="T001")
-    _mgr(db_session, dept1.id)
-
-    token = get_token(client, "mgr@example.com", "password123")
-    # tab_number и default_company_id запрещены — молча игнорируются
-    resp = client.patch(
-        f"/api/employees/{emp.id}",
-        json={"full_name": "Иванов", "tab_number": "HACK", "default_company_id": company.id},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["tab_number"] == "T001"
-    assert data["default_company_id"] is None
-
-
-def test_manager_cannot_change_department(client: TestClient, db_session):
-    dept1, dept2, company, schedule = _fixtures(db_session)
-    emp = _emp(db_session, "Иванов", dept_id=dept1.id)
-    _mgr(db_session, dept1.id)
-
-    token = get_token(client, "mgr@example.com", "password123")
-    resp = client.patch(
-        f"/api/employees/{emp.id}",
-        json={"department_id": dept2.id},
+        json={"full_name": "Иванов Иван", "position": "Инженер"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 403
-
-
-def test_manager_same_department_ok(client: TestClient, db_session):
-    dept1, dept2, company, schedule = _fixtures(db_session)
-    emp = _emp(db_session, "Иванов", dept_id=dept1.id)
-    _mgr(db_session, dept1.id)
-
-    token = get_token(client, "mgr@example.com", "password123")
-    # передача того же department_id не должна давать ошибку
-    resp = client.patch(
-        f"/api/employees/{emp.id}",
-        json={"department_id": dept1.id, "position": "Аналитик"},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["position"] == "Аналитик"
 
 
 def test_manager_cannot_edit_other_department(client: TestClient, db_session):
@@ -394,6 +339,18 @@ def test_manager_cannot_edit_other_department(client: TestClient, db_session):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 403
+
+
+def test_manager_can_still_view_own_department(client: TestClient, db_session):
+    """Manager сохраняет доступ на просмотр карточки сотрудника своего отдела."""
+    dept1, dept2, company, schedule = _fixtures(db_session)
+    emp = _emp(db_session, "Иванов", dept_id=dept1.id)
+    _mgr(db_session, dept1.id)
+
+    token = get_token(client, "mgr@example.com", "password123")
+    resp = client.get(f"/api/employees/{emp.id}", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.json()["full_name"] == "Иванов"
 
 
 def test_employee_cannot_update(client: TestClient, db_session):
