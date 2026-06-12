@@ -190,8 +190,9 @@ function HoursBlock({ data, onDeptClick }: {
         <ChartCard title="Часы по отделам (клик — в табель отдела)">
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={chartData} onClick={(e) => {
-              const idx = e?.activeTooltipIndex
-              if (typeof idx === 'number' && chartData[idx]) onDeptClick(chartData[idx].deptId)
+              // recharts 3.x: activeTooltipIndex может прийти строкой
+              const idx = Number(e?.activeTooltipIndex)
+              if (Number.isFinite(idx) && chartData[idx]) onDeptClick(chartData[idx].deptId)
             }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="name" tick={{ fontSize: 12 }} />
@@ -248,7 +249,7 @@ function PayrollBlock({ data }: { data: DashboardData }) {
               <BarChart data={byDept}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `${Math.round(v / 1000)}т`} />
+                <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `${Math.round(v / 1000)} т.₽`} />
                 <Tooltip formatter={(v) => formatMoney(String(v))} />
                 <Bar dataKey="ФОТ" fill={CHART.payroll} radius={[3, 3, 0, 0]} />
               </BarChart>
@@ -352,10 +353,12 @@ function TrendBlock({ data }: { data: DashboardData }) {
             <LineChart data={points}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-              <YAxis yAxisId="hours" tick={{ fontSize: 12 }} />
+              <YAxis yAxisId="hours" tick={{ fontSize: 12 }} tickFormatter={(v) => `${v} ч`}
+                     label={{ value: 'Часы', angle: -90, position: 'insideLeft', style: { fontSize: 12, fill: '#6b7280' } }} />
               {hasMoney && (
                 <YAxis yAxisId="money" orientation="right" tick={{ fontSize: 12 }}
-                       tickFormatter={(v) => `${Math.round(v / 1000)}т`} />
+                       tickFormatter={(v) => `${Math.round(v / 1000)} т.₽`}
+                       label={{ value: 'ФОТ, тыс. ₽', angle: 90, position: 'insideRight', style: { fontSize: 12, fill: '#6b7280' } }} />
               )}
               <Tooltip formatter={(v, name) => (name === 'ФОТ' ? formatMoney(String(v)) : `${v} ч`)} />
               <Legend />
