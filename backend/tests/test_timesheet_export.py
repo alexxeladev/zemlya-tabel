@@ -301,16 +301,16 @@ def test_export_hours_match_entries(
     )
     wb = _get_workbook(resp)
     ws = wb.active
-    # Итого за месяц для Иванова/Альфа = 8*5 = 40 ч
-    # Находим значение 40 в строке с "ООО Альфа"
+    from app.services.timesheet_export import _total_col
+
+    # Итого Ч компании для Иванова/Альфа = 8*5 = 40 ч (per-row, _total_col)
+    total_days = 30  # июнь
     found_40 = False
     for row in ws.iter_rows():
-        vals = [cell.value for cell in row]
-        if "ООО Альфа" in vals:
-            # Последний числовой элемент = итого за месяц
-            nums = [v for v in vals if isinstance(v, (int, float))]
-            if nums and max(nums) == 40:
-                found_40 = True
+        for cell in row:
+            if cell.column == 5 and cell.value == "ООО Альфа":
+                if ws.cell(row=cell.row, column=_total_col(total_days)).value == 40:
+                    found_40 = True
     assert found_40, "Не найдено итого 40ч для Иванова/Альфа"
 
 
@@ -360,7 +360,7 @@ def test_export_holiday_cell_has_red_fill(
     assert red_fill_found, "Не найдена красная заливка для дня 12"
 
 
-def test_export_overtime_and_company_total_columns(
+def test_export_per_company_rows_columns(
     client: TestClient,
     admin_emp: Employee,
     dept: Department,
@@ -368,9 +368,15 @@ def test_export_overtime_and_company_total_columns(
     company_beta: Company,
     db_session: Session,
 ):
-    """Колонки переработки и итогов по компаниям считаются корректно."""
+    """Строки по компаниям: Итого Ч компании (per-row), Сверхур./Праздн. Ч,
+    общий Итого Ч (merge) считаются корректно."""
     from app.models.schedules import Schedule
-    from app.services.timesheet_export import _company_col, _overtime_col, _total_col
+    from app.services.timesheet_export import (
+        _grand_total_col,
+        _norm_col,
+        _ot_hours_col,
+        _total_col,
+    )
 
     sch = Schedule(name="5/2", hours_per_shift=8, is_active=True, schedule_type="standard")
     db_session.add(sch)
@@ -403,11 +409,13 @@ def test_export_overtime_and_company_total_columns(
     wb = _get_workbook(resp)
     ws = wb.active
 
-    # Заголовок переработки присутствует
+    # Заголовки новых колонок присутствуют
     header_text = " ".join(
         str(cell.value) for row in ws.iter_rows() for cell in row if cell.value is not None
     )
-    assert "перераб" in header_text
+    assert "Сверхур" in header_text
+    assert "Праздн" in header_text
+    assert "Норма" in header_text
     assert "ООО Альфа" in header_text
     assert "ООО Бета" in header_text
 
@@ -423,12 +431,17 @@ def test_export_overtime_and_company_total_columns(
     assert start_row is not None
 
     total_days = 30  # июнь
-    # alpha создана раньше beta → индекс 0 / 1
-    assert ws.cell(row=start_row, column=_overtime_col(total_days)).value == 2
-    assert ws.cell(row=start_row, column=_company_col(total_days, 0)).value == 10
-    assert ws.cell(row=start_row, column=_company_col(total_days, 1)).value == 8
-    # Общий итог за месяц = сумма по компаниям = 18
-    assert ws.cell(row=start_row, column=_total_col(total_days)).value == 10  # строка Альфа
+    # Альфа создана раньше беты → строка Альфа первая, Бета — вторая
+    assert ws.cell(row=start_row, column=_total_col(total_days)).value == 10      # Альфа
+    assert ws.cell(row=start_row + 1, column=_total_col(total_days)).value == 8   # Бета
+    # Общий итог по сотруднику (merge в первой строке) = 18
+    assert ws.cell(row=start_row, column=_grand_total_col(total_days)).value == 18
+    # Сумма переработки по компаниям = 2 (распределено пропорционально)
+    ot_alpha = ws.cell(row=start_row, column=_ot_hours_col(total_days)).value or 0
+    ot_beta = ws.cell(row=start_row + 1, column=_ot_hours_col(total_days)).value or 0
+    assert ot_alpha + ot_beta == 2
+    # Норма июня (standard 8ч) — положительное число
+    assert (ws.cell(row=start_row, column=_norm_col(total_days)).value or 0) > 0
 
 
 def test_export_forbidden_for_employee(
