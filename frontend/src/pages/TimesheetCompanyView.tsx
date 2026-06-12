@@ -13,7 +13,7 @@
 // компании). Кнопка «+ комп.» добавляет строку компании (draft), «×» убирает
 // дополнительную строку с 0 часов. Родительская (default_company) — всегда, без «×».
 
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { companyColorByIndex } from '../utils/colors';
 import {
   PeriodBadge,
@@ -55,6 +55,19 @@ type Props = {
 };
 
 const WEEKDAY_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
+// Закреплённые слева колонки: фиксированные ширины + накопленные смещения.
+// Фикс. ширина обязательна, иначе sticky-смещения «разъезжаются».
+const COL_W = { name: 190, dept: 110, sched: 64, company: 150 };
+const COL_LEFT = {
+  name: 0,
+  dept: COL_W.name,
+  sched: COL_W.name + COL_W.dept,
+  company: COL_W.name + COL_W.dept + COL_W.sched,
+};
+function stickyLeft(left: number, width: number, z = 10): CSSProperties {
+  return { position: 'sticky', left, width, minWidth: width, maxWidth: width, zIndex: z };
+}
 
 function jsWeekdayMonFirst(year: number, month: number, day: number): number {
   const js = new Date(year, month - 1, day).getDay();
@@ -236,21 +249,23 @@ export function TimesheetCompanyView(props: Props) {
                 <>
                   <td
                     rowSpan={n}
-                    className="sticky left-0 bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
-                    style={{ minWidth: 200, zIndex: 10 }}
+                    className="bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
+                    style={stickyLeft(COL_LEFT.name, COL_W.name)}
                     title={noSchedule ? 'График не задан' : emp.full_name}
                   >
-                    <div className="truncate max-w-[200px]">{emp.full_name}</div>
+                    <div className="truncate" style={{ maxWidth: COL_W.name - 24 }}>{emp.full_name}</div>
                   </td>
                   <td
                     rowSpan={n}
                     className="border border-gray-200 px-2 py-2 text-xs text-gray-600 align-top bg-white"
+                    style={stickyLeft(COL_LEFT.dept, COL_W.dept)}
                   >
                     {emp.department?.name ?? '—'}
                   </td>
                   <td
                     rowSpan={n}
                     className="border border-gray-200 px-2 py-2 text-xs text-center font-mono text-gray-600 align-top bg-white"
+                    style={stickyLeft(COL_LEFT.sched, COL_W.sched)}
                   >
                     {noSchedule ? (
                       <span className="italic text-gray-400 font-sans">не задан</span>
@@ -261,13 +276,16 @@ export function TimesheetCompanyView(props: Props) {
                 </>
               )}
 
-              {/* ── Компания ── */}
-              <td className="border border-gray-200 px-2 py-1 align-top" style={{ minWidth: 130 }}>
+              {/* ── Компания (sticky) ── */}
+              <td
+                className="border border-gray-200 px-2 py-1.5 align-top bg-white"
+                style={stickyLeft(COL_LEFT.company, COL_W.company)}
+              >
                 <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5 h-5">
                     {cid != null && col ? (
                       <span
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold"
+                        className="inline-flex items-center justify-center rounded text-[11px] font-mono font-semibold px-1 h-5 min-w-[40px]"
                         style={{ background: col.bg, color: col.color, border: `1px solid ${col.color}40` }}
                       >
                         {company?.code ?? cid}
@@ -277,17 +295,18 @@ export function TimesheetCompanyView(props: Props) {
                     )}
                     {row.isParent && cid != null && (
                       <span
-                        className="text-[9px] px-1 rounded bg-gray-100 text-gray-500"
+                        className="text-[9px] px-1 rounded bg-gray-100 text-gray-500 leading-4"
                         title="Основная (родительская) компания"
                       >
                         осн.
                       </span>
                     )}
+                    <span className="flex-1" />
                     {row.removable && periodEditable && cid != null && (
                       <button
                         type="button"
                         onClick={() => removeCompany(emp.id, cid)}
-                        className="text-gray-400 hover:text-red-600 leading-none text-sm"
+                        className="text-gray-400 hover:text-red-600 leading-none text-base px-0.5"
                         title="Убрать строку компании (0 часов)"
                       >
                         ×
@@ -295,44 +314,42 @@ export function TimesheetCompanyView(props: Props) {
                     )}
                   </div>
                   {company && (
-                    <span className="text-[10px] text-gray-400 truncate max-w-[120px]" title={company.name}>
+                    <span className="text-[10px] text-gray-400 truncate" title={company.name}>
                       {company.name}
                     </span>
                   )}
                   {/* «+ комп.» — под последней строкой компаний, только draft */}
                   {last && periodEditable && avail.length > 0 && (
-                    <div className="relative">
-                      {adderOpenFor === emp.id ? (
-                        <select
-                          autoFocus
-                          className="text-[11px] border border-blue-300 rounded px-1 py-0.5 w-full"
-                          defaultValue=""
-                          onChange={(e) => {
-                            const v = parseInt(e.target.value, 10);
-                            if (Number.isFinite(v)) addCompany(emp.id, v);
-                          }}
-                          onBlur={() => setAdderOpenFor(null)}
-                        >
-                          <option value="" disabled>
-                            Выберите…
+                    adderOpenFor === emp.id ? (
+                      <select
+                        autoFocus
+                        className="text-[11px] border border-blue-300 rounded px-1 py-1 w-full mt-0.5"
+                        defaultValue=""
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value, 10);
+                          if (Number.isFinite(v)) addCompany(emp.id, v);
+                        }}
+                        onBlur={() => setAdderOpenFor(null)}
+                      >
+                        <option value="" disabled>
+                          Выберите…
+                        </option>
+                        {avail.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.code} — {c.name}
                           </option>
-                          {avail.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.code} — {c.name}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setAdderOpenFor(emp.id)}
-                          className="text-[10px] text-gray-400 border border-dashed border-gray-300 rounded px-1.5 py-0.5 hover:text-blue-600 hover:border-blue-300 w-full"
-                          title="Добавить компанию"
-                        >
-                          + комп.
-                        </button>
-                      )}
-                    </div>
+                        ))}
+                      </select>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setAdderOpenFor(emp.id)}
+                        className="block w-full text-center text-[10px] text-gray-400 border border-dashed border-gray-300 rounded py-1 mt-0.5 hover:text-blue-600 hover:border-blue-300"
+                        title="Добавить компанию"
+                      >
+                        + комп.
+                      </button>
+                    )
                   )}
                 </div>
               </td>
@@ -452,16 +469,16 @@ export function TimesheetCompanyView(props: Props) {
       {/* ===== ШАПКА ===== */}
       <thead>
         <tr>
-          <th className="sticky left-0 top-0 bg-gray-50 border border-gray-200 px-3 py-2 text-left font-medium text-gray-600" style={{ minWidth: 200, zIndex: 30 }}>
+          <th className="sticky top-0 bg-gray-50 border border-gray-200 px-3 py-2 text-left font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.name, COL_W.name, 30), top: 0 }}>
             Сотрудник
           </th>
-          <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600" style={{ minWidth: 100, zIndex: 20 }}>
+          <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.dept, COL_W.dept, 30), top: 0 }}>
             Отдел
           </th>
-          <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 60, zIndex: 20 }}>
+          <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.sched, COL_W.sched, 30), top: 0 }}>
             График
           </th>
-          <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600" style={{ minWidth: 130, zIndex: 20 }}>
+          <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.company, COL_W.company, 30), top: 0 }}>
             Компания
           </th>
           {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => {
@@ -526,10 +543,14 @@ export function TimesheetCompanyView(props: Props) {
         {/* ===== ИТОГО строка ===== */}
         {visibleEmployees.length > 0 && (
           <tr className="bg-gray-100 font-semibold">
-            <td className="sticky left-0 bg-gray-200 border border-gray-300 px-3 py-2" style={{ minWidth: 200, zIndex: 10 }}>
+            <td className="bg-gray-200 border border-gray-300 px-3 py-2" style={stickyLeft(COL_LEFT.name, COL_W.name)}>
               ИТОГО
             </td>
-            <td className="border border-gray-300 px-2 py-2" colSpan={3}></td>
+            <td
+              className="bg-gray-200 border border-gray-300 px-2 py-2"
+              colSpan={3}
+              style={stickyLeft(COL_LEFT.dept, COL_W.dept + COL_W.sched + COL_W.company)}
+            ></td>
             {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => (
               <td key={d} className="border border-gray-300 px-1 py-2 text-center font-mono text-xs text-gray-700">
                 {dayTotals[d] > 0 ? fmtHours(dayTotals[d]) : ''}
