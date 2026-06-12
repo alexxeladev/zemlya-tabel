@@ -24,11 +24,13 @@ import { timesheetApi } from '../api/timesheet';
 import { apiClient } from '../api/client';
 import { listDepartments } from '../api/departments';
 import { companyColorByIndex } from '../utils/colors';
+import { useTimesheetViewStore } from '../store/timesheetView';
+import { TimesheetCompanyView } from './TimesheetCompanyView';
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
 // ──────────────────────────────────────────────────────────────
-type Employee = {
+export type Employee = {
   id: number;
   full_name: string;
   department_id: number | null;
@@ -41,25 +43,32 @@ type Employee = {
   dismissal_date?: string | null;
 };
 
-type Company = { id: number; code: string; name: string };
+export type Company = { id: number; code: string; name: string };
 
-type TimesheetEntry = {
+export type TimesheetEntry = {
   employee_id: number;
   work_date: string; // 'YYYY-MM-DD'
   company_id: number;
   hours: number | string; // decimal на бэке -> может прилететь строкой
 };
 
-type DayType = 'work' | 'short' | 'holiday' | 'weekend';
+export type DayType = 'work' | 'short' | 'holiday' | 'weekend';
 
-type CompanyBreakdown = {
+export type CompanyBreakdown = {
   company_id: number;
   company_code: string;
+  company_name?: string;
   hours: string;
+  percent?: string;
+  base_amount?: string;
+  overtime_amount?: string;
+  holiday_amount?: string;
+  overtime_hours?: string;
+  holiday_hours?: string;
   total: string;
 };
 
-type EmployeePayroll = {
+export type EmployeePayroll = {
   employee_id: number;
   total_hours: string;
   norm_hours: string | null;
@@ -82,7 +91,7 @@ type PayrollSummary = {
   grand_total: string;
 };
 
-type Period = {
+export type Period = {
   id: number;
   department_id: number | null;
   department_name: string | null;
@@ -94,7 +103,7 @@ type Period = {
   can_reopen: boolean;
 };
 
-type MonthResponse = {
+export type MonthResponse = {
   year: number;
   month: number;
   employees: Employee[];
@@ -171,6 +180,9 @@ export function TimesheetPage() {
   const canSeeMoney = role === 'admin' || role === 'accountant' || role === 'manager';
   const canExport = role === 'admin' || role === 'accountant' || role === 'manager';
   const canSelectDept = role === 'admin' || role === 'accountant';
+
+  const viewMode = useTimesheetViewStore((s) => s.mode);
+  const setViewMode = useTimesheetViewStore((s) => s.setMode);
 
   // ── Начальное состояние из URL (?year=&month=&department_id=) — для перехода из «Задач» ──
   const [searchParams] = useSearchParams();
@@ -658,6 +670,32 @@ export function TimesheetPage() {
           >
             →
           </button>
+
+          {/* ── Переключатель вида: Классический / По компаниям ── */}
+          <div className="ml-4 inline-flex rounded-lg border border-gray-300 overflow-hidden text-sm">
+            <button
+              onClick={() => setViewMode('classic')}
+              className={
+                'px-3 py-1.5 transition-colors ' +
+                (viewMode === 'classic'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50')
+              }
+            >
+              Классический
+            </button>
+            <button
+              onClick={() => setViewMode('company')}
+              className={
+                'px-3 py-1.5 transition-colors border-l border-gray-300 ' +
+                (viewMode === 'company'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50')
+              }
+            >
+              По компаниям
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
@@ -752,6 +790,27 @@ export function TimesheetPage() {
       {/* ───── Скролл-контейнер с таблицей ───── */}
       <div className="flex-1 relative min-h-0 min-w-0">
       <div className="absolute inset-0 overflow-auto bg-white">
+        {viewMode === 'company' ? (
+          <TimesheetCompanyView
+            data={data}
+            year={year}
+            month={month}
+            numDays={numDays}
+            dayTypes={dayTypes}
+            visibleEmployees={visibleEmployees}
+            grouped={grouped}
+            groups={groups}
+            payrollByEmp={payrollByEmp}
+            canSeeMoney={canSeeMoney}
+            saveSlot={saveSlot}
+            periodForDept={periodForDept}
+            dayTotals={dayTotals}
+            onSubmit={submitPeriod}
+            onClose={closePeriod}
+            onReturn={returnPeriod}
+            onReopen={reopenPeriod}
+          />
+        ) : (
         <table
           className="border-collapse text-xs"
           style={{ minWidth: 'max-content' }}
@@ -919,6 +978,7 @@ export function TimesheetPage() {
 
           </tbody>
         </table>
+        )}
       </div>
       </div>
 
@@ -985,7 +1045,7 @@ function sumEmployeeHours(empId: number, entries: TimesheetEntry[]): number {
   return s;
 }
 
-function DeltaCell({ delta }: { delta: number }) {
+export function DeltaCell({ delta }: { delta: number }) {
   if (delta === 0) return <span className="text-gray-400">0</span>;
   const cls = delta > 0 ? 'text-amber-600' : 'text-red-600';
   return (
@@ -996,7 +1056,7 @@ function DeltaCell({ delta }: { delta: number }) {
   );
 }
 
-function PeriodBadge({
+export function PeriodBadge({
   period,
   onSubmit,
   onClose,
