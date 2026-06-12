@@ -435,6 +435,28 @@ class TestCompanyBreakdown:
             assert b.overtime_amount >= Decimal("0")
             assert b.holiday_amount >= Decimal("0")
 
+    def test_breakdown_hours_sum_to_totals(self):
+        """Часы переработки/праздничные по компаниям сходятся с итоговыми часами."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        entries = [
+            make_entry(company_id=1, work_date=date(2026, 5, 2), hours=Decimal("6")),
+            make_entry(company_id=2, work_date=date(2026, 5, 2), hours=Decimal("4")),  # 10h → 2h overtime
+            make_entry(company_id=1, work_date=date(2026, 5, 1), hours=Decimal("5")),  # праздник
+            make_entry(company_id=2, work_date=date(2026, 5, 1), hours=Decimal("3")),  # праздник
+        ]
+        p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
+        bd = p.breakdown_by_company
+        assert sum(b.overtime_hours for b in bd) == p.overtime_hours
+        assert sum(b.holiday_hours for b in bd) == p.holiday_hours
+        # часы компаний сходятся с total_hours
+        assert sum(b.hours for b in bd) == p.total_hours
+        # праздничные часы привязаны к компании где они отработаны
+        bd_a = next(b for b in bd if b.company_id == 1)
+        bd_b = next(b for b in bd if b.company_id == 2)
+        assert bd_a.holiday_hours == Decimal("5")
+        assert bd_b.holiday_hours == Decimal("3")
+
 
 class TestRounding:
     def test_all_amounts_are_whole_rubles(self):

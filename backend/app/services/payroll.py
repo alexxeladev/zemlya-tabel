@@ -84,6 +84,8 @@ class CompanyBreakdown:
     company_name: str
     hours: Decimal
     percent: Decimal
+    overtime_hours: Decimal
+    holiday_hours: Decimal
     base_amount: Decimal
     overtime_amount: Decimal
     holiday_amount: Decimal
@@ -239,6 +241,9 @@ def calculate_employee_payroll(
         base_parts = _distribute_whole_rubles(base_amount, company_hours)
         overtime_parts = _distribute_whole_rubles(overtime_amount, company_hours)
         holiday_parts = _distribute_whole_rubles(holiday_amount, company_holiday_hours)
+        # Часы переработки по компании — пропорционально часам компании
+        # (целочисленным методом наибольших остатков, сумма = overtime_hours).
+        overtime_hours_parts = _distribute_whole_rubles(overtime_hours, company_hours)
         for cid in sorted(company_hours.keys()):
             comp_hours = company_hours[cid]
             proportion = comp_hours / total_hours
@@ -253,6 +258,8 @@ def calculate_employee_payroll(
                 company_name=name,
                 hours=comp_hours,
                 percent=percent,
+                overtime_hours=overtime_hours_parts.get(cid, _ZERO),
+                holiday_hours=company_holiday_hours.get(cid, _ZERO),
                 base_amount=comp_base,
                 overtime_amount=comp_overtime,
                 holiday_amount=comp_holiday,

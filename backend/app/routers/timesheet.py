@@ -137,6 +137,8 @@ def _build_payroll_summary(
                 company_name=bd.company_name,
                 hours=bd.hours,
                 percent=bd.percent,
+                overtime_hours=bd.overtime_hours,
+                holiday_hours=bd.holiday_hours,
                 base_amount=bd.base_amount,
                 overtime_amount=bd.overtime_amount,
                 holiday_amount=bd.holiday_amount,
