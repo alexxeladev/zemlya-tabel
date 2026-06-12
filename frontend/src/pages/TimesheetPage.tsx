@@ -23,6 +23,7 @@ import { toast } from '../store/toasts';
 import { timesheetApi } from '../api/timesheet';
 import { apiClient } from '../api/client';
 import { listDepartments } from '../api/departments';
+import { companyColorByIndex } from '../utils/colors';
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
@@ -108,22 +109,10 @@ type CalendarSummary = {
 };
 
 // ──────────────────────────────────────────────────────────────
-// Палитра цветов компаний
+// Палитра цветов компаний — общая с дашбордом (utils/colors.ts)
 // ──────────────────────────────────────────────────────────────
-const COMPANY_PALETTE = [
-  { bg: '#dbeafe', color: '#1d4ed8' }, // blue
-  { bg: '#dcfce7', color: '#15803d' }, // green
-  { bg: '#fef3c7', color: '#a16207' }, // amber
-  { bg: '#fce7f3', color: '#be185d' }, // pink
-  { bg: '#e9d5ff', color: '#7e22ce' }, // purple
-  { bg: '#cffafe', color: '#0e7490' }, // cyan
-  { bg: '#fed7aa', color: '#c2410c' }, // orange
-  { bg: '#fecaca', color: '#b91c1c' }, // red
-];
-
 function getCompanyColor(companyId: number, companies: Company[]) {
-  const idx = companies.findIndex((c) => c.id === companyId);
-  return COMPANY_PALETTE[Math.max(0, idx) % COMPANY_PALETTE.length];
+  return companyColorByIndex(companies.findIndex((c) => c.id === companyId));
 }
 
 // ──────────────────────────────────────────────────────────────

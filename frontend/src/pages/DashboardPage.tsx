@@ -1,165 +1,373 @@
+// Дашборд (задача 4.1): KPI-карточки + графики recharts.
+// Данные — один запрос GET /api/dashboard/{year}/{month}, видимость по ролям на бэке:
+//   admin    — вся компания, 4 блока
+//   accountant — статусы периодов (главный) + ФОТ + динамика
+//   manager  — те же блоки, но только свой отдел
+//   employee — личный виджет часов, без финансов
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
+import {
+  Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
+  Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts'
+import { getDashboard, type DashboardData, type PeriodStatusRow } from '../api/dashboard'
 import { useAuthStore } from '../store/auth'
-import { timesheetApi } from '../api/timesheet'
-import type { UserRole } from '../types/api'
+import { toast } from '../store/toasts'
+import { formatHours, formatMoney } from '../utils/money'
+import { CHART, companyColorByIndex, PERIOD_STATUS } from '../utils/colors'
 
-const ROLE_LABELS: Record<UserRole, string> = {
-  admin: 'Администратор',
-  manager: 'Руководитель',
-  accountant: 'Бухгалтер',
-  employee: 'Сотрудник',
-}
-
-interface Tile {
-  to: string
-  title: string
-  description: string
-  icon: React.ReactNode
-}
-
-const ICONS = {
-  timesheet: (
-    <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0c0 .621.504 1.125 1.125 1.125" />
-    </svg>
-  ),
-  users: (
-    <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
-    </svg>
-  ),
-  departments: (
-    <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 21h19.5m-18-18v18m10.5-18v18m6-13.5V21M6.75 6.75h.75m-.75 3h.75m-.75 3h.75m3-6h.75m-.75 3h.75m-.75 3h.75M6.75 21v-3.375c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21M3 3h12m-.75 4.5H21m-3.75 3.75h.008v.008h-.008v-.008zm0 3h.008v.008h-.008v-.008zm0 3h.008v.008h-.008v-.008z" />
-    </svg>
-  ),
-  companies: (
-    <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21" />
-    </svg>
-  ),
-  schedules: (
-    <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
-    </svg>
-  ),
-  calendar: (
-    <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5m-9-3.75h.008v.008H12v-.008zM12 15h.008v.008H12V15zm0 2.25h.008v.008H12v-.008zM9.75 15h.008v.008H9.75V15zm0 2.25h.008v.008H9.75v-.008zM7.5 15h.008v.008H7.5V15zm0 2.25h.008v.008H7.5v-.008zm6.75-4.5h.008v.008h-.008v-.008zm0 2.25h.008v.008h-.008V15zm0 2.25h.008v.008h-.008v-.008zm2.25-4.5h.008v.008H16.5v-.008zm0 2.25h.008v.008H16.5V15z" />
-    </svg>
-  ),
-  employees: (
-    <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
-    </svg>
-  ),
-}
-
-const ADMIN_TILES: Tile[] = [
-  { to: '/timesheet', title: 'Табель', description: 'Ввод и просмотр часов', icon: ICONS.timesheet },
-  { to: '/admin/employees', title: 'Сотрудники', description: 'Карточки сотрудников и доступ', icon: ICONS.employees },
-  { to: '/admin/departments', title: 'Отделы', description: 'Структура подразделений', icon: ICONS.departments },
-  { to: '/admin/companies', title: 'Компании', description: 'Юридические лица группы', icon: ICONS.companies },
-  { to: '/admin/schedules', title: 'Графики работы', description: 'Режимы и смены', icon: ICONS.schedules },
-  { to: '/admin/calendar', title: 'Производственный календарь', description: 'Праздники и нормы часов РФ', icon: ICONS.calendar },
+const MONTH_NAMES_RU = [
+  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
+]
+const MONTH_SHORT_RU = [
+  'янв', 'фев', 'мар', 'апр', 'май', 'июн',
+  'июл', 'авг', 'сен', 'окт', 'ноя', 'дек',
 ]
 
-const MANAGER_TILES: Tile[] = [
-  { to: '/timesheet', title: 'Табель', description: 'Ввод часов отдела', icon: ICONS.timesheet },
-  { to: '/admin/employees', title: 'Сотрудники отдела', description: 'Карточки вашего подразделения', icon: ICONS.employees },
-]
+function num(v: string | null | undefined): number {
+  if (v === null || v === undefined) return 0
+  const n = parseFloat(v)
+  return Number.isFinite(n) ? n : 0
+}
 
-const ACCOUNTANT_TILES: Tile[] = [
-  { to: '/timesheet', title: 'Табель', description: 'Просмотр табеля', icon: ICONS.timesheet },
-  { to: '/admin/departments', title: 'Отделы', description: 'Просмотр подразделений', icon: ICONS.departments },
-  { to: '/admin/companies', title: 'Компании', description: 'Юридические лица', icon: ICONS.companies },
-  { to: '/admin/schedules', title: 'Графики работы', description: 'Режимы работы', icon: ICONS.schedules },
-  { to: '/admin/employees', title: 'Сотрудники', description: 'Просмотр карточек', icon: ICONS.employees },
-]
+// ── Мелкие компоненты ─────────────────────────────────────────────────────────
 
-function TileCard({ tile }: { tile: Tile }) {
+function KpiCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
   return (
-    <Link
-      to={tile.to}
-      className="flex items-start gap-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md"
-    >
-      <div className="rounded-lg bg-blue-50 p-2 text-blue-600">{tile.icon}</div>
-      <div>
-        <h3 className="font-semibold text-gray-900">{tile.title}</h3>
-        <p className="text-sm text-gray-500">{tile.description}</p>
-      </div>
-    </Link>
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">{label}</div>
+      <div className={`mt-1 text-2xl font-bold ${accent ?? 'text-gray-900'}`}>{value}</div>
+    </div>
   )
 }
 
-function PendingReviewCard() {
-  const [count, setCount] = useState<number | null>(null)
-
-  useEffect(() => {
-    timesheetApi
-      .getTasks()
-      .then((r) => setCount(r.pending_review.length))
-      .catch(() => setCount(null))
-  }, [])
-
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <Link
-      to="/tasks"
-      className="flex items-center justify-between rounded-xl border border-yellow-200 bg-yellow-50 p-5 shadow-sm transition-shadow hover:shadow-md"
-    >
-      <div>
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-yellow-700">На проверке</h3>
-        <p className="mt-1 text-3xl font-bold text-yellow-800">{count ?? '…'}</p>
-        <p className="mt-1 text-sm text-yellow-700">табелей ждут вашего действия</p>
-      </div>
-      <span className="text-yellow-600">→</span>
-    </Link>
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">{title}</h2>
+      {children}
+    </section>
   )
 }
+
+function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="mb-2 text-sm font-medium text-gray-700">{title}</div>
+      {children}
+    </div>
+  )
+}
+
+function StatusBadge({ status, overdue }: { status: PeriodStatusRow['status']; overdue?: boolean }) {
+  const s = PERIOD_STATUS[status]
+  return (
+    <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${overdue ? 'bg-red-100 text-red-700' : s.badge}`}>
+      {s.label}
+      {overdue ? ' · просрочен' : ''}
+    </span>
+  )
+}
+
+// ── Страница ──────────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
   const user = useAuthStore((s) => s.user)
+  const navigate = useNavigate()
+  const now = new Date()
+  const [year, setYear] = useState(now.getFullYear())
+  const [month, setMonth] = useState(now.getMonth() + 1)
+  const [data, setData] = useState<DashboardData | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    getDashboard(year, month)
+      .then((d) => { if (!cancelled) setData(d) })
+      .catch((err) => { if (!cancelled) toast.error('Ошибка загрузки дашборда: ' + (err?.message ?? err)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [year, month])
+
+  const prevMonth = () => (month === 1 ? (setMonth(12), setYear(year - 1)) : setMonth(month - 1))
+  const nextMonth = () => (month === 12 ? (setMonth(1), setYear(year + 1)) : setMonth(month + 1))
+
+  const gotoTimesheet = (deptId: number | null, y = year, m = month) => {
+    const dept = deptId !== null ? `&department_id=${deptId}` : ''
+    navigate(`/timesheet?year=${y}&month=${m}${dept}`)
+  }
+
   if (!user) return null
-
-  const showPending = user.role === 'admin' || user.role === 'accountant'
-
-  const tiles =
-    user.role === 'admin'
-      ? ADMIN_TILES
-      : user.role === 'manager'
-        ? MANAGER_TILES
-        : user.role === 'accountant'
-          ? ACCOUNTANT_TILES
-          : []
+  const role = data?.role ?? user.role
 
   return (
     <div className="space-y-6">
-      <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-        <h1 className="text-2xl font-bold text-gray-900">Здравствуйте, {user.full_name}!</h1>
-        <p className="mt-1 text-sm text-gray-500">{user.role ? ROLE_LABELS[user.role] : ''}</p>
+      {/* Шапка: заголовок + переключатель месяца */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold text-gray-900">Дашборд</h1>
+        <div className="flex items-center gap-2">
+          <button onClick={prevMonth} className="rounded p-2 hover:bg-gray-100" aria-label="Предыдущий месяц">←</button>
+          <div className="min-w-[160px] text-center text-base font-semibold">
+            {MONTH_NAMES_RU[month - 1]} {year}
+          </div>
+          <button onClick={nextMonth} className="rounded p-2 hover:bg-gray-100" aria-label="Следующий месяц">→</button>
+        </div>
       </div>
 
-      {showPending && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <PendingReviewCard />
+      {loading && !data && <div className="p-8 text-gray-500">Загрузка…</div>}
+
+      {data && (
+        <div className={`space-y-8 ${loading ? 'opacity-60' : ''}`}>
+          {role === 'employee' ? (
+            <EmployeeView data={data} />
+          ) : (
+            <>
+              {role !== 'accountant' && <HoursBlock data={data} onDeptClick={gotoTimesheet} />}
+              {data.periods && role === 'accountant' && (
+                <PeriodsBlockView data={data} onRowClick={gotoTimesheet} />
+              )}
+              {data.payroll && <PayrollBlock data={data} />}
+              {data.periods && role !== 'accountant' && (
+                <PeriodsBlockView data={data} onRowClick={gotoTimesheet} />
+              )}
+              <TrendBlock data={data} />
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Блок 1: часы ──────────────────────────────────────────────────────────────
+
+function HoursBlock({ data, onDeptClick }: {
+  data: DashboardData
+  onDeptClick: (deptId: number | null) => void
+}) {
+  const h = data.hours
+  const chartData = data.hours_by_department.map((d) => ({
+    name: d.department_name,
+    deptId: d.department_id,
+    Норма: num(d.norm_hours),
+    Отработано: num(d.total_hours),
+    Переработка: num(d.overtime_hours),
+  }))
+
+  return (
+    <Section title="Часы">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <KpiCard label="Отработано" value={`${formatHours(h.total_hours)} ч`} />
+        <KpiCard label="Норма" value={h.norm_hours !== null ? `${formatHours(h.norm_hours)} ч` : '—'} />
+        <KpiCard label="Переработка" value={`${formatHours(h.overtime_hours)} ч`}
+                 accent={num(h.overtime_hours) > 0 ? 'text-amber-600' : undefined} />
+        <KpiCard label="Выполнение нормы" value={h.percent_of_norm !== null ? `${h.percent_of_norm}%` : '—'} />
+      </div>
+
+      {chartData.length > 0 && (
+        <ChartCard title="Часы по отделам (клик — в табель отдела)">
+          <ResponsiveContainer width="100%" height={280}>
+            <BarChart data={chartData} onClick={(e) => {
+              const idx = e?.activeTooltipIndex
+              if (typeof idx === 'number' && chartData[idx]) onDeptClick(chartData[idx].deptId)
+            }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+              <YAxis tick={{ fontSize: 12 }} />
+              <Tooltip formatter={(v) => `${v} ч`} />
+              <Legend />
+              <Bar dataKey="Норма" fill={CHART.norm} radius={[3, 3, 0, 0]} cursor="pointer" />
+              <Bar dataKey="Отработано" fill={CHART.worked} radius={[3, 3, 0, 0]} cursor="pointer" />
+              <Bar dataKey="Переработка" fill={CHART.overtime} radius={[3, 3, 0, 0]} cursor="pointer" />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
+    </Section>
+  )
+}
+
+// ── Блок 2: ФОТ ───────────────────────────────────────────────────────────────
+
+function PayrollBlock({ data }: { data: DashboardData }) {
+  const p = data.payroll!
+  const byDept = data.payroll_by_department.map((d) => ({
+    name: d.department_name,
+    ФОТ: num(d.total),
+  }))
+  const byCompany = data.payroll_by_company
+    .filter((c) => num(c.total) > 0)
+    .map((c, i) => ({
+      name: c.company_name,
+      code: c.company_code,
+      value: num(c.total),
+      fill: companyColorByIndex(i).color,
+    }))
+
+  return (
+    <Section title="ФОТ (брутто к начислению)">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <KpiCard label="Всего начислено" value={formatMoney(p.total, { showZero: true })} accent="text-blue-700" />
+        <KpiCard label="Оклады" value={formatMoney(p.base, { showZero: true })} />
+        <KpiCard label="Переработка" value={formatMoney(p.overtime, { showZero: true })} />
+        <KpiCard label="Праздничные" value={formatMoney(p.holiday, { showZero: true })} />
+      </div>
+
+      {p.non_calculable_employees > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {p.non_calculable_employees} сотр. не в расчёте (нет оклада/графика или сменный график) — ФОТ по ним не учтён
         </div>
       )}
 
-      {tiles.length > 0 ? (
-        <div>
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-400">Быстрый доступ</h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {tiles.map((tile) => (
-              <TileCard key={tile.to} tile={tile} />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {byDept.length > 1 && (
+          <ChartCard title="ФОТ по отделам">
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={byDept}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `${Math.round(v / 1000)}т`} />
+                <Tooltip formatter={(v) => formatMoney(String(v))} />
+                <Bar dataKey="ФОТ" fill={CHART.payroll} radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+
+        {byCompany.length > 0 && (
+          <ChartCard title="ФОТ по компаниям (юрлицам)">
+            <ResponsiveContainer width="100%" height={260}>
+              <PieChart>
+                <Pie data={byCompany} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90}>
+                  {byCompany.map((c) => <Cell key={c.name} fill={c.fill} />)}
+                </Pie>
+                <Tooltip formatter={(v) => formatMoney(String(v))} />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        )}
+      </div>
+    </Section>
+  )
+}
+
+// ── Блок 3: статусы периодов ──────────────────────────────────────────────────
+
+function PeriodsBlockView({ data, onRowClick }: {
+  data: DashboardData
+  onRowClick: (deptId: number | null, y?: number, m?: number) => void
+}) {
+  const pb = data.periods!
+  const allRows = [...pb.overdue_rows, ...pb.rows]
+
+  return (
+    <Section title="Статусы периодов">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <KpiCard label="Закрыто" value={String(pb.counts.closed)} accent="text-green-700" />
+        <KpiCard label="На проверке" value={String(pb.counts.pending_review)} accent="text-yellow-700" />
+        <KpiCard label="В черновике" value={String(pb.counts.draft)} />
+        <KpiCard label="Просрочено" value={String(pb.counts.overdue)}
+                 accent={pb.counts.overdue > 0 ? 'text-red-600' : 'text-gray-400'} />
+      </div>
+
+      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+              <th className="px-4 py-2">Отдел</th>
+              <th className="px-4 py-2">Период</th>
+              <th className="px-4 py-2">Статус</th>
+              <th className="px-4 py-2">Отправил / закрыл</th>
+              <th className="px-4 py-2 text-right">Действие</th>
+            </tr>
+          </thead>
+          <tbody>
+            {allRows.map((r) => (
+              <tr
+                key={`${r.department_id ?? 'null'}-${r.year}-${r.month}`}
+                onClick={() => onRowClick(r.department_id, r.year, r.month)}
+                className={`cursor-pointer border-b border-gray-100 last:border-0 hover:bg-blue-50/40 ${r.is_overdue ? 'bg-red-50/60' : ''}`}
+              >
+                <td className="px-4 py-2 font-medium text-gray-900">{r.department_name}</td>
+                <td className="px-4 py-2 text-gray-600">{MONTH_SHORT_RU[r.month - 1]} {r.year}</td>
+                <td className="px-4 py-2"><StatusBadge status={r.status} overdue={r.is_overdue} /></td>
+                <td className="px-4 py-2 text-gray-600">{r.closed_by_name ?? r.submitted_by_name ?? '—'}</td>
+                <td className="px-4 py-2 text-right text-xs text-blue-600">Открыть табель →</td>
+              </tr>
             ))}
-          </div>
+            {allRows.length === 0 && (
+              <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-400">Нет отделов</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  )
+}
+
+// ── Блок 4: динамика ──────────────────────────────────────────────────────────
+
+function TrendBlock({ data }: { data: DashboardData }) {
+  const points = data.trend.map((t) => ({
+    name: `${MONTH_SHORT_RU[t.month - 1]} ${String(t.year).slice(2)}`,
+    Часы: num(t.total_hours),
+    Переработка: num(t.overtime_hours),
+    ФОТ: t.payroll_total !== null ? num(t.payroll_total) : undefined,
+  }))
+  const hasMoney = data.trend.some((t) => t.payroll_total !== null)
+  const hasData = points.some((p) => p.Часы > 0)
+
+  return (
+    <Section title="Динамика по месяцам">
+      {!hasData || points.length < 2 ? (
+        <div className="rounded-xl border border-gray-200 bg-white p-6 text-sm text-gray-500 shadow-sm">
+          Недостаточно данных для динамики — график накопится со временем.
         </div>
       ) : (
-        <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm text-sm text-gray-500">
-          Ваш дашборд пока пуст. Табели появятся позже.
-        </div>
+        <ChartCard title={hasMoney ? 'Часы и ФОТ' : 'Часы'}>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={points}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 12 }} />
+              <YAxis yAxisId="hours" tick={{ fontSize: 12 }} />
+              {hasMoney && (
+                <YAxis yAxisId="money" orientation="right" tick={{ fontSize: 12 }}
+                       tickFormatter={(v) => `${Math.round(v / 1000)}т`} />
+              )}
+              <Tooltip formatter={(v, name) => (name === 'ФОТ' ? formatMoney(String(v)) : `${v} ч`)} />
+              <Legend />
+              <Line yAxisId="hours" type="monotone" dataKey="Часы" stroke={CHART.hours} strokeWidth={2} dot />
+              <Line yAxisId="hours" type="monotone" dataKey="Переработка" stroke={CHART.overtime} strokeWidth={2} dot />
+              {hasMoney && (
+                <Line yAxisId="money" type="monotone" dataKey="ФОТ" stroke={CHART.payroll} strokeWidth={2} dot />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
       )}
+    </Section>
+  )
+}
+
+// ── Employee: личный виджет ───────────────────────────────────────────────────
+
+function EmployeeView({ data }: { data: DashboardData }) {
+  const h = data.hours
+  return (
+    <div className="space-y-8">
+      <Section title="Мои часы">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <KpiCard label="Отработано" value={`${formatHours(h.total_hours)} ч`} />
+          <KpiCard label="Норма" value={h.norm_hours !== null ? `${formatHours(h.norm_hours)} ч` : '—'} />
+          <KpiCard label="Переработка" value={`${formatHours(h.overtime_hours)} ч`}
+                   accent={num(h.overtime_hours) > 0 ? 'text-amber-600' : undefined} />
+          <KpiCard label="Выполнение нормы" value={h.percent_of_norm !== null ? `${h.percent_of_norm}%` : '—'} />
+        </div>
+      </Section>
+      <TrendBlock data={data} />
     </div>
   )
 }
