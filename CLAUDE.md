@@ -15,7 +15,7 @@
 - **Auth:** JWT Bearer (python-jose), хеширование passlib[bcrypt]
 - **Тесты:** pytest + httpx, SQLite in-memory для изоляции
 - **Линтер:** ruff
-- **Frontend:** React 18 + TypeScript + Vite, Tailwind CSS, Zustand (store), axios, react-router-dom, zod
+- **Frontend:** React 18 + TypeScript + Vite, Tailwind CSS, Zustand (store), axios, react-router-dom, zod, recharts (графики дашборда)
 - **Excel:** openpyxl (экспорт Т-13)
 
 ## Структура
@@ -35,13 +35,14 @@ backend/
       production_calendars.py — ProductionCalendar (JSONB с xmlcalendar.ru)
       audit_log.py  — AuditLog (append-only)
     schemas/        — auth, employee, department, company, schedule, calendar,
-                      timesheet, timesheet_period, payroll
+                      timesheet, timesheet_period, payroll, dashboard
     routers/
       auth.py       — POST /api/auth/login, /auth/change-password, GET /api/auth/me
       employees.py  — CRUD /api/employees + dismiss/rehire + access/reset-password (admin)
       departments.py / companies.py / schedules.py — справочники (чтение: не-employee, CUD: admin)
       calendar.py   — /api/calendar: import, load, {year}, summary
       timesheet.py  — /api/timesheet: месяц, ячейки, периоды, autofill, payroll, export, tasks
+      dashboard.py  — GET /api/dashboard/{year}/{month} (сводный, видимость по ролям в сервисе)
     core/
       security.py   — hash_password, verify_password, create_access_token, decode_token
       deps.py       — get_current_user, require_role(*roles)
@@ -51,6 +52,7 @@ backend/
       timesheet.py  — visible_employees_for_actor, upsert_cell, autofill
       timesheet_periods.py — workflow периодов, tasks inbox
       payroll.py    — calculate_employee_payroll (чистая функция, Decimal)
+      dashboard.py  — build_dashboard (агрегация поверх payroll, НЕ дублирует формулы)
       timesheet_export.py  — generate_t13_excel
   alembic/          — миграции
   tests/            — conftest (client, db_session SQLite, фикстуры ролей) + тесты по модулям
@@ -63,7 +65,9 @@ frontend/
     routes/         — AppRouter (RoleRoute), PrivateRoute (must_change_password gate)
     pages/          — TimesheetPage (основной экран), TasksPage, DashboardPage, Login, ChangePassword
     pages/admin/    — Employees, Departments, Companies, Schedules, Calendar, Payroll
-    components/ / hooks/ / layouts/ / types/ / utils/ (money.ts — formatMoney/formatHours)
+    components/ / hooks/ / layouts/ / types/
+    utils/          — money.ts (formatMoney/formatHours), colors.ts (общая палитра компаний
+                      и статусов — единая для чипов табеля и графиков дашборда)
 ```
 
 ## Команды
@@ -230,6 +234,14 @@ alembic current  # должен совпадать с head
 - Название организации захардкожено: «ДЕВЕЛОПМЕНТ ГРУППА «ЗЕМЛЯ МО»» — потом вынесем в настройки
 - **XML-экспорт не реализован** — ждёт требований 1С
 - Финансовые данные в Excel НЕ выгружаются — только часы
+
+## Dashboard
+
+- Один комбинированный эндпойнт: `GET /api/dashboard/{year}/{month}` — часы, ФОТ (по отделам и юрлицам), статусы периодов, динамика за 6 месяцев. Видимость шьётся в сервисе по роли actor-а: admin/accountant — вся компания, manager — свой отдел (принудительно), employee — только свои часы (`payroll=None`, `periods=None`).
+- Сервис `app/services/dashboard.py` агрегирует **поверх** `calculate_employee_payroll` и `visible_employees_for_actor` — формулы ЗП и правила видимости НЕ дублировать. Тест сверяет ФОТ дашборда с `/api/timesheet/{y}/{m}/payroll` — цифры обязаны совпадать.
+- «Просрочено» = существующий период прошлых месяцев в статусе ≠ closed. Ограничение: lazy-создание периодов — месяц, который никто не открывал, в просрочку не попадёт.
+- KPI `non_calculable_employees` — сколько сотрудников не вошло в расчёт ФОТ (нет оклада/графика, сменный график); фронт показывает предупреждение.
+- Фронт: `DashboardPage` (recharts: BarChart/PieChart/LineChart, всё в ResponsiveContainer), данные одним запросом через `api/dashboard.ts`. Клик по отделу (строка статусов / столбец часов) → `/timesheet?year=&month=&department_id=`. Динамика при <2 точках — заглушка «Недостаточно данных».
 
 ## Правила работы
 
