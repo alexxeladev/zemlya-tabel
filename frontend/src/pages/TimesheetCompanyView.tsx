@@ -312,44 +312,44 @@ export function TimesheetCompanyView(props: Props) {
                         ×
                       </button>
                     )}
+                    {/* «+» — справа на последней строке компаний, только draft */}
+                    {last && periodEditable && avail.length > 0 && adderOpenFor !== emp.id && (
+                      <button
+                        type="button"
+                        onClick={() => setAdderOpenFor(emp.id)}
+                        className="inline-flex items-center justify-center h-5 px-1.5 rounded border border-dashed border-blue-300 text-blue-500 text-sm font-bold leading-none hover:bg-blue-50 hover:border-blue-400"
+                        title="Добавить компанию"
+                      >
+                        +
+                      </button>
+                    )}
                   </div>
                   {company && (
                     <span className="text-[10px] text-gray-400 truncate" title={company.name}>
                       {company.name}
                     </span>
                   )}
-                  {/* «+ комп.» — под последней строкой компаний, только draft */}
-                  {last && periodEditable && avail.length > 0 && (
-                    adderOpenFor === emp.id ? (
-                      <select
-                        autoFocus
-                        className="text-[11px] border border-blue-300 rounded px-1 py-1 w-full mt-0.5"
-                        defaultValue=""
-                        onChange={(e) => {
-                          const v = parseInt(e.target.value, 10);
-                          if (Number.isFinite(v)) addCompany(emp.id, v);
-                        }}
-                        onBlur={() => setAdderOpenFor(null)}
-                      >
-                        <option value="" disabled>
-                          Выберите…
+                  {/* Выпадающий список выбора компании — снизу при клике на «+» */}
+                  {last && periodEditable && avail.length > 0 && adderOpenFor === emp.id && (
+                    <select
+                      autoFocus
+                      className="text-[11px] border border-blue-300 rounded px-1 py-1 w-full mt-0.5"
+                      defaultValue=""
+                      onChange={(e) => {
+                        const v = parseInt(e.target.value, 10);
+                        if (Number.isFinite(v)) addCompany(emp.id, v);
+                      }}
+                      onBlur={() => setAdderOpenFor(null)}
+                    >
+                      <option value="" disabled>
+                        Выберите…
+                      </option>
+                      {avail.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.code} — {c.name}
                         </option>
-                        {avail.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.code} — {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setAdderOpenFor(emp.id)}
-                        className="block w-full text-center text-[10px] text-gray-400 border border-dashed border-gray-300 rounded py-1 mt-0.5 hover:text-blue-600 hover:border-blue-300"
-                        title="Добавить компанию"
-                      >
-                        + комп.
-                      </button>
-                    )
+                      ))}
+                    </select>
                   )}
                 </div>
               </td>
