@@ -61,9 +61,10 @@ backend/
 frontend/
   src/
     api/            — axios-клиент (401-интерсептор) + модули по сущностям
-    store/          — zustand: auth, toasts
+    store/          — zustand: auth, toasts, timesheetView (режим табеля classic/company)
     routes/         — AppRouter (RoleRoute), PrivateRoute (must_change_password gate)
-    pages/          — TimesheetPage (основной экран), TasksPage, DashboardPage, Login, ChangePassword
+    pages/          — TimesheetPage (классический табель), TimesheetCompanyView (вид «по компаниям»),
+                      TasksPage, DashboardPage, Login, ChangePassword
     pages/admin/    — Employees, Departments, Companies, Schedules, Calendar, Payroll
     components/ / hooks/ / layouts/ / types/
     utils/          — money.ts (formatMoney/formatHours), colors.ts (общая палитра компаний
@@ -179,6 +180,14 @@ alembic current  # должен совпадать с head
 - **Системные пользователи (is_system_admin=True) скрыты из табеля** — никогда не попадают в выдачу
 - Компании сотрудника в табеле: только default_company по умолчанию + те, где есть часы. Бэк отдаёт `extra_companies_by_employee: dict[int, list[int]]`. UI хранит «expanded companies» в локальном state (не zustand), загружает с сервера при старте.
 
+## Два вида табеля (задача 3.10)
+
+- Тумблер в шапке: **«Классический»** (`TimesheetPage`, одна строка/сотрудник, слоты компаний в ячейке дня) и **«По компаниям»** (`TimesheetCompanyView`, сотрудник = N строк по компаниям). Выбор в zustand `store/timesheetView` (НЕ localStorage — в окружении ненадёжен), не сбрасывается при смене месяца. По умолчанию — классический.
+- Оба вида используют **одни и те же данные** с бэка (`GET /api/timesheet/{y}/{m}?include_payroll=`), отличается только рендеринг. `TimesheetPage` — владелец данных, передаёт их и колбэки в `TimesheetCompanyView` пропсами.
+- Вид «по компаниям»: emp-колонки (ФИО/Отдел/График слева; Итого Ч/Итого ₽/Δ/Норма справа) объединены через **rowspan** на первой строке сотрудника. Колонки компании (дни, Итого Ч компании, Оклад/Сверхур.Ч/Празд.Ч/Сверхур.₽/Празд.₽) — на каждой строке. Финансы видят только admin/accountant/manager.
+- Строки сотрудника: родительская (`default_company`, помечена «осн.», удалить нельзя) + где есть часы + добавленные вручную. Кнопка «+» (справа от чипа последней компании) и «×» (убрать доп. строку с 0 часов) — **только в draft** (как и редактирование часов в классике).
+- Sticky слева в обоих видах: ФИО/Отдел/График (+ Компания в новом виде) — фикс. ширины + накопленные смещения (`stickyLeft()` в `TimesheetCompanyView`), иначе sticky разъезжается.
+
 ## Autofill (автозаполнение по графику)
 
 - Эндпоинты: `POST /api/timesheet/autofill/preview` (preview без изменений), `POST /api/timesheet/autofill/apply` (применить)
@@ -216,7 +225,7 @@ alembic current  # должен совпадать с head
 - **Праздничные/выходные часы — отдельная категория**, оплата per-employee (задача 3.9): `weekend_pay_type = coefficient` → `holiday_hours × (rate/norm) × коэффициент` (0 = не платить, дефолт 1.5); `fixed_rate` → `holiday_hours × фикс_ставка` (не зависит от оклада). Поля `weekend_pay_type / weekend_coefficient / weekend_fixed_rate` в модели Employee.
 - `norm_days` (рабочих дней по календарю) и `fact_days` (дней с часами) — справочные, в деньгах не участвуют.
 - Норма только для `schedule_type="standard"`. Shift-графики → `is_calculable=False`.
-- Распределение по компаниям: base/overtime — пропорционально часам; holiday — пропорционально праздничным часам по компании. У каждой компании есть `percent` (доля часов сотрудника).
+- Распределение по компаниям (`CompanyBreakdown`): base/overtime ₽ — пропорционально часам; holiday ₽ — пропорционально праздничным часам по компании. Поля per-company: `hours`, `percent`, `overtime_hours`, `holiday_hours`, `base_amount`, `overtime_amount`, `holiday_amount`, `total`. `holiday_hours` — точные (где отработаны), `overtime_hours` — пропорционально часам (метод наибольших остатков, сумма = итог).
 - **Сумма частей по компаниям сходится с итогом точно** — распределение через `_distribute_whole_rubles()` (метод наибольших остатков: floor долей + остаток рублей компаниям с наибольшими дробными остатками, тай-брейк по company_id). НЕ округлять доли независимо — даёт расхождение до ±N/2 руб. на категорию.
 - Видят только admin / accountant / **manager** (свой отдел). На бэке принудительная проверка — игнорировать `?include_payroll=true` от employee.
 - Эндпоинт: `GET /api/timesheet/{year}/{month}/payroll`, параметр `?include_payroll=true` у основного GET.
@@ -229,6 +238,7 @@ alembic current  # должен совпадать с head
 - Эндпоинт: `GET /api/timesheet/{year}/{month}/export/excel?department_id=N`
 - Права: admin, accountant, manager (только свой отдел)
 - Одна строка в таблице = один сотрудник × одна компания (у кого N компаний — N строк; ФИО/должность/таб.№ — merged cells по N строкам)
+- Колонки (только часы, рублей нет): дни 1..N (+ итоги 1-15/16-конец), **Итого Ч компании** (per-row), **Сверхур. Ч** и **Праздн. Ч** по компании (per-row), **Итого Ч** сотрудника и **Норма** (merge через rowspan). Структура совпадает с видом «по компаниям» на экране, но без денег.
 - Сотрудники без entries в периоде — пропускаются
 - Праздники: красный фон (`FFFFCCCC`), сокращённые: жёлтый (`FFFFF2CC`)
 - Название организации захардкожено: «ДЕВЕЛОПМЕНТ ГРУППА «ЗЕМЛЯ МО»» — потом вынесем в настройки
