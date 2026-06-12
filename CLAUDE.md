@@ -15,43 +15,55 @@
 - **Auth:** JWT Bearer (python-jose), хеширование passlib[bcrypt]
 - **Тесты:** pytest + httpx, SQLite in-memory для изоляции
 - **Линтер:** ruff
-- **Frontend:** React (не реализован)
+- **Frontend:** React 18 + TypeScript + Vite, Tailwind CSS, Zustand (store), axios, react-router-dom, zod
+- **Excel:** openpyxl (экспорт Т-13)
 
 ## Структура
 
 ```
 backend/
   app/
-    main.py         — FastAPI app, CORS, роутеры, /health
+    main.py         — FastAPI app, CORS, роутеры, /health, lifespan (автозагрузка календарей)
     config.py       — Pydantic Settings (DATABASE_URL, SECRET_KEY, CORS_ORIGINS, ...)
     database.py     — engine, SessionLocal, Base, get_db()
-    cli.py          — CLI: python -m app.cli create-admin ...
-    models/
-      users.py      — User, UserRole (enum)
-      departments.py
-      companies.py
-      schedules.py
-      employees.py
+    cli.py          — CLI: create-admin, reset-password
+    models/         — отдельной таблицы users НЕТ: auth-поля (email, role, ...) в Employee
+      employees.py  — Employee (персональные + финансовые + auth-поля, is_system_admin)
+      departments.py / companies.py / schedules.py
+      timesheet_entries.py   — TimesheetEntry (employee, work_date, company, hours int)
+      timesheet_periods.py   — TimesheetPeriod (workflow draft/pending_review/closed)
+      production_calendars.py — ProductionCalendar (JSONB с xmlcalendar.ru)
       audit_log.py  — AuditLog (append-only)
-    schemas/
-      auth.py       — LoginRequest, TokenResponse, ChangePasswordRequest
-      user.py       — UserBase, UserCreate, UserRead, UserUpdate
+    schemas/        — auth, employee, department, company, schedule, calendar,
+                      timesheet, timesheet_period, payroll
     routers/
       auth.py       — POST /api/auth/login, /auth/change-password, GET /api/auth/me
-      users.py      — CRUD /api/users (admin only)
+      employees.py  — CRUD /api/employees + dismiss/rehire + access/reset-password (admin)
+      departments.py / companies.py / schedules.py — справочники (чтение: не-employee, CUD: admin)
+      calendar.py   — /api/calendar: import, load, {year}, summary
+      timesheet.py  — /api/timesheet: месяц, ячейки, периоды, autofill, payroll, export, tasks
     core/
       security.py   — hash_password, verify_password, create_access_token, decode_token
       deps.py       — get_current_user, require_role(*roles)
       audit.py      — log_action(db, actor, entity_type, entity_id, action, ...)
+    services/
+      calendar.py   — производственный календарь (parsing, нормы, fetch с xmlcalendar.ru)
+      timesheet.py  — visible_employees_for_actor, upsert_cell, autofill
+      timesheet_periods.py — workflow периодов, tasks inbox
+      payroll.py    — calculate_employee_payroll (чистая функция, Decimal)
+      timesheet_export.py  — generate_t13_excel
   alembic/          — миграции
-  tests/
-    conftest.py     — client, db_session (SQLite), admin_user, manager_user fixtures
-    test_auth.py
-    test_users.py
-  pyproject.toml
-  alembic.ini
-  docker-compose.dev.yml
-  .env.example
+  tests/            — conftest (client, db_session SQLite, фикстуры ролей) + тесты по модулям
+  pyproject.toml / alembic.ini / docker-compose.dev.yml / .env.example
+
+frontend/
+  src/
+    api/            — axios-клиент (401-интерсептор) + модули по сущностям
+    store/          — zustand: auth, toasts
+    routes/         — AppRouter (RoleRoute), PrivateRoute (must_change_password gate)
+    pages/          — TimesheetPage (основной экран), TasksPage, DashboardPage, Login, ChangePassword
+    pages/admin/    — Employees, Departments, Companies, Schedules, Calendar, Payroll
+    components/ / hooks/ / layouts/ / types/ / utils/ (money.ts — formatMoney/formatHours)
 ```
 
 ## Команды
@@ -66,8 +78,9 @@ cd backend && pip install -e ".[dev]"
 # Запуск
 uvicorn app.main:app --reload
 
-# Создать первого админа
+# Создать первого админа / сбросить пароль
 python -m app.cli create-admin --email admin@example.com --password changeme --full-name "Admin"
+python -m app.cli reset-password --email admin@example.com --new-password newpass
 
 # Миграции
 alembic upgrade head
@@ -77,12 +90,17 @@ alembic revision --autogenerate -m "describe change"
 # Тесты
 pytest
 pytest -v --tb=short
+
+# Frontend
+cd frontend && npm install
+npm run dev        # дев-сервер на :5173
+npm run build      # tsc + vite build
 ```
 
 ## Конвенции
 
 ### Таблицы
-- Имена: snake_case, **множественное число** (`users`, `departments`, `time_entries`)
+- Имена: snake_case, **множественное число** (`employees`, `departments`, `timesheet_entries`)
 
 ### Pydantic-схемы
 Три схемы на каждую сущность:
