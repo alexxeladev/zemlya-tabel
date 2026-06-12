@@ -80,16 +80,24 @@ export function DashboardPage() {
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
+    setError(null)
     getDashboard(year, month)
       .then((d) => { if (!cancelled) setData(d) })
-      .catch((err) => { if (!cancelled) toast.error('Ошибка загрузки дашборда: ' + (err?.message ?? err)) })
+      .catch((err) => {
+        if (cancelled) return
+        const msg = err instanceof Error ? err.message : String(err)
+        setError(msg)
+        toast.error('Ошибка загрузки дашборда: ' + msg)
+      })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [year, month])
+  }, [year, month, reloadKey])
 
   const prevMonth = () => (month === 1 ? (setMonth(12), setYear(year - 1)) : setMonth(month - 1))
   const nextMonth = () => (month === 12 ? (setMonth(1), setYear(year + 1)) : setMonth(month + 1))
@@ -117,6 +125,18 @@ export function DashboardPage() {
       </div>
 
       {loading && !data && <div className="p-8 text-gray-500">Загрузка…</div>}
+
+      {error && !loading && !data && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-sm text-red-700">
+          Не удалось загрузить дашборд: {error}
+          <button
+            onClick={() => setReloadKey((k) => k + 1)}
+            className="ml-3 rounded border border-red-300 px-2 py-1 text-xs hover:bg-red-100"
+          >
+            Повторить
+          </button>
+        </div>
+      )}
 
       {data && (
         <div className={`space-y-8 ${loading ? 'opacity-60' : ''}`}>
