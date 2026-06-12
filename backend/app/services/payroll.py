@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import ROUND_HALF_EVEN, Decimal
+from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
@@ -23,6 +23,35 @@ _PERCENT_Q = Decimal("0.1")
 
 def _round(value: Decimal) -> Decimal:
     return value.quantize(_ONE, rounding=ROUND_HALF_EVEN)
+
+
+def _distribute_whole_rubles(
+    total: Decimal, weights: dict[int, Decimal]
+) -> dict[int, Decimal]:
+    """
+    Распределяет целую сумму total по ключам пропорционально weights так,
+    чтобы сумма частей была РОВНО равна total (метод наибольших остатков).
+    Независимое округление долей даёт расхождение с итогом до ±N/2 руб. —
+    для разнесения по юрлицам это недопустимо.
+    """
+    weight_sum = sum(weights.values(), _ZERO)
+    if weight_sum <= _ZERO or total == _ZERO:
+        return {key: _ZERO for key in weights}
+
+    parts: dict[int, Decimal] = {}
+    remainders: dict[int, Decimal] = {}
+    for key, w in weights.items():
+        exact = total * w / weight_sum
+        floor = exact.to_integral_value(rounding=ROUND_FLOOR)
+        parts[key] = floor
+        remainders[key] = exact - floor
+
+    leftover = int(total - sum(parts.values(), _ZERO))
+    # Остаток (0..N-1 руб.) — по рублю ключам с наибольшими остатками;
+    # при равенстве — детерминированно по company_id.
+    for key in sorted(weights, key=lambda k: (-remainders[k], k))[:leftover]:
+        parts[key] += _ONE
+    return parts
 
 
 def _weekend_pay(employee: Employee, holiday_hours: Decimal, hourly_rate: Decimal) -> Decimal:
@@ -204,20 +233,19 @@ def calculate_employee_payroll(
     holiday_amount = _round(holiday_amount)
     total_amount = base_amount + overtime_amount + holiday_amount
 
-    # Company breakdown
+    # Company breakdown — суммы частей по каждой категории сходятся с итогом
     breakdown: list[CompanyBreakdown] = []
     if is_calculable and total_hours > _ZERO:
+        base_parts = _distribute_whole_rubles(base_amount, company_hours)
+        overtime_parts = _distribute_whole_rubles(overtime_amount, company_hours)
+        holiday_parts = _distribute_whole_rubles(holiday_amount, company_holiday_hours)
         for cid in sorted(company_hours.keys()):
             comp_hours = company_hours[cid]
             proportion = comp_hours / total_hours
             percent = (proportion * _HUNDRED).quantize(_PERCENT_Q, rounding=ROUND_HALF_EVEN)
-            comp_base = _round(base_amount * proportion)
-            comp_overtime = _round(overtime_amount * proportion)
-            if total_holiday_hours > _ZERO:
-                h_prop = company_holiday_hours.get(cid, _ZERO) / total_holiday_hours
-                comp_holiday = _round(holiday_amount * h_prop)
-            else:
-                comp_holiday = _ZERO
+            comp_base = base_parts[cid]
+            comp_overtime = overtime_parts[cid]
+            comp_holiday = holiday_parts[cid]
             code, name = companies_by_id.get(cid, ("", ""))
             breakdown.append(CompanyBreakdown(
                 company_id=cid,

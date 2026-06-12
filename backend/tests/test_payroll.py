@@ -387,6 +387,54 @@ class TestCompanyBreakdown:
         assert bd_a.holiday_amount == p.holiday_amount
         assert bd_b.holiday_amount == Decimal("0")
 
+    def test_breakdown_sums_equal_total_uneven_split(self):
+        """Доли 1/3 не делятся нацело — сумма частей всё равно обязана сходиться с итогом."""
+        schedule = make_schedule(8)
+        emp = make_employee(rate=Decimal("10000"), schedule=schedule)
+        # 8h в трёх разных днях на три компании — каждой по 1/3 часов
+        entries = [
+            make_entry(company_id=1, work_date=date(2026, 5, 2), hours=Decimal("8")),
+            make_entry(company_id=2, work_date=date(2026, 5, 5), hours=Decimal("8")),
+            make_entry(company_id=3, work_date=date(2026, 5, 6), hours=Decimal("8")),
+        ]
+        p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
+
+        # base = 10000 × 24/176 = 1363.64 → 1364; деление на 3 даёт 454.67 на компанию.
+        # Независимое округление дало бы 455×3 = 1365 ≠ 1364.
+        assert p.base_amount == Decimal("1364")
+        assert sum(b.base_amount for b in p.breakdown_by_company) == p.base_amount
+        assert sum(b.total for b in p.breakdown_by_company) == p.total_amount
+        parts = sorted(b.base_amount for b in p.breakdown_by_company)
+        assert parts == [Decimal("454"), Decimal("455"), Decimal("455")]
+
+    def test_breakdown_sums_for_all_categories(self):
+        """base/overtime/holiday: каждая категория по компаниям сходится со своим итогом."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)  # rate 80000, норма 167 (MAY_WITH_HOLIDAY)
+        entries = [
+            make_entry(company_id=1, work_date=date(2026, 5, 2), hours=Decimal("6")),
+            # вместе с 6h по c1 это 10h за день → 2h переработки
+            make_entry(company_id=2, work_date=date(2026, 5, 2), hours=Decimal("4")),
+            make_entry(company_id=1, work_date=date(2026, 5, 5), hours=Decimal("5")),
+            make_entry(company_id=1, work_date=date(2026, 5, 1), hours=Decimal("5")),  # праздник
+            make_entry(company_id=2, work_date=date(2026, 5, 1), hours=Decimal("3")),  # праздник
+            make_entry(company_id=3, work_date=date(2026, 5, 3), hours=Decimal("7")),  # выходной
+        ]
+        p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
+
+        assert p.overtime_hours == Decimal("2")
+        assert p.holiday_hours == Decimal("15")
+        bd = p.breakdown_by_company
+        assert len(bd) == 3
+        assert sum(b.base_amount for b in bd) == p.base_amount
+        assert sum(b.overtime_amount for b in bd) == p.overtime_amount
+        assert sum(b.holiday_amount for b in bd) == p.holiday_amount
+        assert sum(b.total for b in bd) == p.total_amount
+        for b in bd:
+            assert b.base_amount >= Decimal("0")
+            assert b.overtime_amount >= Decimal("0")
+            assert b.holiday_amount >= Decimal("0")
+
 
 class TestRounding:
     def test_all_amounts_are_whole_rubles(self):
