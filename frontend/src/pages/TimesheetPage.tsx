@@ -656,6 +656,8 @@ export function TimesheetPage() {
           const premium = num(pay?.premium_amount);
           const kpi = num(pay?.kpi_amount);
           const deductions = num(pay?.total_deductions);
+          // Итого ₽ = всё начисленное: оклад+сверхур+праздн + премия + KPI
+          const grossTotal = num(pay?.total_amount) + premium + kpi;
           return (
           <>
             <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600" title="Оплата выходных">
@@ -701,7 +703,7 @@ export function TimesheetPage() {
               </button>
             </td>
             <td className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
-              {fmtMoney(pay?.total_amount ?? null)}
+              {grossTotal > 0 ? fmtMoney(String(grossTotal)) : '—'}
             </td>
             {/* Удержано — аванс + займ, своя кнопка */}
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs text-red-600">
@@ -1110,7 +1112,7 @@ export function TimesheetPage() {
                       {fmtMoney(data.payroll.total_kpi ?? null)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono font-bold text-blue-700 bg-blue-100">
-                      {fmtMoney(data.payroll.grand_total)}
+                      {fmtMoney(String(num(data.payroll.grand_total) + num(data.payroll.total_premium) + num(data.payroll.total_kpi)))}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono text-red-600">
                       {num(data.payroll.total_deductions) > 0 ? '−' + fmtMoney(data.payroll.total_deductions ?? null) : '—'}
