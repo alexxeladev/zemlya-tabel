@@ -50,6 +50,9 @@ const schema = z.object({
   weekend_pay_type: z.enum(['coefficient', 'fixed_rate']).default('coefficient'),
   weekend_coefficient: z.string().optional(),
   weekend_fixed_rate: z.string().optional(),
+  loan_amount: z.string().optional(),
+  loan_term_months: z.string().optional(),
+  loan_start_date: z.string().optional(),
   is_active: z.boolean().default(true),
   hire_date: z.string().optional(),
   dismissal_date: z.string().optional(),
@@ -123,6 +126,7 @@ export function EmployeesPage() {
       department_id: isManager() ? (user?.department_id ?? undefined) : undefined,
       schedule_id: undefined, default_company_id: undefined,
       rate: '', weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
+      loan_amount: '', loan_term_months: '', loan_start_date: '',
       is_active: true, hire_date: '', dismissal_date: '',
       has_access: false, email: '', role: 'employee', initial_password: '', is_system_admin: false,
     })
@@ -142,6 +146,9 @@ export function EmployeesPage() {
       weekend_pay_type: e.weekend_pay_type ?? 'coefficient',
       weekend_coefficient: e.weekend_coefficient ?? '',
       weekend_fixed_rate: e.weekend_fixed_rate ?? '',
+      loan_amount: e.loan_amount ?? '',
+      loan_term_months: e.loan_term_months != null ? String(e.loan_term_months) : '',
+      loan_start_date: e.loan_start_date ?? '',
       is_active: e.is_active,
       hire_date: e.hire_date ?? '',
       dismissal_date: e.dismissal_date ?? '',
@@ -172,6 +179,9 @@ export function EmployeesPage() {
         weekend_pay_type: data.weekend_pay_type,
         weekend_coefficient: data.weekend_pay_type === 'coefficient' ? (data.weekend_coefficient || null) : null,
         weekend_fixed_rate: data.weekend_pay_type === 'fixed_rate' ? (data.weekend_fixed_rate || null) : null,
+        loan_amount: data.loan_amount || null,
+        loan_term_months: data.loan_term_months ? Number(data.loan_term_months) : null,
+        loan_start_date: data.loan_start_date || null,
         is_active: data.is_active,
         hire_date: data.hire_date || null,
         dismissal_date: data.dismissal_date || null,
@@ -516,6 +526,28 @@ export function EmployeesPage() {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Section 3c — Заём (задача 3.11a). Гасится равными долями автоматически. */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Заём</p>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-gray-700">Сумма (₽)</label>
+                <input {...form.register('loan_amount')} placeholder="12000" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-gray-700">Срок (мес.)</label>
+                <input type="number" min={1} {...form.register('loan_term_months')} placeholder="12" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-sm font-medium text-gray-700">Начало погашения</label>
+                <input type="date" {...form.register('loan_start_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+            </div>
+            <p className="mt-1 text-xs text-gray-400">
+              Гасится равными долями (сумма ÷ срок) автоматически с месяца начала. Удержание за конкретный месяц можно скорректировать в табеле.
+            </p>
           </div>
 
           {/* Section 4 — Access (manager не управляет доступом) */}

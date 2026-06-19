@@ -41,6 +41,19 @@ export type Employee = {
   is_active: boolean;
   is_system_admin?: boolean;
   dismissal_date?: string | null;
+  loan_amount?: string | null;
+  loan_term_months?: number | null;
+  loan_start_date?: string | null;
+};
+
+export type Adjustment = {
+  id: number;
+  employee_id: number;
+  year: number;
+  month: number;
+  kind: 'premium' | 'kpi' | 'advance';
+  amount: string;
+  reason: string;
 };
 
 export type Company = { id: number; code: string; name: string };
@@ -77,6 +90,18 @@ export type EmployeePayroll = {
   overtime_amount: string;
   holiday_amount: string;
   total_amount: string;
+  weekend_pay_type?: 'coefficient' | 'fixed_rate' | null;
+  weekend_coefficient?: string | null;
+  weekend_fixed_rate?: string | null;
+  premium_amount?: string;
+  kpi_amount?: string;
+  advance_deduction?: string;
+  loan_deduction?: string;
+  loan_remaining?: string;
+  loan_planned_deduction?: string;
+  loan_is_manual?: boolean;
+  total_deductions?: string;
+  net_payout?: string;
   breakdown_by_company: CompanyBreakdown[];
   is_calculable: boolean;
   reason_if_not_calculable: string | null;
@@ -89,6 +114,10 @@ type PayrollSummary = {
   total_overtime_amount: string;
   total_holiday_amount: string;
   grand_total: string;
+  total_premium?: string;
+  total_kpi?: string;
+  total_deductions?: string;
+  total_net_payout?: string;
 };
 
 export type Period = {
@@ -111,6 +140,7 @@ export type MonthResponse = {
   entries: TimesheetEntry[];
   payroll: PayrollSummary | null;
   periods: Period[];
+  adjustments?: Adjustment[];
 };
 
 type CalendarSummary = {
@@ -169,6 +199,17 @@ function fmtMoney(value: string | null): string {
   const n = num(value);
   if (n === 0) return '—';
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(n) + ' ₽';
+}
+
+// Коэффициент/режим оплаты выходных сотрудника — для колонки «Коэф.» (п.3)
+export function fmtCoeff(pay?: EmployeePayroll | null): string {
+  if (!pay) return '—';
+  if (pay.weekend_pay_type === 'fixed_rate') {
+    const r = num(pay.weekend_fixed_rate ?? null);
+    return r > 0 ? `${new Intl.NumberFormat('ru-RU').format(r)}₽/ч` : '—';
+  }
+  const c = pay.weekend_coefficient != null ? num(pay.weekend_coefficient) : 1.5;
+  return `×${c}`;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -267,6 +308,19 @@ export function TimesheetPage() {
     for (const p of data.payroll.employees) map.set(p.employee_id, p);
     return map;
   }, [data]);
+
+  // Премии/KPI/авансы по сотруднику (задача 3.11a)
+  const adjByEmp = useMemo(() => {
+    const map = new Map<number, Adjustment[]>();
+    for (const a of data?.adjustments ?? []) {
+      if (!map.has(a.employee_id)) map.set(a.employee_id, []);
+      map.get(a.employee_id)!.push(a);
+    }
+    return map;
+  }, [data]);
+
+  // Сотрудник, для которого открыт модал управления премиями/KPI/авансом/займом
+  const [adjEmp, setAdjEmp] = useState<Employee | null>(null);
 
   // ── Видимые сотрудники (бэк уже исключил системных админов и применил видимость) ──
   const visibleEmployees = useMemo(() => {
@@ -498,7 +552,8 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  const totalCols = 3 + numDays + (canSeeMoney ? 7 : 1);
+  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Праздн,Итого₽,Премии/KPI,Удержано,К выплате
+  const totalCols = 3 + numDays + (canSeeMoney ? 11 : 1);
 
   const renderEmployeeRow = (emp: Employee) => {
     const pay = payrollByEmp.get(emp.id);
@@ -597,8 +652,15 @@ export function TimesheetPage() {
         </td>
 
         {/* ── Финансы ── */}
-        {canSeeMoney && (
+        {canSeeMoney && (() => {
+          const adjs = adjByEmp.get(emp.id) ?? [];
+          const bonus = num(pay?.premium_amount) + num(pay?.kpi_amount);
+          const deductions = num(pay?.total_deductions);
+          return (
           <>
+            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600" title="Оплата выходных">
+              {fmtCoeff(pay)}
+            </td>
             <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
               {pay?.norm_hours ? fmtHours(num(pay.norm_hours)) : '—'}
             </td>
@@ -617,8 +679,30 @@ export function TimesheetPage() {
             <td className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
               {fmtMoney(pay?.total_amount ?? null)}
             </td>
+            {/* Премии/KPI — клик открывает модал управления */}
+            <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
+              <button
+                type="button"
+                onClick={() => setAdjEmp(emp)}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-blue-50 text-gray-700"
+                title="Премии, KPI, аванс, займ"
+              >
+                <span>{bonus > 0 ? fmtMoney(String(bonus)) : '—'}</span>
+                <span className="text-blue-500 font-sans">✎</span>
+                {adjs.length > 0 && (
+                  <span className="rounded-full bg-gray-200 text-gray-600 text-[9px] px-1">{adjs.length}</span>
+                )}
+              </button>
+            </td>
+            <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs text-red-600">
+              {deductions > 0 ? '−' + fmtMoney(String(deductions)) : '—'}
+            </td>
+            <td className="border border-gray-200 px-2 py-2 text-right font-mono font-bold text-emerald-700 bg-emerald-50/40">
+              {pay?.is_calculable ? fmtMoney(pay?.net_payout ?? null) : '—'}
+            </td>
           </>
-        )}
+          );
+        })()}
       </tr>
     );
   };
@@ -871,6 +955,13 @@ export function TimesheetPage() {
                 <>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600"
+                    style={{ minWidth: 56, zIndex: 20 }}
+                    title="Коэффициент/ставка оплаты выходных (из карточки сотрудника)"
+                  >
+                    Коэф.
+                  </th>
+                  <th
+                    className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600"
                     style={{ minWidth: 60, zIndex: 20 }}
                   >
                     Норма
@@ -904,6 +995,26 @@ export function TimesheetPage() {
                     style={{ minWidth: 100, zIndex: 20 }}
                   >
                     Итого ₽
+                  </th>
+                  <th
+                    className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
+                    style={{ minWidth: 110, zIndex: 20 }}
+                    title="Премии и KPI"
+                  >
+                    Премии/KPI
+                  </th>
+                  <th
+                    className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
+                    style={{ minWidth: 90, zIndex: 20 }}
+                    title="Удержано: займ + аванс"
+                  >
+                    Удержано ₽
+                  </th>
+                  <th
+                    className="sticky top-0 bg-emerald-50 border border-gray-200 px-2 py-2 text-right font-semibold text-emerald-700"
+                    style={{ minWidth: 110, zIndex: 20 }}
+                  >
+                    К выплате ₽
                   </th>
                 </>
               )}
@@ -957,6 +1068,7 @@ export function TimesheetPage() {
                   <>
                     <td className="border border-gray-300 px-2 py-2"></td>
                     <td className="border border-gray-300 px-2 py-2"></td>
+                    <td className="border border-gray-300 px-2 py-2"></td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
                       {fmtMoney(data.payroll.total_base_amount)}
                     </td>
@@ -969,9 +1081,18 @@ export function TimesheetPage() {
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono font-bold text-blue-700 bg-blue-100">
                       {fmtMoney(data.payroll.grand_total)}
                     </td>
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono">
+                      {fmtMoney(String(num(data.payroll.total_premium) + num(data.payroll.total_kpi)))}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono text-red-600">
+                      {num(data.payroll.total_deductions) > 0 ? '−' + fmtMoney(data.payroll.total_deductions ?? null) : '—'}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono font-bold text-emerald-700 bg-emerald-100">
+                      {fmtMoney(data.payroll.total_net_payout ?? null)}
+                    </td>
                   </>
                 ) : (
-                  [0,1,2,3,4,5].map(i => <td key={i} className="border border-gray-300 px-2 py-2" />)
+                  [0,1,2,3,4,5,6,7,8,9].map(i => <td key={i} className="border border-gray-300 px-2 py-2" />)
                 ))}
               </tr>
             )}
@@ -1019,6 +1140,19 @@ export function TimesheetPage() {
             );
           })}
         </div>
+      )}
+
+      {/* ── Модал управления премиями/KPI/авансом/займом (задача 3.11a) ── */}
+      {adjEmp && (
+        <AdjustmentsModal
+          employee={adjEmp}
+          year={year}
+          month={month}
+          payroll={payrollByEmp.get(adjEmp.id) ?? null}
+          adjustments={adjByEmp.get(adjEmp.id) ?? []}
+          onClose={() => setAdjEmp(null)}
+          onChanged={() => reload()}
+        />
       )}
     </div>
   );
@@ -1271,5 +1405,227 @@ function SlotChip({
   );
 }
 
+
+// ──────────────────────────────────────────────────────────────
+// AdjustmentsModal — премии / KPI / аванс / правка займа за месяц
+// ──────────────────────────────────────────────────────────────
+const KIND_LABELS: Record<string, string> = {
+  premium: 'Премия',
+  kpi: 'KPI',
+  advance: 'Аванс (удержание)',
+};
+
+function AdjustmentsModal({
+  employee,
+  year,
+  month,
+  payroll,
+  adjustments,
+  onClose,
+  onChanged,
+}: {
+  employee: Employee;
+  year: number;
+  month: number;
+  payroll: EmployeePayroll | null;
+  adjustments: Adjustment[];
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [kind, setKind] = useState<'premium' | 'kpi' | 'advance'>('premium');
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [loanInput, setLoanInput] = useState('');
+
+  const hasLoan = !!employee.loan_amount && num(employee.loan_amount) > 0;
+
+  const add = async () => {
+    const amt = parseFloat(amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      toast.error('Введите сумму больше нуля');
+      return;
+    }
+    if (reason.trim().length < 3) {
+      toast.error('Обоснование обязательно (минимум 3 символа)');
+      return;
+    }
+    setBusy(true);
+    try {
+      await timesheetApi.createAdjustment({
+        employee_id: employee.id, year, month, kind,
+        amount: String(amt), reason: reason.trim(),
+      });
+      setAmount('');
+      setReason('');
+      toast.success('Добавлено');
+      onChanged();
+    } catch (err: any) {
+      toast.error('Не удалось добавить: ' + (err?.message ?? err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: number) => {
+    setBusy(true);
+    try {
+      await timesheetApi.deleteAdjustment(id);
+      onChanged();
+    } catch (err: any) {
+      toast.error('Не удалось удалить: ' + (err?.message ?? err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyLoanOverride = async () => {
+    const amt = parseFloat(loanInput);
+    if (!Number.isFinite(amt) || amt < 0) {
+      toast.error('Введите сумму удержания (≥ 0)');
+      return;
+    }
+    setBusy(true);
+    try {
+      await timesheetApi.setLoanOverride({
+        employee_id: employee.id, year, month, actual_amount: String(amt),
+      });
+      setLoanInput('');
+      toast.success('Удержание по займу обновлено');
+      onChanged();
+    } catch (err: any) {
+      toast.error('Не удалось: ' + (err?.message ?? err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearLoanOverride = async () => {
+    setBusy(true);
+    try {
+      await timesheetApi.clearLoanOverride(employee.id, year, month);
+      toast.success('Возвращено плановое удержание');
+      onChanged();
+    } catch (err: any) {
+      toast.error('Не удалось: ' + (err?.message ?? err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">
+            Премии и удержания · {employee.full_name}
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">{MONTH_NAMES_RU[month - 1]} {year}</p>
+
+        {/* Существующие премии/KPI/авансы */}
+        <div className="mb-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Начисления и удержания</p>
+          {adjustments.length === 0 ? (
+            <p className="text-sm text-gray-400">Пока ничего не добавлено</p>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {adjustments.map((a) => (
+                <div key={a.id} className="flex items-center gap-2 text-sm border border-gray-200 rounded px-2 py-1.5">
+                  <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${a.kind === 'advance' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+                    {KIND_LABELS[a.kind]}
+                  </span>
+                  <span className="font-mono font-semibold">
+                    {a.kind === 'advance' ? '−' : '+'}{fmtMoney(a.amount)}
+                  </span>
+                  <span className="flex-1 text-gray-600 truncate" title={a.reason}>{a.reason}</span>
+                  <button onClick={() => remove(a.id)} disabled={busy} className="text-gray-400 hover:text-red-600 text-base leading-none">×</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Форма добавления */}
+        <div className="mb-5 border border-gray-200 rounded-lg p-3 bg-gray-50">
+          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Добавить</p>
+          <div className="flex flex-col gap-2">
+            <div className="flex gap-2">
+              <select
+                value={kind}
+                onChange={(e) => setKind(e.target.value as any)}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              >
+                <option value="premium">Премия</option>
+                <option value="kpi">KPI</option>
+                <option value="advance">Аванс (удержание)</option>
+              </select>
+              <input
+                type="number"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="Сумма ₽"
+                min={0}
+                className="w-32 border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+            </div>
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Обоснование (обязательно)"
+              className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+            <button
+              onClick={add}
+              disabled={busy}
+              className="self-end px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              Добавить
+            </button>
+          </div>
+        </div>
+
+        {/* Займ */}
+        {hasLoan && (
+          <div className="border border-gray-200 rounded-lg p-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Займ</p>
+            <div className="text-sm text-gray-700 flex flex-col gap-1 mb-3">
+              <div className="flex justify-between"><span>Сумма займа</span><span className="font-mono">{fmtMoney(employee.loan_amount ?? null)}</span></div>
+              <div className="flex justify-between"><span>Плановая доля / мес.</span><span className="font-mono">{fmtMoney(payroll?.loan_planned_deduction ?? null)}</span></div>
+              <div className="flex justify-between">
+                <span>Удержано в этом месяце</span>
+                <span className="font-mono font-semibold">
+                  {fmtMoney(payroll?.loan_deduction ?? null)}
+                  {payroll?.loan_is_manual && <span className="ml-1 text-[10px] text-amber-600">(вручную)</span>}
+                </span>
+              </div>
+              <div className="flex justify-between"><span>Остаток после месяца</span><span className="font-mono">{fmtMoney(payroll?.loan_remaining ?? null)}</span></div>
+            </div>
+            <div className="flex gap-2 items-center">
+              <input
+                type="number"
+                value={loanInput}
+                onChange={(e) => setLoanInput(e.target.value)}
+                placeholder="Удержать в этом месяце ₽"
+                min={0}
+                className="flex-1 border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+              <button onClick={applyLoanOverride} disabled={busy} className="px-3 py-1.5 text-sm rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50">
+                Применить
+              </button>
+              {payroll?.loan_is_manual && (
+                <button onClick={clearLoanOverride} disabled={busy} className="px-3 py-1.5 text-sm rounded border border-gray-300 text-gray-600 hover:bg-gray-50">
+                  Сбросить
+                </button>
+              )}
+            </div>
+            <p className="mt-2 text-xs text-gray-400">Правка меняет только этот месяц. Остаток = сумма − фактически удержанное, поэтому займ гасится дольше.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default TimesheetPage;

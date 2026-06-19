@@ -30,6 +30,18 @@ export interface EmployeePayroll {
   overtime_amount: string
   holiday_amount: string
   total_amount: string
+  weekend_pay_type: WeekendPayType | null
+  weekend_coefficient: string | null
+  weekend_fixed_rate: string | null
+  premium_amount: string
+  kpi_amount: string
+  advance_deduction: string
+  loan_deduction: string
+  loan_remaining: string
+  loan_planned_deduction: string
+  loan_is_manual: boolean
+  total_deductions: string
+  net_payout: string
   breakdown_by_company: CompanyBreakdown[]
   is_calculable: boolean
   reason_if_not_calculable: string | null
@@ -45,6 +57,24 @@ export interface PayrollSummary {
   total_overtime_amount: string
   total_holiday_amount: string
   grand_total: string
+  total_premium: string
+  total_kpi: string
+  total_deductions: string
+  total_net_payout: string
+}
+
+export type AdjustmentKind = 'premium' | 'kpi' | 'advance'
+
+export interface Adjustment {
+  id: number
+  employee_id: number
+  year: number
+  month: number
+  kind: AdjustmentKind
+  amount: string
+  reason: string
+  created_by_id: number | null
+  created_at: string | null
 }
 
 export interface TimesheetEntry {
@@ -63,6 +93,7 @@ export interface TimesheetMonthResponse {
   periods: TimesheetPeriod[]
   extra_companies_by_employee: Record<string, number[]>
   payroll: PayrollSummary | null
+  adjustments: Adjustment[]
 }
 
 export interface AutofillSkippedEmployee {
@@ -214,6 +245,9 @@ export interface Employee {
   weekend_pay_type: WeekendPayType
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
+  loan_amount: string | null
+  loan_term_months: number | null
+  loan_start_date: string | null
   is_active: boolean
   status: 'active' | 'dismissed'
   hire_date: string | null

@@ -84,4 +84,29 @@ export const timesheetApi = {
     })
     return data
   },
+
+  // ── Премии / KPI / аванс (задача 3.11a) ──
+  async createAdjustment(input: {
+    employee_id: number; year: number; month: number
+    kind: 'premium' | 'kpi' | 'advance'; amount: string; reason: string
+  }): Promise<unknown> {
+    const { data } = await apiClient.post('/api/timesheet/adjustments', input)
+    return data
+  },
+
+  async deleteAdjustment(id: number): Promise<void> {
+    await apiClient.delete(`/api/timesheet/adjustments/${id}`)
+  },
+
+  // ── Ручная правка удержания по займу за месяц ──
+  async setLoanOverride(input: {
+    employee_id: number; year: number; month: number; actual_amount: string
+  }): Promise<unknown> {
+    const { data } = await apiClient.post('/api/timesheet/loan-override', input)
+    return data
+  },
+
+  async clearLoanOverride(employeeId: number, year: number, month: number): Promise<void> {
+    await apiClient.delete(`/api/timesheet/loan-override/${employeeId}/${year}/${month}`)
+  },
 }
