@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.company import CompanyRead
 from app.schemas.employee import EmployeeRead
+from app.schemas.payout import AdjustmentRead
 from app.schemas.payroll import PayrollSummaryRead
 from app.schemas.timesheet_period import TimesheetPeriodRead
 
@@ -41,6 +42,7 @@ class TimesheetMonthResponse(BaseModel):
     periods: list[TimesheetPeriodRead]
     extra_companies_by_employee: dict[int, list[int]] = {}
     payroll: PayrollSummaryRead | None = None
+    adjustments: list[AdjustmentRead] = []
 
 
 class TimesheetBatchInput(BaseModel):

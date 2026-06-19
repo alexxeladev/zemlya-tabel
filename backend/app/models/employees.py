@@ -5,7 +5,7 @@ import enum
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -52,6 +52,14 @@ class Employee(Base):
         Numeric(4, 2), default=Decimal("1.5"), server_default="1.5", nullable=True
     )
     weekend_fixed_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+
+    # Займ (задача 3.11a): сумма, срок в месяцах, дата начала погашения.
+    # Гасится равными долями (сумма/срок) автоматически; бухгалтер может
+    # скорректировать удержание за конкретный месяц (LoanDeduction). Остаток
+    # считается на лету = сумма − фактически удержанное (app.services.payout).
+    loan_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    loan_term_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    loan_start_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     hire_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)

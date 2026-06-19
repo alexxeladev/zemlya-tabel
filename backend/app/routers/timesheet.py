@@ -10,8 +10,15 @@ from app.core.deps import get_current_user
 from app.database import get_db
 from app.models.audit_log import AuditLog
 from app.models.companies import Company
+from app.models.employee_adjustments import EmployeeAdjustment
 from app.models.employees import Employee
+from app.models.loan_deductions import LoanDeduction
 from app.models.timesheet_periods import TimesheetPeriod
+from app.schemas.payout import (
+    AdjustmentCreate,
+    AdjustmentRead,
+    LoanOverrideInput,
+)
 from app.schemas.payroll import (
     CompanyBreakdownRead,
     EmployeePayrollRead,
@@ -79,6 +86,44 @@ def _check_company_exists(db: Session, company_id: int) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
 
 
+def _require_finance_role(actor: Employee) -> None:
+    """Премии/KPI/удержания/займ видят и правят только admin/accountant/manager."""
+    if actor.role not in ("admin", "accountant", "manager"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+
+
+def _load_adjustments(
+    db: Session, employees: list[Employee], year: int, month: int
+) -> list[AdjustmentRead]:
+    emp_ids = [e.id for e in employees]
+    if not emp_ids:
+        return []
+    rows = (
+        db.query(EmployeeAdjustment)
+        .filter(
+            EmployeeAdjustment.employee_id.in_(emp_ids),
+            EmployeeAdjustment.year == year,
+            EmployeeAdjustment.month == month,
+        )
+        .order_by(EmployeeAdjustment.created_at)
+        .all()
+    )
+    return [
+        AdjustmentRead(
+            id=r.id,
+            employee_id=r.employee_id,
+            year=r.year,
+            month=r.month,
+            kind=r.kind,
+            amount=r.amount,
+            reason=r.reason,
+            created_by_id=r.created_by_id,
+            created_at=str(r.created_at) if r.created_at else None,
+        )
+        for r in rows
+    ]
+
+
 def _get_period_or_404(db: Session, period_id: int) -> TimesheetPeriod:
     period = db.get(TimesheetPeriod, period_id)
     if not period:
@@ -114,6 +159,12 @@ def _build_payroll_summary(
 ) -> PayrollSummaryRead:
     from decimal import Decimal
     from app.models.production_calendars import ProductionCalendar
+    from app.services.payout import (
+        compute_payout,
+        load_adjustment_sums,
+        load_loan_overrides,
+        loan_month_state,
+    )
 
     cal = db.query(ProductionCalendar).filter_by(year=year).first()
     calendar_data = cal.data if cal else None
@@ -125,10 +176,30 @@ def _build_payroll_summary(
     for e in entries:
         entries_by_employee.setdefault(e.employee_id, []).append(e)
 
+    zero = Decimal("0")
+    emp_ids = [emp.id for emp in employees]
+    adjustment_sums = load_adjustment_sums(db, emp_ids, year, month)
+    loan_overrides = load_loan_overrides(db, emp_ids)
+
     payroll_items: list[EmployeePayrollRead] = []
     for emp in employees:
         emp_entries = entries_by_employee.get(emp.id, [])
         p = calculate_employee_payroll(emp, emp_entries, calendar_data, year, month, companies_by_id)
+
+        # ── Премии / KPI / аванс / займ → «к выплате» (задача 3.11a) ──
+        sums = adjustment_sums.get(emp.id, {})
+        loan_state = loan_month_state(
+            emp.loan_amount, emp.loan_term_months, emp.loan_start_date,
+            year, month, loan_overrides.get(emp.id),
+        )
+        loan_deduction = loan_state.actual if loan_state else zero
+        payout = compute_payout(
+            accrued_total=p.total_amount,
+            premium_amount=sums.get("premium", zero),
+            kpi_amount=sums.get("kpi", zero),
+            advance_deduction=sums.get("advance", zero),
+            loan_deduction=loan_deduction,
+        )
 
         breakdown = [
             CompanyBreakdownRead(
@@ -163,12 +234,23 @@ def _build_payroll_summary(
             overtime_amount=p.overtime_amount,
             holiday_amount=p.holiday_amount,
             total_amount=p.total_amount,
+            weekend_pay_type=emp.weekend_pay_type,
+            weekend_coefficient=emp.weekend_coefficient,
+            weekend_fixed_rate=emp.weekend_fixed_rate,
+            premium_amount=payout.premium_amount,
+            kpi_amount=payout.kpi_amount,
+            advance_deduction=payout.advance_deduction,
+            loan_deduction=payout.loan_deduction,
+            loan_remaining=loan_state.remaining_after if loan_state else zero,
+            loan_planned_deduction=loan_state.planned if loan_state else zero,
+            loan_is_manual=loan_state.is_manual if loan_state else False,
+            total_deductions=payout.total_deductions,
+            net_payout=payout.net_payout,
             breakdown_by_company=breakdown,
             is_calculable=p.is_calculable,
             reason_if_not_calculable=p.reason_if_not_calculable,
         ))
 
-    zero = Decimal("0")
     return PayrollSummaryRead(
         year=year,
         month=month,
@@ -179,6 +261,10 @@ def _build_payroll_summary(
         total_overtime_amount=sum((p.overtime_amount for p in payroll_items), zero),
         total_holiday_amount=sum((p.holiday_amount for p in payroll_items), zero),
         grand_total=sum((p.total_amount for p in payroll_items), zero),
+        total_premium=sum((p.premium_amount for p in payroll_items), zero),
+        total_kpi=sum((p.kpi_amount for p in payroll_items), zero),
+        total_deductions=sum((p.total_deductions for p in payroll_items), zero),
+        total_net_payout=sum((p.net_payout for p in payroll_items), zero),
     )
 
 
@@ -241,8 +327,11 @@ def get_month(
     extra_companies = compute_extra_companies_by_employee(employees, entries)
 
     payroll = None
-    if include_payroll and actor.role in ("admin", "accountant", "manager"):
-        payroll = _build_payroll_summary(db, employees, entries, year, month)
+    adjustments: list[AdjustmentRead] = []
+    if actor.role in ("admin", "accountant", "manager"):
+        adjustments = _load_adjustments(db, employees, year, month)
+        if include_payroll:
+            payroll = _build_payroll_summary(db, employees, entries, year, month)
 
     return TimesheetMonthResponse(
         year=year,
@@ -253,6 +342,7 @@ def get_month(
         periods=periods,
         extra_companies_by_employee=extra_companies,
         payroll=payroll,
+        adjustments=adjustments,
     )
 
 
@@ -491,3 +581,176 @@ def export_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ── Adjustments: премии / KPI / аванс (задача 3.11a) ───────────────────────────
+
+@router.get("/{year}/{month}/adjustments", response_model=list[AdjustmentRead])
+def list_adjustments(
+    year: int,
+    month: int,
+    department_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    _require_finance_role(actor)
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
+        )
+    if actor.role == "manager" and department_id is not None and department_id != actor.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
+    return _load_adjustments(db, employees, year, month)
+
+
+@router.post("/adjustments", response_model=AdjustmentRead, status_code=status.HTTP_201_CREATED)
+def create_adjustment(
+    payload: AdjustmentCreate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    _require_finance_role(actor)
+    # _check_cell_access проверяет видимость сотрудника по роли (manager — свой отдел)
+    _check_cell_access(actor, payload.employee_id, db)
+    if not (2000 <= payload.year <= 2100):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year")
+
+    adj = EmployeeAdjustment(
+        employee_id=payload.employee_id,
+        year=payload.year,
+        month=payload.month,
+        kind=payload.kind,
+        amount=payload.amount,
+        reason=payload.reason,
+        created_by_id=actor.id,
+    )
+    db.add(adj)
+    db.flush()
+    log_action(
+        db, actor, "employee_adjustment", adj.id, "create",
+        after={"employee_id": adj.employee_id, "year": adj.year, "month": adj.month,
+               "kind": adj.kind, "amount": str(adj.amount), "reason": adj.reason},
+    )
+    db.commit()
+    db.refresh(adj)
+    return AdjustmentRead(
+        id=adj.id, employee_id=adj.employee_id, year=adj.year, month=adj.month,
+        kind=adj.kind, amount=adj.amount, reason=adj.reason,
+        created_by_id=adj.created_by_id, created_at=str(adj.created_at) if adj.created_at else None,
+    )
+
+
+@router.delete("/adjustments/{adjustment_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_adjustment(
+    adjustment_id: int,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    _require_finance_role(actor)
+    adj = db.get(EmployeeAdjustment, adjustment_id)
+    if not adj:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Не найдено")
+    _check_cell_access(actor, adj.employee_id, db)
+    log_action(
+        db, actor, "employee_adjustment", adj.id, "delete",
+        before={"employee_id": adj.employee_id, "year": adj.year, "month": adj.month,
+                "kind": adj.kind, "amount": str(adj.amount)},
+    )
+    db.delete(adj)
+    db.commit()
+
+
+# ── Loan: ручная правка удержания за месяц (задача 3.11a) ───────────────────────
+
+@router.post("/loan-override", status_code=status.HTTP_200_OK)
+def set_loan_override(
+    payload: LoanOverrideInput,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Скорректировать сумму удержания по займу за конкретный месяц."""
+    _require_finance_role(actor)
+    target = _check_cell_access(actor, payload.employee_id, db)
+    if target.loan_amount is None or target.loan_term_months is None or target.loan_start_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="У сотрудника не настроен займ",
+        )
+    if not (1 <= payload.month <= 12) or not (2000 <= payload.year <= 2100):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month")
+
+    from app.services.payout import load_loan_overrides, loan_month_state
+
+    # Плановая доля на этот месяц (справочно) — без учёта самой правки этого месяца.
+    overrides = load_loan_overrides(db, [target.id]).get(target.id, {})
+    overrides.pop((payload.year, payload.month), None)
+    state = loan_month_state(
+        target.loan_amount, target.loan_term_months, target.loan_start_date,
+        payload.year, payload.month, overrides,
+    )
+    planned = state.planned if state else payload.actual_amount
+
+    existing = (
+        db.query(LoanDeduction)
+        .filter(
+            LoanDeduction.employee_id == payload.employee_id,
+            LoanDeduction.year == payload.year,
+            LoanDeduction.month == payload.month,
+        )
+        .first()
+    )
+    if existing:
+        before = {"actual_amount": str(existing.actual_amount)}
+        existing.actual_amount = payload.actual_amount
+        existing.planned_amount = planned
+        db.flush()
+        log_action(db, actor, "loan_deduction", existing.id, "update",
+                   before=before, after={"actual_amount": str(payload.actual_amount)})
+        row = existing
+    else:
+        row = LoanDeduction(
+            employee_id=payload.employee_id,
+            year=payload.year,
+            month=payload.month,
+            planned_amount=planned,
+            actual_amount=payload.actual_amount,
+            created_by_id=actor.id,
+        )
+        db.add(row)
+        db.flush()
+        log_action(db, actor, "loan_deduction", row.id, "create",
+                   after={"year": payload.year, "month": payload.month,
+                          "actual_amount": str(payload.actual_amount)})
+    db.commit()
+    return {"employee_id": payload.employee_id, "year": payload.year,
+            "month": payload.month, "planned_amount": str(planned),
+            "actual_amount": str(payload.actual_amount)}
+
+
+@router.delete("/loan-override/{employee_id}/{year}/{month}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_loan_override(
+    employee_id: int,
+    year: int,
+    month: int,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Убрать ручную правку — вернуть плановое удержание за месяц."""
+    _require_finance_role(actor)
+    _check_cell_access(actor, employee_id, db)
+    row = (
+        db.query(LoanDeduction)
+        .filter(
+            LoanDeduction.employee_id == employee_id,
+            LoanDeduction.year == year,
+            LoanDeduction.month == month,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Правка не найдена")
+    log_action(db, actor, "loan_deduction", row.id, "delete",
+               before={"actual_amount": str(row.actual_amount)})
+    db.delete(row)
+    db.commit()

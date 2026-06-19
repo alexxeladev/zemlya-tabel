@@ -40,6 +40,9 @@ class EmployeeBase(BaseModel):
     weekend_pay_type: WeekendPayType = "coefficient"
     weekend_coefficient: Optional[Decimal] = None
     weekend_fixed_rate: Optional[Decimal] = None
+    loan_amount: Optional[Decimal] = None
+    loan_term_months: Optional[int] = None
+    loan_start_date: Optional[datetime.date] = None
     is_active: bool = True
     hire_date: Optional[datetime.date] = None
     dismissal_date: Optional[datetime.date] = None
@@ -87,6 +90,9 @@ class EmployeeUpdate(BaseModel):
     weekend_pay_type: Optional[WeekendPayType] = None
     weekend_coefficient: Optional[Decimal] = None
     weekend_fixed_rate: Optional[Decimal] = None
+    loan_amount: Optional[Decimal] = None
+    loan_term_months: Optional[int] = None
+    loan_start_date: Optional[datetime.date] = None
     is_active: Optional[bool] = None
     hire_date: Optional[datetime.date] = None
     dismissal_date: Optional[datetime.date] = None

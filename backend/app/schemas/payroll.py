@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -39,6 +40,22 @@ class EmployeePayrollRead(BaseModel):
     holiday_amount: Decimal
     total_amount: Decimal
 
+    # Оплата выходных/праздничных (задача 3.11a п.3 — отображение коэффициента)
+    weekend_pay_type: Optional[Literal["coefficient", "fixed_rate"]] = None
+    weekend_coefficient: Optional[Decimal] = None
+    weekend_fixed_rate: Optional[Decimal] = None
+
+    # Премии/KPI/удержания и итог «к выплате» (задача 3.11a п.1,2,4)
+    premium_amount: Decimal = Decimal("0")
+    kpi_amount: Decimal = Decimal("0")
+    advance_deduction: Decimal = Decimal("0")
+    loan_deduction: Decimal = Decimal("0")
+    loan_remaining: Decimal = Decimal("0")
+    loan_planned_deduction: Decimal = Decimal("0")
+    loan_is_manual: bool = False
+    total_deductions: Decimal = Decimal("0")
+    net_payout: Decimal = Decimal("0")
+
     breakdown_by_company: list[CompanyBreakdownRead]
     is_calculable: bool
     reason_if_not_calculable: str | None
@@ -54,3 +71,7 @@ class PayrollSummaryRead(BaseModel):
     total_overtime_amount: Decimal
     total_holiday_amount: Decimal
     grand_total: Decimal
+    total_premium: Decimal = Decimal("0")
+    total_kpi: Decimal = Decimal("0")
+    total_deductions: Decimal = Decimal("0")
+    total_net_payout: Decimal = Decimal("0")
