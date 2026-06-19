@@ -319,8 +319,8 @@ export function TimesheetPage() {
     return map;
   }, [data]);
 
-  // Сотрудник, для которого открыт модал управления премиями/KPI/авансом/займом
-  const [adjEmp, setAdjEmp] = useState<Employee | null>(null);
+  // Открытый модал: сотрудник + категория (своя кнопка в каждом столбце)
+  const [adjModal, setAdjModal] = useState<{ emp: Employee; category: 'premium' | 'kpi' | 'deduction' } | null>(null);
 
   // ── Видимые сотрудники (бэк уже исключил системных админов и применил видимость) ──
   const visibleEmployees = useMemo(() => {
@@ -679,32 +679,41 @@ export function TimesheetPage() {
             <td className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
               {fmtMoney(pay?.total_amount ?? null)}
             </td>
-            {/* Премия — клик открывает модал управления */}
+            {/* Премия — своя кнопка */}
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
               <button
                 type="button"
-                onClick={() => setAdjEmp(emp)}
+                onClick={() => setAdjModal({ emp, category: 'premium' })}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-blue-50 text-gray-700"
-                title="Премии, KPI, аванс, займ"
+                title="Премии"
               >
                 <span>{premium > 0 ? fmtMoney(String(premium)) : '—'}</span>
                 <span className="text-blue-500 font-sans">✎</span>
               </button>
             </td>
-            {/* KPI — клик открывает тот же модал */}
+            {/* KPI — своя кнопка */}
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
               <button
                 type="button"
-                onClick={() => setAdjEmp(emp)}
+                onClick={() => setAdjModal({ emp, category: 'kpi' })}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-blue-50 text-gray-700"
-                title="Премии, KPI, аванс, займ"
+                title="KPI"
               >
                 <span>{kpi > 0 ? fmtMoney(String(kpi)) : '—'}</span>
                 <span className="text-blue-500 font-sans">✎</span>
               </button>
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs text-red-600">
-              {deductions > 0 ? '−' + fmtMoney(String(deductions)) : '—'}
+            {/* Удержано — аванс + займ, своя кнопка */}
+            <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs text-red-600">
+              <button
+                type="button"
+                onClick={() => setAdjModal({ emp, category: 'deduction' })}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-red-50 text-red-600"
+                title="Аванс и займ"
+              >
+                <span>{deductions > 0 ? '−' + fmtMoney(String(deductions)) : '—'}</span>
+                <span className="text-blue-500 font-sans">✎</span>
+              </button>
             </td>
             <td className="border border-gray-200 px-2 py-2 text-right font-mono font-bold text-emerald-700 bg-emerald-50/40">
               {pay?.is_calculable ? fmtMoney(pay?.net_payout ?? null) : '—'}
@@ -1162,14 +1171,15 @@ export function TimesheetPage() {
       )}
 
       {/* ── Модал управления премиями/KPI/авансом/займом (задача 3.11a) ── */}
-      {adjEmp && (
+      {adjModal && (
         <AdjustmentsModal
-          employee={adjEmp}
+          employee={adjModal.emp}
+          category={adjModal.category}
           year={year}
           month={month}
-          payroll={payrollByEmp.get(adjEmp.id) ?? null}
-          adjustments={adjByEmp.get(adjEmp.id) ?? []}
-          onClose={() => setAdjEmp(null)}
+          payroll={payrollByEmp.get(adjModal.emp.id) ?? null}
+          adjustments={adjByEmp.get(adjModal.emp.id) ?? []}
+          onClose={() => setAdjModal(null)}
           onChanged={() => reload()}
         />
       )}
@@ -1426,16 +1436,26 @@ function SlotChip({
 
 
 // ──────────────────────────────────────────────────────────────
-// AdjustmentsModal — премии / KPI / аванс / правка займа за месяц
+// AdjustmentsModal — у каждого столбца своя категория:
+//   'premium'   → только премии
+//   'kpi'       → только KPI
+//   'deduction' → аванс + правка займа
 // ──────────────────────────────────────────────────────────────
 const KIND_LABELS: Record<string, string> = {
   premium: 'Премия',
   kpi: 'KPI',
-  advance: 'Аванс (удержание)',
+  advance: 'Аванс',
+};
+
+const CATEGORY_TITLE: Record<string, string> = {
+  premium: 'Премии',
+  kpi: 'KPI',
+  deduction: 'Удержания (аванс и займ)',
 };
 
 function AdjustmentsModal({
   employee,
+  category,
   year,
   month,
   payroll,
@@ -1444,6 +1464,7 @@ function AdjustmentsModal({
   onChanged,
 }: {
   employee: Employee;
+  category: 'premium' | 'kpi' | 'deduction';
   year: number;
   month: number;
   payroll: EmployeePayroll | null;
@@ -1451,13 +1472,17 @@ function AdjustmentsModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const [kind, setKind] = useState<'premium' | 'kpi' | 'advance'>('premium');
+  // Тип записи для этой категории (аванс — это удержание)
+  const kind: 'premium' | 'kpi' | 'advance' = category === 'deduction' ? 'advance' : category;
   const [amount, setAmount] = useState('');
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [loanInput, setLoanInput] = useState('');
 
-  const hasLoan = !!employee.loan_amount && num(employee.loan_amount) > 0;
+  // В списке показываем только записи этой категории
+  const shownAdjustments = adjustments.filter((a) => a.kind === kind);
+  const hasLoan = category === 'deduction' && !!employee.loan_amount && num(employee.loan_amount) > 0;
+  const addLabel = kind === 'advance' ? 'Аванс (удержание)' : KIND_LABELS[kind];
 
   const add = async () => {
     const amt = parseFloat(amount);
@@ -1537,20 +1562,20 @@ function AdjustmentsModal({
       <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-900">
-            Премии и удержания · {employee.full_name}
+            {CATEGORY_TITLE[category]} · {employee.full_name}
           </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
         </div>
         <p className="text-xs text-gray-500 mb-4">{MONTH_NAMES_RU[month - 1]} {year}</p>
 
-        {/* Существующие премии/KPI/авансы */}
+        {/* Существующие записи этой категории */}
         <div className="mb-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Начисления и удержания</p>
-          {adjustments.length === 0 ? (
+          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">{addLabel}</p>
+          {shownAdjustments.length === 0 ? (
             <p className="text-sm text-gray-400">Пока ничего не добавлено</p>
           ) : (
             <div className="flex flex-col gap-1.5">
-              {adjustments.map((a) => (
+              {shownAdjustments.map((a) => (
                 <div key={a.id} className="flex items-center gap-2 text-sm border border-gray-200 rounded px-2 py-1.5">
                   <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${a.kind === 'advance' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
                     {KIND_LABELS[a.kind]}
@@ -1566,27 +1591,18 @@ function AdjustmentsModal({
           )}
         </div>
 
-        {/* Форма добавления */}
+        {/* Форма добавления — только эта категория, без выбора типа */}
         <div className="mb-5 border border-gray-200 rounded-lg p-3 bg-gray-50">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Добавить</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Добавить: {addLabel}</p>
           <div className="flex flex-col gap-2">
             <div className="flex gap-2">
-              <select
-                value={kind}
-                onChange={(e) => setKind(e.target.value as any)}
-                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
-              >
-                <option value="premium">Премия</option>
-                <option value="kpi">KPI</option>
-                <option value="advance">Аванс (удержание)</option>
-              </select>
               <input
                 type="number"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 placeholder="Сумма ₽"
                 min={0}
-                className="w-32 border border-gray-300 rounded px-2 py-1.5 text-sm"
+                className="flex-1 border border-gray-300 rounded px-2 py-1.5 text-sm"
               />
             </div>
             <input
