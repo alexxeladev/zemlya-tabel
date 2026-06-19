@@ -40,6 +40,11 @@ def _weekend_fill() -> PatternFill:
     return PatternFill("solid", fgColor="FFEFEFEF")  # ARGB: gray tint
 
 
+def _zebra_fill() -> PatternFill:
+    """Чередующаяся заливка блока сотрудника — для читаемости при печати."""
+    return PatternFill("solid", fgColor="FFF4F7FB")  # очень светлый голубой
+
+
 def _header_font(bold: bool = True) -> Font:
     return Font(name="Arial", size=9, bold=bold)
 
@@ -66,11 +71,12 @@ def _set_cell(ws, row: int, col: int, value=None, *, bold=False, center=False,
 
 # ── Column layout ─────────────────────────────────────────────────────────────
 
-# Fixed left columns (1-based): №, ФИО, Должность, Таб.№, Компания
+# Fixed left columns (1-based): № → Таб.№ → ФИО → Должность → Компания
+# (задача 3.11a п.5: табельный номер сразу после порядкового, перед ФИО)
 _COL_NUM = 1
-_COL_NAME = 2
-_COL_POS = 3
-_COL_TAB = 4
+_COL_TAB = 2
+_COL_NAME = 3
+_COL_POS = 4
 _COL_COMPANY = 5
 _FIXED_COLS = 5
 
@@ -323,9 +329,9 @@ def _write_table_header(
     # Заголовки фиксированных колонок — объединяем 2 строки
     fixed_headers = [
         (_COL_NUM, "№"),
+        (_COL_TAB, "Таб. №"),
         (_COL_NAME, "ФИО"),
         (_COL_POS, "Должность"),
-        (_COL_TAB, "Таб. №"),
         (_COL_COMPANY, "Компания"),
     ]
     for col, label in fixed_headers:
@@ -622,6 +628,23 @@ def _write_employee_rows(
     c.border = _thin_border()
     for rr in range(start_row + 1, end_row + 1):
         ws.cell(row=rr, column=nc).border = _thin_border()
+
+    # ── Подсветка блока сотрудника (задача 3.11a п.6) ─────────────────────────
+    # Чередующаяся заливка инфо/итоговых колонок для читаемости. Дни не трогаем,
+    # чтобы не перекрывать подсветку праздников/сокращённых.
+    if seq % 2 == 0:
+        fill = _zebra_fill()
+        info_cols = [
+            _COL_NUM, _COL_TAB, _COL_NAME, _COL_POS, _COL_COMPANY,
+            _subtotal1_col(), _subtotal2_col(total_days), _total_col(total_days),
+            _ot_hours_col(total_days), _hol_hours_col(total_days),
+            _grand_total_col(total_days), _norm_col(total_days),
+        ]
+        for rr in range(start_row, end_row + 1):
+            for col in info_cols:
+                c = ws.cell(row=rr, column=col)
+                if c.fill is None or c.fill.fgColor.rgb in (None, "00000000"):
+                    c.fill = fill
 
     return end_row + 1
 
