@@ -242,7 +242,7 @@ alembic current  # должен совпадать с head
 - **Формула:** `К выплате = начислено (оклад+переработка+праздничные) + премии + KPI − (доля займа + аванс)`. `compute_payout(...)` — чистая. Все суммы Decimal, ROUND_HALF_EVEN.
 - Эндпоинты (в `routers/timesheet.py`, права admin/accountant/manager своего отдела; employee — 403): `GET /{y}/{m}/adjustments`, `POST /adjustments`, `DELETE /adjustments/{id}`, `POST /loan-override`, `DELETE /loan-override/{emp}/{y}/{m}`. Поля payout и коэффициент отдаются в `EmployeePayrollRead` + суммы в `PayrollSummaryRead`. Adjustments также включены в `GET /{y}/{m}` (только для финансовых ролей).
 - **Коэффициент** (п.3) — отображение `weekend_pay_type/coefficient/fixed_rate` в колонке «Коэф.» (`fmtCoeff` во фронте), не редактируется в табеле (только в карточке).
-- Фронт: классический `TimesheetPage` — колонки Коэф./Премии-KPI/Удержано/К выплате + `AdjustmentsModal` (добавление с обоснованием, правка займа). Вид «по компаниям» эти колонки пока не показывает.
+- Фронт: классический `TimesheetPage` — колонки Коэф. / **Премия** / **KPI** (раздельные: у сотрудника может быть и то, и другое) / Удержано / К выплате + `AdjustmentsModal` (добавление с обоснованием, правка займа). Вид «по компаниям» эти колонки пока не показывает.
 
 ## Экспорт
 
