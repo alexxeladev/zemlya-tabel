@@ -552,8 +552,8 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Праздн,Итого₽,Премии/KPI,Удержано,К выплате
-  const totalCols = 3 + numDays + (canSeeMoney ? 11 : 1);
+  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Праздн,Итого₽,Премия,KPI,Удержано,К выплате
+  const totalCols = 3 + numDays + (canSeeMoney ? 12 : 1);
 
   const renderEmployeeRow = (emp: Employee) => {
     const pay = payrollByEmp.get(emp.id);
@@ -653,8 +653,8 @@ export function TimesheetPage() {
 
         {/* ── Финансы ── */}
         {canSeeMoney && (() => {
-          const adjs = adjByEmp.get(emp.id) ?? [];
-          const bonus = num(pay?.premium_amount) + num(pay?.kpi_amount);
+          const premium = num(pay?.premium_amount);
+          const kpi = num(pay?.kpi_amount);
           const deductions = num(pay?.total_deductions);
           return (
           <>
@@ -679,7 +679,7 @@ export function TimesheetPage() {
             <td className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
               {fmtMoney(pay?.total_amount ?? null)}
             </td>
-            {/* Премии/KPI — клик открывает модал управления */}
+            {/* Премия — клик открывает модал управления */}
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
               <button
                 type="button"
@@ -687,11 +687,20 @@ export function TimesheetPage() {
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-blue-50 text-gray-700"
                 title="Премии, KPI, аванс, займ"
               >
-                <span>{bonus > 0 ? fmtMoney(String(bonus)) : '—'}</span>
+                <span>{premium > 0 ? fmtMoney(String(premium)) : '—'}</span>
                 <span className="text-blue-500 font-sans">✎</span>
-                {adjs.length > 0 && (
-                  <span className="rounded-full bg-gray-200 text-gray-600 text-[9px] px-1">{adjs.length}</span>
-                )}
+              </button>
+            </td>
+            {/* KPI — клик открывает тот же модал */}
+            <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
+              <button
+                type="button"
+                onClick={() => setAdjEmp(emp)}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-blue-50 text-gray-700"
+                title="Премии, KPI, аванс, займ"
+              >
+                <span>{kpi > 0 ? fmtMoney(String(kpi)) : '—'}</span>
+                <span className="text-blue-500 font-sans">✎</span>
               </button>
             </td>
             <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs text-red-600">
@@ -998,10 +1007,17 @@ export function TimesheetPage() {
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
-                    style={{ minWidth: 110, zIndex: 20 }}
-                    title="Премии и KPI"
+                    style={{ minWidth: 90, zIndex: 20 }}
+                    title="Премия"
                   >
-                    Премии/KPI
+                    Премия
+                  </th>
+                  <th
+                    className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
+                    style={{ minWidth: 90, zIndex: 20 }}
+                    title="KPI"
+                  >
+                    KPI
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
@@ -1082,7 +1098,10 @@ export function TimesheetPage() {
                       {fmtMoney(data.payroll.grand_total)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
-                      {fmtMoney(String(num(data.payroll.total_premium) + num(data.payroll.total_kpi)))}
+                      {fmtMoney(data.payroll.total_premium ?? null)}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono">
+                      {fmtMoney(data.payroll.total_kpi ?? null)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono text-red-600">
                       {num(data.payroll.total_deductions) > 0 ? '−' + fmtMoney(data.payroll.total_deductions ?? null) : '—'}
@@ -1092,7 +1111,7 @@ export function TimesheetPage() {
                     </td>
                   </>
                 ) : (
-                  [0,1,2,3,4,5,6,7,8,9].map(i => <td key={i} className="border border-gray-300 px-2 py-2" />)
+                  [0,1,2,3,4,5,6,7,8,9,10].map(i => <td key={i} className="border border-gray-300 px-2 py-2" />)
                 ))}
               </tr>
             )}
