@@ -676,9 +676,6 @@ export function TimesheetPage() {
             <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
               {fmtMoney(pay?.holiday_amount ?? null)}
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
-              {fmtMoney(pay?.total_amount ?? null)}
-            </td>
             {/* Премия — своя кнопка */}
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
               <button
@@ -702,6 +699,9 @@ export function TimesheetPage() {
                 <span>{kpi > 0 ? fmtMoney(String(kpi)) : '—'}</span>
                 <span className="text-blue-500 font-sans">✎</span>
               </button>
+            </td>
+            <td className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
+              {fmtMoney(pay?.total_amount ?? null)}
             </td>
             {/* Удержано — аванс + займ, своя кнопка */}
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs text-red-600">
@@ -1009,12 +1009,6 @@ export function TimesheetPage() {
                     Праздн.
                   </th>
                   <th
-                    className="sticky top-0 bg-blue-50 border border-gray-200 px-2 py-2 text-right font-semibold text-blue-700"
-                    style={{ minWidth: 100, zIndex: 20 }}
-                  >
-                    Итого ₽
-                  </th>
-                  <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
                     style={{ minWidth: 90, zIndex: 20 }}
                     title="Премия"
@@ -1027,6 +1021,12 @@ export function TimesheetPage() {
                     title="KPI"
                   >
                     KPI
+                  </th>
+                  <th
+                    className="sticky top-0 bg-blue-50 border border-gray-200 px-2 py-2 text-right font-semibold text-blue-700"
+                    style={{ minWidth: 100, zIndex: 20 }}
+                  >
+                    Итого ₽
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
@@ -1103,14 +1103,14 @@ export function TimesheetPage() {
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
                       {fmtMoney(data.payroll.total_holiday_amount)}
                     </td>
-                    <td className="border border-gray-300 px-2 py-2 text-right font-mono font-bold text-blue-700 bg-blue-100">
-                      {fmtMoney(data.payroll.grand_total)}
-                    </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
                       {fmtMoney(data.payroll.total_premium ?? null)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
                       {fmtMoney(data.payroll.total_kpi ?? null)}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono font-bold text-blue-700 bg-blue-100">
+                      {fmtMoney(data.payroll.grand_total)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono text-red-600">
                       {num(data.payroll.total_deductions) > 0 ? '−' + fmtMoney(data.payroll.total_deductions ?? null) : '—'}
