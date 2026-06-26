@@ -74,6 +74,13 @@ frontend/
 ## Команды
 
 ```bash
+# ── Запуск всей системы одной командой (из корня репо) ──
+./dev.sh           # Postgres (Docker) → alembic → backend :8000 → frontend :5173
+./dev.sh --seed    # то же + сброс данных и заливка тестовых перед стартом
+                   # Ctrl+C гасит backend/frontend; Postgres остаётся в Docker.
+
+# ── Или вручную, по компонентам ──
+
 # БД (Docker)
 cd backend && docker compose -f docker-compose.dev.yml up -d
 
@@ -101,6 +108,37 @@ cd frontend && npm install
 npm run dev        # дев-сервер на :5173
 npm run build      # tsc + vite build
 ```
+
+### Сброс и тестовые данные (dev) — `app.cli`
+
+> ⚠️ Только dev-БД. Перед сбросом сделать бэкап (см. ниже). Системный
+> администратор (`is_system_admin=True`) НЕ удаляется ни при каких условиях.
+
+```bash
+cd backend
+
+# Бэкап перед сбросом
+mkdir -p ~/backups
+docker exec -t $(docker ps -q -f ancestor=postgres:16) pg_dump -U tabel tabel \
+  > ~/backups/before_reset_$(date +%s).sql
+
+# Полная очистка (кроме системного админа). --yes пропускает подтверждение.
+# Удаляет с учётом FK: audit log, табель, периоды, премии/KPI, удержания,
+# проценты распределения, сотрудников, справочники, календари. Идемпотентна,
+# печатает статистику удалённого.
+python -m app.cli reset-data           # спросит подтверждение
+python -m app.cli reset-data --yes     # без подтверждения
+
+# Тестовые данные: 3 компании (zmo/kft/sec), 2 отдела (ИТО/Бухгалтерия),
+# графики 5/2 и 6/1, производственный календарь на текущий год, 9 сотрудников
+# с граничными случаями (фикс-ставка выходных, коэф 0, заём, без отдела,
+# без графика). Табель часами НЕ заполняется. Идемпотентна.
+python -m app.cli seed-test-data
+```
+
+QA-учётки (пароль у всех `Test1234!`): `qa.admin@` (admin), `qa.accountant@`
+(accountant), `qa.manager@` (manager, отдел ИТО), `qa.employee@` (employee) —
+все на `@example.com`.
 
 ## Конвенции
 
