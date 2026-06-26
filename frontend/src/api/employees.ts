@@ -1,4 +1,4 @@
-import type { Employee, UserRole, WeekendPayType } from '../types/api'
+import type { CompanyShare, Employee, EmployeeShares, UserRole, WeekendPayType } from '../types/api'
 import { apiClient } from './client'
 
 export interface EmployeeListParams {
@@ -24,6 +24,7 @@ export const createEmployee = (data: {
   weekend_pay_type?: WeekendPayType
   weekend_coefficient?: string | null
   weekend_fixed_rate?: string | null
+  overtime_coefficient?: string | null
   loan_amount?: string | null
   loan_term_months?: number | null
   loan_start_date?: string | null
@@ -44,6 +45,7 @@ export const updateEmployee = (id: number, data: Partial<{
   weekend_pay_type: WeekendPayType
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
+  overtime_coefficient: string | null
   loan_amount: string | null
   loan_term_months: number | null
   loan_start_date: string | null
@@ -73,3 +75,10 @@ export const dismissEmployee = (id: number, dismissal_date: string) =>
 
 export const rehireEmployee = (id: number) =>
   apiClient.post<Employee>(`/api/employees/${id}/rehire`).then((r) => r.data)
+
+// ── Распределение по компаниям по умолчанию (задача 3.11b) ──
+export const getCompanyShares = (id: number) =>
+  apiClient.get<EmployeeShares>(`/api/employees/${id}/company-shares`).then((r) => r.data)
+
+export const setCompanyShares = (id: number, shares: CompanyShare[]) =>
+  apiClient.put<EmployeeShares>(`/api/employees/${id}/company-shares`, { shares }).then((r) => r.data)

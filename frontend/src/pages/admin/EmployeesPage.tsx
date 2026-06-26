@@ -6,6 +6,7 @@ import {
   listEmployees, createEmployee, updateEmployee,
   grantAccess, updateRole, resetPassword, revokeAccess,
   dismissEmployee, rehireEmployee,
+  getCompanyShares, setCompanyShares,
 } from '../../api/employees'
 import { listDepartments } from '../../api/departments'
 import { listCompanies } from '../../api/companies'
@@ -13,7 +14,7 @@ import { listSchedules } from '../../api/schedules'
 import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../hooks/useAuth'
 import { toast } from '../../store/toasts'
-import type { Employee, UserRole } from '../../types/api'
+import type { Company, Employee, UserRole } from '../../types/api'
 import { PageHeader } from '../../components/PageHeader'
 import { Table, Th, Td } from '../../components/Table'
 import { Badge } from '../../components/Badge'
@@ -50,6 +51,7 @@ const schema = z.object({
   weekend_pay_type: z.enum(['coefficient', 'fixed_rate']).default('coefficient'),
   weekend_coefficient: z.string().optional(),
   weekend_fixed_rate: z.string().optional(),
+  overtime_coefficient: z.string().optional(),
   loan_amount: z.string().optional(),
   loan_term_months: z.string().optional(),
   loan_start_date: z.string().optional(),
@@ -126,6 +128,7 @@ export function EmployeesPage() {
       department_id: isManager() ? (user?.department_id ?? undefined) : undefined,
       schedule_id: undefined, default_company_id: undefined,
       rate: '', weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
+      overtime_coefficient: '1.5',
       loan_amount: '', loan_term_months: '', loan_start_date: '',
       is_active: true, hire_date: '', dismissal_date: '',
       has_access: false, email: '', role: 'employee', initial_password: '', is_system_admin: false,
@@ -146,6 +149,7 @@ export function EmployeesPage() {
       weekend_pay_type: e.weekend_pay_type ?? 'coefficient',
       weekend_coefficient: e.weekend_coefficient ?? '',
       weekend_fixed_rate: e.weekend_fixed_rate ?? '',
+      overtime_coefficient: e.overtime_coefficient ?? '1.5',
       loan_amount: e.loan_amount ?? '',
       loan_term_months: e.loan_term_months != null ? String(e.loan_term_months) : '',
       loan_start_date: e.loan_start_date ?? '',
@@ -179,6 +183,7 @@ export function EmployeesPage() {
         weekend_pay_type: data.weekend_pay_type,
         weekend_coefficient: data.weekend_pay_type === 'coefficient' ? (data.weekend_coefficient || null) : null,
         weekend_fixed_rate: data.weekend_pay_type === 'fixed_rate' ? (data.weekend_fixed_rate || null) : null,
+        overtime_coefficient: data.overtime_coefficient || null,
         loan_amount: data.loan_amount || null,
         loan_term_months: data.loan_term_months ? Number(data.loan_term_months) : null,
         loan_start_date: data.loan_start_date || null,
@@ -528,6 +533,27 @@ export function EmployeesPage() {
             </div>
           </div>
 
+          {/* Section 3b-2 — Коэффициент переработки (задача 3.11b п.0) */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Переработка</p>
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-gray-700">Коэффициент переработки</label>
+              <input
+                {...form.register('overtime_coefficient')}
+                placeholder="1.5"
+                className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-xs text-gray-400">
+                Помесячно: (оклад/норма) × часы переработки × коэффициент. 1.5 = полуторный, 1 = одинарный, 0 = не оплачивается
+              </p>
+            </div>
+          </div>
+
+          {/* Section 3b-3 — Распределение затрат по юрлицам по умолчанию (3.11b п.1) */}
+          {editTarget && !isMgr && (
+            <CompanySharesEditor employeeId={editTarget.id} companies={companies ?? []} />
+          )}
+
           {/* Section 3c — Заём (задача 3.11a). Гасится равными долями автоматически. */}
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Заём</p>
@@ -706,6 +732,79 @@ export function EmployeesPage() {
           {tempPassword}
         </div>
       </Modal>
+    </div>
+  )
+}
+
+// ── Распределение затрат по юрлицам по умолчанию (задача 3.11b п.1) ──
+function CompanySharesEditor({ employeeId, companies }: { employeeId: number; companies: Company[] }) {
+  const [shares, setShares] = useState<Record<number, string>>({})
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setLoading(true)
+    getCompanyShares(employeeId)
+      .then((data) => {
+        const map: Record<number, string> = {}
+        for (const s of data.shares) map[s.company_id] = s.percent
+        setShares(map)
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [employeeId])
+
+  const sum = Object.values(shares).reduce((acc, v) => acc + (Number(v) || 0), 0)
+  const warn = sum > 0 && Math.abs(sum - 100) > 0.5
+
+  const save = async () => {
+    const list = Object.entries(shares)
+      .filter(([, v]) => (Number(v) || 0) > 0)
+      .map(([cid, v]) => ({ company_id: Number(cid), percent: String(Number(v)) }))
+    try {
+      setSaving(true)
+      await setCompanyShares(employeeId, list)
+      toast.success('Распределение по умолчанию сохранено')
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : 'Ошибка сохранения')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) return null
+
+  return (
+    <div>
+      <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+        Распределение затрат по юрлицам (по умолчанию)
+      </p>
+      <div className="flex flex-col gap-2">
+        {companies.filter((c) => c.is_active).map((c) => (
+          <div key={c.id} className="flex items-center gap-2">
+            <span className="w-40 truncate text-sm text-gray-700" title={c.name}>{c.name}</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step="0.1"
+              value={shares[c.id] ?? ''}
+              onChange={(e) => setShares((p) => ({ ...p, [c.id]: e.target.value }))}
+              className="w-20 rounded-lg border border-gray-300 px-2 py-1 text-right text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="0"
+            />
+            <span className="text-sm text-gray-400">%</span>
+          </div>
+        ))}
+        <div className={`text-xs ${warn ? 'text-amber-600' : 'text-gray-400'}`}>
+          Сумма: {sum}% {warn && '(должно быть ≈100%)'}
+        </div>
+        <div>
+          <Button type="button" variant="secondary" size="sm" onClick={save} disabled={saving}>
+            Сохранить распределение
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }

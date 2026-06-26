@@ -1,81 +1,32 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuthStore } from '../../store/auth'
 import { toast } from '../../store/toasts'
-import type { CompanyBreakdown, Department, EmployeePayroll, PayrollSummary } from '../../types/api'
+import type { CompanyShare, Department, PayrollStatement, StatementRow } from '../../types/api'
 import { timesheetApi } from '../../api/timesheet'
 import { apiClient } from '../../api/client'
-import { formatDelta, formatHours, formatMoney } from '../../utils/money'
+import { formatHours, formatMoney } from '../../utils/money'
 
 const MONTH_NAMES = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
   'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
 ]
 
-function formatPercent(value: string): string {
-  const n = Number(value)
-  if (Number.isNaN(n)) return ''
-  return Number.isInteger(n) ? String(n) : n.toFixed(1)
+const num = (v: string | null | undefined): number => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
 }
 
-function BreakdownRow({ bd }: { bd: CompanyBreakdown }) {
-  return (
-    <tr className="text-[11px] bg-gray-50 text-gray-500">
-      <td className="pl-10 pr-3 py-1 whitespace-nowrap">{bd.company_code} — {bd.company_name}</td>
-      <td className="px-2 py-1 text-center whitespace-nowrap">{formatHours(bd.hours)} <span className="text-gray-400">({formatPercent(bd.percent)}%)</span></td>
-      <td className="px-2 py-1 text-center" />
-      <td className="px-2 py-1 text-center" />
-      <td className="px-2 py-1 text-center" />
-      <td className="px-2 py-1 text-center" />
-      <td className="px-2 py-1 text-center">{formatMoney(bd.base_amount)}</td>
-      <td className="px-2 py-1 text-center">{formatMoney(bd.overtime_amount)}</td>
-      <td className="px-2 py-1 text-center">{formatMoney(bd.holiday_amount)}</td>
-      <td className="px-2 py-1 text-center font-medium text-blue-700">{formatMoney(bd.total)}</td>
-    </tr>
-  )
-}
+type Edits = Record<number, Record<number, string>> // employee_id → company_id → percent
 
-function EmployeeRow({ ep }: { ep: EmployeePayroll }) {
-  const [expanded, setExpanded] = useState(false)
-  const delta = formatDelta(ep.delta_hours)
-
-  return (
-    <>
-      <tr
-        className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        <td className="px-3 py-2 whitespace-nowrap text-sm font-medium text-gray-800">
-          <span className="mr-1 text-gray-400 text-xs">{expanded ? '▼' : '▶'}</span>
-          {ep.employee_name}
-          {!ep.is_calculable && (
-            <span className="ml-2 text-[10px] text-gray-400 italic" title={ep.reason_if_not_calculable ?? ''}>
-              ({ep.reason_if_not_calculable})
-            </span>
-          )}
-        </td>
-        <td className="px-2 py-2 text-center text-sm text-gray-700">{formatHours(ep.total_hours)}</td>
-        <td className="px-2 py-2 text-center text-sm text-gray-600">{formatHours(ep.norm_hours)}</td>
-        <td className={`px-2 py-2 text-center text-sm ${delta.className}`}>{delta.text}</td>
-        <td className="px-2 py-2 text-center text-sm text-gray-600">{ep.norm_days ?? '—'}</td>
-        <td className="px-2 py-2 text-center text-sm text-gray-700">{ep.fact_days}</td>
-        <td className="px-2 py-2 text-center text-sm text-gray-700">
-          {ep.is_calculable ? formatMoney(ep.base_amount) : <span className="text-gray-400">—</span>}
-        </td>
-        <td className="px-2 py-2 text-center text-sm text-gray-700">
-          {ep.is_calculable ? formatMoney(ep.overtime_amount) : <span className="text-gray-400">—</span>}
-        </td>
-        <td className="px-2 py-2 text-center text-sm text-gray-700">
-          {ep.is_calculable ? formatMoney(ep.holiday_amount) : <span className="text-gray-400">—</span>}
-        </td>
-        <td className="px-2 py-2 text-center text-sm font-bold text-blue-700">
-          {ep.is_calculable ? formatMoney(ep.total_amount) : <span className="text-gray-400 font-normal">—</span>}
-        </td>
-      </tr>
-      {expanded && ep.breakdown_by_company.map((bd) => (
-        <BreakdownRow key={bd.company_id} bd={bd} />
-      ))}
-    </>
-  )
+function buildEdits(stmt: PayrollStatement): Edits {
+  const e: Edits = {}
+  for (const row of stmt.rows) {
+    e[row.employee_id] = {}
+    for (const d of row.distribution) {
+      e[row.employee_id][d.company_id] = d.percent
+    }
+  }
+  return e
 }
 
 export function PayrollPage() {
@@ -85,20 +36,24 @@ export function PayrollPage() {
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [departmentId, setDepartmentId] = useState<number | undefined>(undefined)
   const [departments, setDepartments] = useState<Department[]>([])
-  const [data, setData] = useState<PayrollSummary | null>(null)
+  const [data, setData] = useState<PayrollStatement | null>(null)
+  const [edits, setEdits] = useState<Edits>({})
   const [loading, setLoading] = useState(true)
+  const [savingId, setSavingId] = useState<number | null>(null)
 
   useEffect(() => {
     apiClient.get<Department[]>('/api/departments').then((r) => setDepartments(r.data)).catch(() => {})
   }, [])
 
-  useEffect(() => {
+  const reload = () => {
     setLoading(true)
-    timesheetApi.getPayroll(year, month, departmentId)
-      .then(setData)
-      .catch(() => toast.error('Не удалось загрузить расчёт ЗП'))
+    timesheetApi.getStatement(year, month, departmentId)
+      .then((d) => { setData(d); setEdits(buildEdits(d)) })
+      .catch(() => toast.error('Не удалось загрузить ведомость'))
       .finally(() => setLoading(false))
-  }, [year, month, departmentId])
+  }
+
+  useEffect(reload, [year, month, departmentId])
 
   const prevMonth = () => {
     if (month === 1) { setYear((y) => y - 1); setMonth(12) }
@@ -112,14 +67,89 @@ export function PayrollPage() {
   if (user?.role !== 'admin' && user?.role !== 'accountant' && user?.role !== 'manager') {
     return <div className="p-8 text-center text-red-500">Нет доступа</div>
   }
-
+  const canEdit = user?.role === 'admin' || user?.role === 'accountant'
   const isManager = user?.role === 'manager'
+
+  const setPercent = (empId: number, companyId: number, value: string) => {
+    setEdits((prev) => ({
+      ...prev,
+      [empId]: { ...(prev[empId] ?? {}), [companyId]: value },
+    }))
+  }
+
+  const rowPercentSum = (empId: number): number => {
+    const e = edits[empId] ?? {}
+    return Object.values(e).reduce((s, v) => s + num(v), 0)
+  }
+
+  const saveRow = async (row: StatementRow) => {
+    const e = edits[row.employee_id] ?? {}
+    const shares: CompanyShare[] = Object.entries(e)
+      .filter(([, v]) => num(v) > 0)
+      .map(([cid, v]) => ({ company_id: Number(cid), percent: String(num(v)) }))
+    try {
+      setSavingId(row.employee_id)
+      await timesheetApi.setDistributionOverride({
+        employee_id: row.employee_id, year, month, shares,
+      })
+      toast.success('Распределение сохранено на месяц')
+      reload()
+    } catch {
+      toast.error('Не удалось сохранить распределение')
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  const resetRow = async (row: StatementRow) => {
+    try {
+      setSavingId(row.employee_id)
+      await timesheetApi.clearDistributionOverride(row.employee_id, year, month)
+      toast.success('Возвращены проценты из карточки')
+      reload()
+    } catch {
+      toast.error('Не удалось сбросить переопределение')
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  const download = async () => {
+    try {
+      const blob = await timesheetApi.exportStatementExcel(year, month, departmentId)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `vedomost_${year}_${String(month).padStart(2, '0')}.xlsx`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      toast.error('Не удалось выгрузить ведомость')
+    }
+  }
+
+  const companies = data?.companies ?? []
+  const distTotals = useMemo(() => {
+    // Живой пересчёт итогов распределения по компаниям из текущих правок.
+    const totals: Record<number, number> = {}
+    for (const c of companies) totals[c.id] = 0
+    if (data) {
+      for (const row of data.rows) {
+        const accrued = num(row.accrued_total)
+        const e = edits[row.employee_id] ?? {}
+        for (const c of companies) {
+          const pct = num(e[c.id])
+          if (pct > 0) totals[c.id] += Math.round((accrued * pct) / 100)
+        }
+      }
+    }
+    return totals
+  }, [data, edits, companies])
 
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-5 py-3 shadow-sm">
-        <h1 className="text-lg font-bold text-gray-900">Расчёт ЗП</h1>
+        <h1 className="text-lg font-bold text-gray-900">Расчёт ЗП — ведомость</h1>
         <div className="flex items-center gap-2">
           <button onClick={prevMonth} className="rounded-md p-1 text-gray-500 hover:bg-gray-100">←</button>
           <span className="min-w-[120px] text-center text-sm font-medium text-gray-700">
@@ -140,81 +170,163 @@ export function PayrollPage() {
               ))}
             </select>
           )}
+          <button
+            onClick={download}
+            className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"
+          >
+            Скачать ведомость (Excel)
+          </button>
         </div>
       </div>
 
-      {loading && (
-        <div className="flex h-32 items-center justify-center text-gray-400">Загрузка...</div>
-      )}
+      {loading && <div className="flex h-32 items-center justify-center text-gray-400">Загрузка...</div>}
 
       {!loading && data && (
-        <>
-          {/* Summary cards */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-              <p className="text-xs text-gray-500">Сотрудников</p>
-              <p className="text-xl font-bold text-gray-800">{data.total_employees}</p>
-            </div>
-            <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-              <p className="text-xs text-gray-500">Часов отработано</p>
-              <p className="text-xl font-bold text-gray-800">{formatHours(data.total_hours)}</p>
-            </div>
-            <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-              <p className="text-xs text-gray-500">Сверхурочные</p>
-              <p className="text-xl font-bold text-amber-600">{formatMoney(data.total_overtime_amount, { showZero: true })}</p>
-            </div>
-            <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 shadow-sm">
-              <p className="text-xs text-blue-600">Итого к выплате</p>
-              <p className="text-xl font-bold text-blue-700">{formatMoney(data.grand_total, { showZero: true })}</p>
-            </div>
-          </div>
-
-          {/* Table */}
-          <div className="overflow-auto rounded-xl border border-gray-200 bg-white shadow-sm">
-            <table className="min-w-full border-collapse text-xs">
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="px-3 py-2 text-left font-medium text-gray-500 whitespace-nowrap min-w-[200px]">Сотрудник</th>
-                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[60px]">Часов</th>
-                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[60px]">Норма</th>
-                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[44px]">Δ</th>
-                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[60px]" title="Рабочих дней по производственному календарю">Норма дн.</th>
-                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[60px]" title="Дней, в которые есть отметки часов">Факт дн.</th>
-                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[80px]">Оклад</th>
-                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[80px]">Сверхур.</th>
-                  <th className="px-2 py-2 text-center font-medium text-gray-500 whitespace-nowrap min-w-[80px]">Праздн.</th>
-                  <th className="px-2 py-2 text-center font-semibold text-blue-700 whitespace-nowrap min-w-[90px]">Итого ₽</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.employees.length === 0 && (
-                  <tr>
-                    <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
-                      Нет сотрудников
+        <div className="overflow-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+          <table className="min-w-full border-collapse text-[11px]">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200 text-gray-500">
+                <th className="px-2 py-2 text-left font-medium">№</th>
+                <th className="px-2 py-2 text-left font-medium">Таб.№</th>
+                <th className="px-2 py-2 text-left font-medium min-w-[160px]">ФИО</th>
+                <th className="px-2 py-2 text-left font-medium">Компания</th>
+                <th className="px-2 py-2 text-left font-medium">Отдел</th>
+                <th className="px-2 py-2 text-left font-medium">Должность</th>
+                <th className="px-2 py-2 text-center font-medium">Оклад</th>
+                <th className="px-2 py-2 text-center font-medium">Норма</th>
+                <th className="px-2 py-2 text-center font-medium">Факт</th>
+                <th className="px-2 py-2 text-center font-medium" title="Коэффициент переработки">Коэф.</th>
+                <th className="px-2 py-2 text-center font-medium" title="Кол-во часов переработки">Пер. ч</th>
+                <th className="px-2 py-2 text-center font-medium">Сумма пер.</th>
+                <th className="px-2 py-2 text-center font-medium">Начисл. оклад</th>
+                <th className="px-2 py-2 text-center font-medium">Премия</th>
+                <th className="px-2 py-2 text-center font-medium">KPI</th>
+                <th className="px-2 py-2 text-center font-semibold text-blue-700 min-w-[90px]">Итого начисл.</th>
+                <th className="px-2 py-2 text-center font-medium">Удержано</th>
+                <th className="px-2 py-2 text-center font-semibold text-emerald-700 min-w-[90px]">К выплате</th>
+                {companies.map((c) => (
+                  <th key={c.id} className="px-2 py-2 text-center font-medium bg-indigo-50 min-w-[110px]" title={c.name}>
+                    {c.code} %/₽
+                  </th>
+                ))}
+                <th className="px-2 py-2 text-center font-medium">Σ распред.</th>
+                <th className="px-2 py-2 text-center font-medium">Примечание</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rows.length === 0 && (
+                <tr><td colSpan={20} className="px-4 py-8 text-center text-gray-400">Нет сотрудников</td></tr>
+              )}
+              {data.rows.map((row, i) => {
+                const accrued = num(row.accrued_total)
+                const pctSum = rowPercentSum(row.employee_id)
+                const pctWarn = pctSum > 0 && Math.abs(pctSum - 100) > 0.5
+                const e = edits[row.employee_id] ?? {}
+                let liveDistTotal = 0
+                return (
+                  <tr key={row.employee_id} className="border-b border-gray-100 hover:bg-gray-50/60">
+                    <td className="px-2 py-1.5 text-gray-500">{i + 1}</td>
+                    <td className="px-2 py-1.5 text-gray-600">{row.tab_number ?? '—'}</td>
+                    <td className="px-2 py-1.5 font-medium text-gray-800">
+                      {row.employee_name}
+                      {!row.is_calculable && (
+                        <span className="ml-1 text-[10px] text-gray-400 italic" title={row.note ?? ''}>
+                          ({row.note})
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-gray-600">{row.main_company_name ?? '—'}</td>
+                    <td className="px-2 py-1.5 text-gray-600">{row.department_name ?? '—'}</td>
+                    <td className="px-2 py-1.5 text-gray-600">{row.position ?? '—'}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.rate)}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-600">{formatHours(row.norm_hours)}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{formatHours(row.fact_hours)}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-600">{num(row.overtime_coefficient)}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-600">{formatHours(row.overtime_hours)}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.overtime_amount)}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.base_salary)}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.premium_amount)}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.kpi_amount)}</td>
+                    <td className="px-2 py-1.5 text-center font-bold text-blue-700">{formatMoney(row.accrued_total, { showZero: true })}</td>
+                    <td className="px-2 py-1.5 text-center text-rose-600">{formatMoney(row.deductions)}</td>
+                    <td className="px-2 py-1.5 text-center font-bold text-emerald-700">{formatMoney(row.net_payout, { showZero: true })}</td>
+                    {companies.map((c) => {
+                      const pct = e[c.id] ?? ''
+                      const amount = num(pct) > 0 ? Math.round((accrued * num(pct)) / 100) : 0
+                      liveDistTotal += amount
+                      return (
+                        <td key={c.id} className="px-1.5 py-1 text-center bg-indigo-50/40">
+                          <div className="flex items-center justify-center gap-1">
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step="0.1"
+                              disabled={!canEdit}
+                              value={pct}
+                              onChange={(ev) => setPercent(row.employee_id, c.id, ev.target.value)}
+                              className={`w-12 rounded border px-1 py-0.5 text-right text-[11px] ${pctWarn ? 'border-amber-400 bg-amber-50' : 'border-gray-300'} disabled:bg-gray-100`}
+                              placeholder="0"
+                            />
+                            <span className="text-gray-400">%</span>
+                          </div>
+                          <div className="mt-0.5 text-[10px] text-gray-500">{amount > 0 ? formatMoney(String(amount)) : '—'}</div>
+                        </td>
+                      )
+                    })}
+                    <td className={`px-2 py-1.5 text-center font-medium ${liveDistTotal === Math.round(accrued) ? 'text-gray-600' : 'text-amber-600'}`}>
+                      {formatMoney(String(liveDistTotal))}
+                      {pctWarn && <div className="text-[10px] text-amber-600">Σ%={pctSum}</div>}
+                    </td>
+                    <td className="px-2 py-1.5 text-center whitespace-nowrap">
+                      {canEdit && (
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            disabled={savingId === row.employee_id}
+                            onClick={() => saveRow(row)}
+                            className="rounded bg-blue-600 px-2 py-0.5 text-[10px] text-white hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            Сохр.
+                          </button>
+                          {row.is_overridden && (
+                            <button
+                              disabled={savingId === row.employee_id}
+                              onClick={() => resetRow(row)}
+                              title="Вернуть проценты из карточки"
+                              className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-700 hover:bg-gray-300 disabled:opacity-50"
+                            >
+                              ↺
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {row.is_overridden && (
+                        <div className="mt-0.5 text-[9px] text-indigo-500">правка на месяц</div>
+                      )}
                     </td>
                   </tr>
-                )}
-                {data.employees.map((ep) => (
-                  <EmployeeRow key={ep.employee_id} ep={ep} />
+                )
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
+                <td className="px-2 py-2 text-gray-700" colSpan={11}>Итого</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_overtime_amount)}</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_base_salary)}</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_premium)}</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_kpi)}</td>
+                <td className="px-2 py-2 text-center font-bold text-blue-700">{formatMoney(data.total_accrued, { showZero: true })}</td>
+                <td className="px-2 py-2 text-center text-rose-600">{formatMoney(data.total_deductions)}</td>
+                <td className="px-2 py-2 text-center font-bold text-emerald-700">{formatMoney(data.total_net_payout, { showZero: true })}</td>
+                {companies.map((c) => (
+                  <td key={c.id} className="px-2 py-2 text-center text-gray-700 bg-indigo-50/40">{formatMoney(String(distTotals[c.id] ?? 0))}</td>
                 ))}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold text-xs">
-                  <td className="px-3 py-2 text-gray-700">Итого</td>
-                  <td className="px-2 py-2 text-center text-gray-700">{formatHours(data.total_hours)}</td>
-                  <td className="px-2 py-2 text-center" />
-                  <td className="px-2 py-2 text-center" />
-                  <td className="px-2 py-2 text-center" />
-                  <td className="px-2 py-2 text-center" />
-                  <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_base_amount)}</td>
-                  <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_overtime_amount)}</td>
-                  <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_holiday_amount)}</td>
-                  <td className="px-2 py-2 text-center font-bold text-blue-700">{formatMoney(data.grand_total, { showZero: true })}</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </>
+                <td className="px-2 py-2" />
+                <td className="px-2 py-2" />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       )}
     </div>
   )

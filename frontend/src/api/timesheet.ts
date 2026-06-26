@@ -1,4 +1,4 @@
-import type { AuditLogEntry, AutofillPreview, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
+import type { AuditLogEntry, AutofillPreview, CompanyShare, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
 export const timesheetApi = {
@@ -108,5 +108,36 @@ export const timesheetApi = {
 
   async clearLoanOverride(employeeId: number, year: number, month: number): Promise<void> {
     await apiClient.delete(`/api/timesheet/loan-override/${employeeId}/${year}/${month}`)
+  },
+
+  // ── Ведомость «Расчёт ЗП» (задача 3.11b) ──
+  async getStatement(year: number, month: number, departmentId?: number): Promise<PayrollStatement> {
+    const params: Record<string, unknown> = {}
+    if (departmentId !== undefined) params.department_id = departmentId
+    const { data } = await apiClient.get<PayrollStatement>(
+      `/api/timesheet/${year}/${month}/statement`, { params },
+    )
+    return data
+  },
+
+  async setDistributionOverride(input: {
+    employee_id: number; year: number; month: number; shares: CompanyShare[]
+  }): Promise<unknown> {
+    const { data } = await apiClient.put('/api/timesheet/distribution', input)
+    return data
+  },
+
+  async clearDistributionOverride(employeeId: number, year: number, month: number): Promise<void> {
+    await apiClient.delete(`/api/timesheet/distribution/${employeeId}/${year}/${month}`)
+  },
+
+  async exportStatementExcel(year: number, month: number, departmentId?: number): Promise<Blob> {
+    const params: Record<string, unknown> = {}
+    if (departmentId !== undefined) params.department_id = departmentId
+    const { data } = await apiClient.get<Blob>(
+      `/api/timesheet/${year}/${month}/statement/export/excel`,
+      { params, responseType: 'blob' },
+    )
+    return data
   },
 }

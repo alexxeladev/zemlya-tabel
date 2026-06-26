@@ -63,6 +63,75 @@ export interface PayrollSummary {
   total_net_payout: string
 }
 
+// ── Payroll statement (задача 3.11b) ──
+export interface CompanyShare {
+  company_id: number
+  percent: string
+}
+
+export interface EmployeeShares {
+  employee_id: number
+  shares: CompanyShare[]
+  percent_sum: string
+}
+
+export interface StatementCompanyRef {
+  id: number
+  code: string
+  name: string
+}
+
+export interface StatementCompanyAmount {
+  company_id: number
+  percent: string
+  amount: string
+}
+
+export interface StatementRow {
+  employee_id: number
+  tab_number: string | null
+  employee_name: string
+  main_company_id: number | null
+  main_company_name: string | null
+  department_name: string | null
+  position: string | null
+  schedule_name: string | null
+  rate: string | null
+  norm_hours: string | null
+  fact_hours: string
+  overtime_coefficient: string
+  overtime_hours: string
+  overtime_amount: string
+  base_salary: string
+  premium_amount: string
+  kpi_amount: string
+  premium_extra_amount: string
+  accrued_total: string
+  deductions: string
+  net_payout: string
+  is_overridden: boolean
+  percent_sum: string
+  distribution: StatementCompanyAmount[]
+  distribution_total: string
+  is_calculable: boolean
+  note: string | null
+}
+
+export interface PayrollStatement {
+  year: number
+  month: number
+  companies: StatementCompanyRef[]
+  rows: StatementRow[]
+  total_overtime_amount: string
+  total_base_salary: string
+  total_premium: string
+  total_kpi: string
+  total_accrued: string
+  total_deductions: string
+  total_net_payout: string
+  distribution_totals: Record<number, string>
+}
+
 export type AdjustmentKind = 'premium' | 'kpi' | 'advance'
 
 export interface Adjustment {
@@ -245,6 +314,7 @@ export interface Employee {
   weekend_pay_type: WeekendPayType
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
+  overtime_coefficient: string | null
   loan_amount: string | null
   loan_term_months: number | null
   loan_start_date: string | null
