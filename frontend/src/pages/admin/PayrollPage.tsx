@@ -36,6 +36,8 @@ export function PayrollPage() {
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [departmentId, setDepartmentId] = useState<number | undefined>(undefined)
   const [departments, setDepartments] = useState<Department[]>([])
+  const [query, setQuery] = useState('')
+  const [companyFilter, setCompanyFilter] = useState<number | undefined>(undefined)
   const [data, setData] = useState<PayrollStatement | null>(null)
   const [edits, setEdits] = useState<Edits>({})
   const [loading, setLoading] = useState(true)
@@ -129,22 +131,47 @@ export function PayrollPage() {
   }
 
   const companies = data?.companies ?? []
-  const distTotals = useMemo(() => {
-    // Живой пересчёт итогов распределения по компаниям из текущих правок.
-    const totals: Record<number, number> = {}
-    for (const c of companies) totals[c.id] = 0
-    if (data) {
-      for (const row of data.rows) {
-        const accrued = num(row.accrued_total)
-        const e = edits[row.employee_id] ?? {}
-        for (const c of companies) {
-          const pct = num(e[c.id])
-          if (pct > 0) totals[c.id] += Math.round((accrued * pct) / 100)
-        }
+
+  // Клиентские фильтры: ФИО / таб.№ (поиск) и компания (где у сотрудника есть доля).
+  const visibleRows = useMemo(() => {
+    const rows = data?.rows ?? []
+    const q = query.trim().toLowerCase()
+    return rows.filter((r) => {
+      if (q) {
+        const hay = `${r.employee_name} ${r.tab_number ?? ''}`.toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      if (companyFilter !== undefined) {
+        const hasShare = r.distribution.some((d) => d.company_id === companyFilter && num(d.percent) > 0)
+        if (!hasShare && r.main_company_id !== companyFilter) return false
+      }
+      return true
+    })
+  }, [data, query, companyFilter])
+
+  const footer = useMemo(() => {
+    const acc = {
+      overtime: 0, base: 0, premium: 0, kpi: 0, accrued: 0, deductions: 0, net: 0,
+      dist: {} as Record<number, number>,
+    }
+    for (const c of companies) acc.dist[c.id] = 0
+    for (const row of visibleRows) {
+      acc.overtime += num(row.overtime_amount)
+      acc.base += num(row.base_salary)
+      acc.premium += num(row.premium_amount)
+      acc.kpi += num(row.kpi_amount)
+      acc.accrued += num(row.accrued_total)
+      acc.deductions += num(row.deductions)
+      acc.net += num(row.net_payout)
+      const accrued = num(row.accrued_total)
+      const e = edits[row.employee_id] ?? {}
+      for (const c of companies) {
+        const pct = num(e[c.id])
+        if (pct > 0) acc.dist[c.id] += Math.round((accrued * pct) / 100)
       }
     }
-    return totals
-  }, [data, edits, companies])
+    return acc
+  }, [visibleRows, edits, companies])
 
   return (
     <div className="space-y-4">
@@ -157,7 +184,23 @@ export function PayrollPage() {
           </span>
           <button onClick={nextMonth} className="rounded-md p-1 text-gray-500 hover:bg-gray-100">→</button>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Поиск: ФИО или таб.№"
+            className="w-48 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+          <select
+            value={companyFilter ?? ''}
+            onChange={(e) => setCompanyFilter(e.target.value === '' ? undefined : Number(e.target.value))}
+            className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+          >
+            <option value="">Все компании</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
+            ))}
+          </select>
           {!isManager && departments.length > 0 && (
             <select
               value={departmentId ?? ''}
@@ -169,6 +212,14 @@ export function PayrollPage() {
                 <option key={d.id} value={d.id}>{d.name}</option>
               ))}
             </select>
+          )}
+          {(query || companyFilter !== undefined) && (
+            <button
+              onClick={() => { setQuery(''); setCompanyFilter(undefined) }}
+              className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-500 hover:bg-gray-100"
+            >
+              Сброс
+            </button>
           )}
           <button
             onClick={download}
@@ -214,10 +265,10 @@ export function PayrollPage() {
               </tr>
             </thead>
             <tbody>
-              {data.rows.length === 0 && (
+              {visibleRows.length === 0 && (
                 <tr><td colSpan={20} className="px-4 py-8 text-center text-gray-400">Нет сотрудников</td></tr>
               )}
-              {data.rows.map((row, i) => {
+              {visibleRows.map((row, i) => {
                 const accrued = num(row.accrued_total)
                 const pctSum = rowPercentSum(row.employee_id)
                 const pctWarn = pctSum > 0 && Math.abs(pctSum - 100) > 0.5
@@ -310,16 +361,16 @@ export function PayrollPage() {
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
-                <td className="px-2 py-2 text-gray-700" colSpan={11}>Итого</td>
-                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_overtime_amount)}</td>
-                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_base_salary)}</td>
-                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_premium)}</td>
-                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(data.total_kpi)}</td>
-                <td className="px-2 py-2 text-center font-bold text-blue-700">{formatMoney(data.total_accrued, { showZero: true })}</td>
-                <td className="px-2 py-2 text-center text-rose-600">{formatMoney(data.total_deductions)}</td>
-                <td className="px-2 py-2 text-center font-bold text-emerald-700">{formatMoney(data.total_net_payout, { showZero: true })}</td>
+                <td className="px-2 py-2 text-gray-700" colSpan={11}>Итого{visibleRows.length !== (data.rows.length) ? ` (отфильтровано: ${visibleRows.length})` : ''}</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.overtime))}</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.base))}</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.premium))}</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.kpi))}</td>
+                <td className="px-2 py-2 text-center font-bold text-blue-700">{formatMoney(String(footer.accrued), { showZero: true })}</td>
+                <td className="px-2 py-2 text-center text-rose-600">{formatMoney(String(footer.deductions))}</td>
+                <td className="px-2 py-2 text-center font-bold text-emerald-700">{formatMoney(String(footer.net), { showZero: true })}</td>
                 {companies.map((c) => (
-                  <td key={c.id} className="px-2 py-2 text-center text-gray-700 bg-indigo-50/40">{formatMoney(String(distTotals[c.id] ?? 0))}</td>
+                  <td key={c.id} className="px-2 py-2 text-center text-gray-700 bg-indigo-50/40">{formatMoney(String(footer.dist[c.id] ?? 0))}</td>
                 ))}
                 <td className="px-2 py-2" />
                 <td className="px-2 py-2" />
