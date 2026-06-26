@@ -10,6 +10,8 @@ from app.core.audit import log_action
 from app.core.deps import get_current_user, require_role
 from app.core.security import hash_password
 from app.database import get_db
+from app.models.companies import Company
+from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
 from app.schemas.employee import (
     DismissalRequest,
@@ -18,6 +20,11 @@ from app.schemas.employee import (
     EmployeeCreate,
     EmployeeRead,
     EmployeeUpdate,
+)
+from app.schemas.payroll_statement import (
+    CompanyShareInput,
+    EmployeeSharesRead,
+    EmployeeSharesUpdate,
 )
 
 router = APIRouter()
@@ -358,3 +365,81 @@ def revoke_access(
     db.flush()
     log_action(db, actor, "employee", emp.id, "access_revoked", before=before)
     db.commit()
+
+
+# ── Распределение по компаниям по умолчанию (задача 3.11b п.1) ──────────────────
+
+@router.get("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
+def get_company_shares(
+    emp_id: int,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+):
+    if current_user.role not in ("admin", "accountant", "manager"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    emp = db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    if current_user.role == "manager" and emp.department_id != current_user.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+
+    rows = (
+        db.query(EmployeeCompanyShare)
+        .filter(EmployeeCompanyShare.employee_id == emp_id)
+        .all()
+    )
+    shares = [CompanyShareInput(company_id=r.company_id, percent=r.percent) for r in rows]
+    percent_sum = sum((r.percent for r in rows), Decimal("0"))
+    return EmployeeSharesRead(employee_id=emp_id, shares=shares, percent_sum=percent_sum)
+
+
+@router.put("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
+def set_company_shares(
+    emp_id: int,
+    payload: EmployeeSharesUpdate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Задать проценты распределения по умолчанию (в карточке). Сумма должна быть
+    близка к 100% (допускаем 99–101 из-за округления)."""
+    emp = db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+
+    total = Decimal("0")
+    seen: set[int] = set()
+    for s in payload.shares:
+        if s.percent < 0:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Процент не может быть отрицательным")
+        if s.company_id in seen:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Компания указана дважды")
+        seen.add(s.company_id)
+        if not db.get(Company, s.company_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+        total += s.percent
+    positive = [s for s in payload.shares if s.percent > 0]
+    if positive and not (Decimal("99") <= total <= Decimal("101")):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Сумма процентов должна быть ≈100% (сейчас {total})",
+        )
+
+    db.query(EmployeeCompanyShare).filter(
+        EmployeeCompanyShare.employee_id == emp_id
+    ).delete(synchronize_session=False)
+    for s in positive:
+        db.add(EmployeeCompanyShare(
+            employee_id=emp_id, company_id=s.company_id, percent=s.percent,
+        ))
+    log_action(db, actor, "employee_company_shares", emp_id, "set",
+               after={s.company_id: str(s.percent) for s in positive})
+    db.commit()
+
+    rows = (
+        db.query(EmployeeCompanyShare)
+        .filter(EmployeeCompanyShare.employee_id == emp_id)
+        .all()
+    )
+    shares = [CompanyShareInput(company_id=r.company_id, percent=r.percent) for r in rows]
+    percent_sum = sum((r.percent for r in rows), Decimal("0"))
+    return EmployeeSharesRead(employee_id=emp_id, shares=shares, percent_sum=percent_sum)
