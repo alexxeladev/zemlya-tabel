@@ -38,6 +38,7 @@ def _to_dict(emp: Employee) -> dict:
         "weekend_pay_type": emp.weekend_pay_type,
         "weekend_coefficient": str(emp.weekend_coefficient) if emp.weekend_coefficient is not None else None,
         "weekend_fixed_rate": str(emp.weekend_fixed_rate) if emp.weekend_fixed_rate is not None else None,
+        "overtime_coefficient": str(emp.overtime_coefficient) if emp.overtime_coefficient is not None else None,
         "loan_amount": str(emp.loan_amount) if emp.loan_amount is not None else None,
         "loan_term_months": emp.loan_term_months,
         "loan_start_date": str(emp.loan_start_date) if emp.loan_start_date is not None else None,
@@ -132,6 +133,11 @@ def create_employee(
             else Decimal("1.5")
         ),
         weekend_fixed_rate=payload.weekend_fixed_rate,
+        overtime_coefficient=(
+            payload.overtime_coefficient
+            if payload.overtime_coefficient is not None
+            else Decimal("1.5")
+        ),
         loan_amount=payload.loan_amount,
         loan_term_months=payload.loan_term_months,
         loan_start_date=payload.loan_start_date,

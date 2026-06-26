@@ -8,7 +8,6 @@ from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.calendar import (
     is_holiday,
-    is_short_day,
     norm_hours_for_period,
     workdays_in_month,
 )
@@ -75,6 +74,12 @@ def _weekend_pay(employee: Employee, holiday_hours: Decimal, hourly_rate: Decima
     coeff = getattr(employee, "weekend_coefficient", None)
     coeff = _ONE_HALF if coeff is None else Decimal(str(coeff))
     return holiday_hours * hourly_rate * coeff
+
+
+def _overtime_coeff(employee: Employee) -> Decimal:
+    """Коэффициент переработки сотрудника (0/1/1.5), дефолт 1.5 (задача 3.11b п.0)."""
+    coeff = getattr(employee, "overtime_coefficient", None)
+    return _ONE_HALF if coeff is None else Decimal(str(coeff))
 
 
 @dataclass
@@ -195,26 +200,19 @@ def calculate_employee_payroll(
         is_calculable = False
         reason = "Не задан оклад"
 
-    # Переработка строго по дням (правка 3.9-2): для каждого рабочего дня
-    # сравниваем фактические часы с дневной нормой графика. Праздничные/выходные
-    # часы — отдельная категория, в переработку и базу оклада не идут.
+    # Переработка ПОМЕСЯЧНО (уточнение финдиректора, задача 3.11b п.0):
+    # переработка = факт_будних_часов − месячная_норма (если положительно).
+    # Праздничные/выходные часы — отдельная категория (правка 3.9-3): в переработку
+    # и базу оклада не входят, оплачиваются по правилам выходных. Поэтому база
+    # переработки — это будние (непраздничные) часы.
+    regular_hours = total_hours - total_holiday_hours
     delta_hours: Decimal | None = None
     overtime_hours = _ZERO
-    regular_credited_hours = _ZERO
+    regular_credited_hours = regular_hours
     if norm_hours is not None:
         delta_hours = total_hours - norm_hours
-
-    if calendar_data is not None and schedule is not None and schedule.schedule_type != "shift":
-        hps = Decimal(str(schedule.hours_per_shift))
-        for d, day_hours in hours_by_date.items():
-            if is_holiday(calendar_data, d.month, d.day):
-                continue  # праздничные часы оплачиваются по правилам выходных
-            daily_norm = hps - _ONE if is_short_day(calendar_data, d.month, d.day) else hps
-            if day_hours > daily_norm:
-                overtime_hours += day_hours - daily_norm
-                regular_credited_hours += daily_norm
-            else:
-                regular_credited_hours += day_hours
+        overtime_hours = max(_ZERO, regular_hours - norm_hours)
+        regular_credited_hours = regular_hours - overtime_hours
 
     # Financial amounts
     hourly_rate: Decimal | None = None
@@ -226,7 +224,8 @@ def calculate_employee_payroll(
         hourly_rate = rate / norm_hours
         # Оклад от зачётных будних часов, но не больше полного оклада.
         base_amount = rate * min(_ONE, regular_credited_hours / norm_hours)
-        overtime_amount = overtime_hours * hourly_rate * _ONE_HALF
+        # Переработка: (оклад/норма) × часы × коэффициент сотрудника (0/1/1.5).
+        overtime_amount = overtime_hours * hourly_rate * _overtime_coeff(employee)
         # Праздничные/выходные — по персональным настройкам сотрудника (правка 3.9-3).
         holiday_amount = _weekend_pay(employee, total_holiday_hours, hourly_rate)
 

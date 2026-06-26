@@ -394,7 +394,8 @@ def test_export_per_company_rows_columns(
     db_session.commit()
     db_session.refresh(emp)
 
-    # День 1 (Пн) — 10ч в Альфа (переработка 2ч); День 3 (Ср) — 8ч в Бета (без переработки)
+    # День 1 (Пн) — 10ч в Альфа; День 3 (Ср) — 8ч в Бета.
+    # Переработка теперь помесячная (3.11b п.0): 18ч < месячной нормы → переработки нет.
     db_session.add(TimesheetEntry(employee_id=emp.id, work_date=date(YEAR, MONTH, 1),
                                   company_id=company_alpha.id, hours=10))
     db_session.add(TimesheetEntry(employee_id=emp.id, work_date=date(YEAR, MONTH, 3),
@@ -436,10 +437,10 @@ def test_export_per_company_rows_columns(
     assert ws.cell(row=start_row + 1, column=_total_col(total_days)).value == 8   # Бета
     # Общий итог по сотруднику (merge в первой строке) = 18
     assert ws.cell(row=start_row, column=_grand_total_col(total_days)).value == 18
-    # Сумма переработки по компаниям = 2 (распределено пропорционально)
+    # Переработка помесячная: суммарно 18ч < нормы → 0 переработки
     ot_alpha = ws.cell(row=start_row, column=_ot_hours_col(total_days)).value or 0
     ot_beta = ws.cell(row=start_row + 1, column=_ot_hours_col(total_days)).value or 0
-    assert ot_alpha + ot_beta == 2
+    assert ot_alpha + ot_beta == 0
     # Норма июня (standard 8ч) — положительное число
     assert (ws.cell(row=start_row, column=_norm_col(total_days)).value or 0) > 0
 

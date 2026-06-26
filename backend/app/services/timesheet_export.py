@@ -566,19 +566,15 @@ def _write_employee_rows(
         comp_totals[comp_id] = total_hours
         comp_holiday[comp_id] = holiday_hours
 
-    # ── Переработка (employee-level): по дням, свыше дневной нормы ─────────────
+    # ── Переработка (employee-level): ПОМЕСЯЧНО (задача 3.11b п.0) ─────────────
+    # переработка = факт_будних_часов − месячная_норма (если положительно).
+    # Праздничные/выходные часы — отдельная категория, в переработку не входят.
     overtime = 0
     schedule = emp.schedule
-    norm = schedule.hours_per_shift if schedule is not None else None
-    if norm is not None:
-        for d in range(1, total_days + 1):
-            # выходные и праздники в переработку не попадают
-            if d in off_days:
-                continue
-            day_total = sum(entries_index.get((emp.id, d), {}).values())
-            day_norm = norm - 1 if d in short_days else norm
-            if day_total > day_norm:
-                overtime += int(day_total - day_norm)
+    if schedule is not None and schedule.schedule_type != "shift":
+        norm_month = _employee_norm_hours(emp, total_days, short_days, off_days)
+        regular_hours = sum(comp_totals.values()) - sum(comp_holiday.values())
+        overtime = max(0, int(regular_hours - norm_month))
 
     # Переработка по компаниям — пропорционально часам (метод наибольших остатков)
     ot_weights = {cid: comp_totals.get(cid, 0.0) for cid in company_ids}

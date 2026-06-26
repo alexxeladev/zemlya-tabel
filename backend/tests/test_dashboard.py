@@ -152,7 +152,11 @@ def calendar_2026(db_session: Session) -> ProductionCalendar:
 @pytest.fixture
 def may_entries(db_session: Session, worker1: Employee, worker2: Employee,
                 company1: Company, company2: Company) -> None:
-    """worker1: 8h×2 дня (5, 6 мая). worker2: 10h 6 мая → 2h переработки."""
+    """worker1: 8h×2 дня (5, 6 мая). worker2: 10h 6 мая.
+
+    Переработка теперь помесячная (задача 3.11b п.0): 10ч < месячной нормы 176 →
+    переработки нет. Раньше (по дням) было 2ч.
+    """
     for day, hours, emp, comp in [
         (5, 8, worker1, company1),
         (6, 8, worker1, company1),
@@ -180,7 +184,8 @@ class TestDashboardAggregation:
         data = resp.json()
 
         assert Decimal(data["hours"]["total_hours"]) == Decimal("26")  # 16 + 10
-        assert Decimal(data["hours"]["overtime_hours"]) == Decimal("2")
+        # помесячно: ни у кого факт не превышает месячную норму → переработки нет
+        assert Decimal(data["hours"]["overtime_hours"]) == Decimal("0")
         # Норма: worker1 + worker2 со standard-графиком → 176 × 2
         assert Decimal(data["hours"]["norm_hours"]) == Decimal("352")
         assert data["hours"]["percent_of_norm"] is not None
@@ -188,7 +193,7 @@ class TestDashboardAggregation:
         by_dept = {d["department_name"]: d for d in data["hours_by_department"]}
         assert Decimal(by_dept["Dash Dept One"]["total_hours"]) == Decimal("16")
         assert Decimal(by_dept["Dash Dept Two"]["total_hours"]) == Decimal("10")
-        assert Decimal(by_dept["Dash Dept Two"]["overtime_hours"]) == Decimal("2")
+        assert Decimal(by_dept["Dash Dept Two"]["overtime_hours"]) == Decimal("0")
 
     def test_dashboard_payroll_matches_payroll_endpoint(self, client, dash_admin, worker1,
                                                         worker2, calendar_2026, may_entries):
