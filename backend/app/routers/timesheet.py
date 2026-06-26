@@ -20,9 +20,11 @@ from app.schemas.payout import (
     LoanOverrideInput,
 )
 from app.schemas.payroll import (
-    CompanyBreakdownRead,
-    EmployeePayrollRead,
     PayrollSummaryRead,
+)
+from app.schemas.payroll_statement import (
+    DistributionOverrideInput,
+    PayrollStatementRead,
 )
 from app.schemas.timesheet import (
     AutofillPreview,
@@ -39,7 +41,11 @@ from app.schemas.timesheet_period import (
     TasksResponse,
     TimesheetPeriodRead,
 )
-from app.services.payroll import calculate_employee_payroll
+from app.models.company_shares import CompanyShareOverride
+from app.services.payroll_statement import (
+    build_payroll_statement,
+    build_payroll_summary,
+)
 from app.services.timesheet import (
     apply_autofill,
     build_autofill_preview,
@@ -149,6 +155,8 @@ def _build_periods_for_response(
 
 
 # ── Payroll helper ────────────────────────────────────────────────────────────
+# Единый расчёт ЗП (табель + ведомость) живёт в app.services.payroll_statement —
+# здесь только тонкая обёртка, чтобы не дублировать формулы.
 
 def _build_payroll_summary(
     db: Session,
@@ -157,115 +165,7 @@ def _build_payroll_summary(
     year: int,
     month: int,
 ) -> PayrollSummaryRead:
-    from decimal import Decimal
-    from app.models.production_calendars import ProductionCalendar
-    from app.services.payout import (
-        compute_payout,
-        load_adjustment_sums,
-        load_loan_overrides,
-        loan_month_state,
-    )
-
-    cal = db.query(ProductionCalendar).filter_by(year=year).first()
-    calendar_data = cal.data if cal else None
-
-    companies = db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
-    companies_by_id = {c.id: (c.code, c.name) for c in companies}
-
-    entries_by_employee: dict[int, list] = {}
-    for e in entries:
-        entries_by_employee.setdefault(e.employee_id, []).append(e)
-
-    zero = Decimal("0")
-    emp_ids = [emp.id for emp in employees]
-    adjustment_sums = load_adjustment_sums(db, emp_ids, year, month)
-    loan_overrides = load_loan_overrides(db, emp_ids)
-
-    payroll_items: list[EmployeePayrollRead] = []
-    for emp in employees:
-        emp_entries = entries_by_employee.get(emp.id, [])
-        p = calculate_employee_payroll(emp, emp_entries, calendar_data, year, month, companies_by_id)
-
-        # ── Премии / KPI / аванс / займ → «к выплате» (задача 3.11a) ──
-        sums = adjustment_sums.get(emp.id, {})
-        loan_state = loan_month_state(
-            emp.loan_amount, emp.loan_term_months, emp.loan_start_date,
-            year, month, loan_overrides.get(emp.id),
-        )
-        loan_deduction = loan_state.actual if loan_state else zero
-        payout = compute_payout(
-            accrued_total=p.total_amount,
-            premium_amount=sums.get("premium", zero),
-            kpi_amount=sums.get("kpi", zero),
-            advance_deduction=sums.get("advance", zero),
-            loan_deduction=loan_deduction,
-        )
-
-        breakdown = [
-            CompanyBreakdownRead(
-                company_id=bd.company_id,
-                company_code=bd.company_code,
-                company_name=bd.company_name,
-                hours=bd.hours,
-                percent=bd.percent,
-                overtime_hours=bd.overtime_hours,
-                holiday_hours=bd.holiday_hours,
-                base_amount=bd.base_amount,
-                overtime_amount=bd.overtime_amount,
-                holiday_amount=bd.holiday_amount,
-                total=bd.total,
-            )
-            for bd in p.breakdown_by_company
-        ]
-        payroll_items.append(EmployeePayrollRead(
-            employee_id=p.employee_id,
-            employee_name=p.employee_name,
-            rate=p.rate,
-            schedule_name=p.schedule_name,
-            total_hours=p.total_hours,
-            norm_hours=p.norm_hours,
-            delta_hours=p.delta_hours,
-            overtime_hours=p.overtime_hours,
-            holiday_hours=p.holiday_hours,
-            norm_days=p.norm_days,
-            fact_days=p.fact_days,
-            hourly_rate=p.hourly_rate,
-            base_amount=p.base_amount,
-            overtime_amount=p.overtime_amount,
-            holiday_amount=p.holiday_amount,
-            total_amount=p.total_amount,
-            weekend_pay_type=emp.weekend_pay_type,
-            weekend_coefficient=emp.weekend_coefficient,
-            weekend_fixed_rate=emp.weekend_fixed_rate,
-            premium_amount=payout.premium_amount,
-            kpi_amount=payout.kpi_amount,
-            advance_deduction=payout.advance_deduction,
-            loan_deduction=payout.loan_deduction,
-            loan_remaining=loan_state.remaining_after if loan_state else zero,
-            loan_planned_deduction=loan_state.planned if loan_state else zero,
-            loan_is_manual=loan_state.is_manual if loan_state else False,
-            total_deductions=payout.total_deductions,
-            net_payout=payout.net_payout,
-            breakdown_by_company=breakdown,
-            is_calculable=p.is_calculable,
-            reason_if_not_calculable=p.reason_if_not_calculable,
-        ))
-
-    return PayrollSummaryRead(
-        year=year,
-        month=month,
-        employees=payroll_items,
-        total_employees=len(payroll_items),
-        total_hours=sum((p.total_hours for p in payroll_items), zero),
-        total_base_amount=sum((p.base_amount for p in payroll_items), zero),
-        total_overtime_amount=sum((p.overtime_amount for p in payroll_items), zero),
-        total_holiday_amount=sum((p.holiday_amount for p in payroll_items), zero),
-        grand_total=sum((p.total_amount for p in payroll_items), zero),
-        total_premium=sum((p.premium_amount for p in payroll_items), zero),
-        total_kpi=sum((p.kpi_amount for p in payroll_items), zero),
-        total_deductions=sum((p.total_deductions for p in payroll_items), zero),
-        total_net_payout=sum((p.net_payout for p in payroll_items), zero),
-    )
+    return build_payroll_summary(db, employees, entries, year, month)
 
 
 # ── Tasks inbox (Bug 3) ───────────────────────────────────────────────────────
@@ -304,6 +204,134 @@ def get_payroll(
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
     return _build_payroll_summary(db, employees, entries, year, month)
+
+
+# ── Payroll statement: сводная ведомость + распределение по % (задача 3.11b) ───
+
+@router.get("/{year}/{month}/statement", response_model=PayrollStatementRead)
+def get_payroll_statement(
+    year: int,
+    month: int,
+    department_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    _require_finance_role(actor)
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
+        )
+    if actor.role == "manager" and department_id is not None and department_id != actor.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
+    entries = get_month_entries(db, employees, year, month)
+    return build_payroll_statement(db, employees, entries, year, month)
+
+
+@router.put("/distribution", status_code=status.HTTP_200_OK)
+def set_distribution_override(
+    payload: DistributionOverrideInput,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Переопределить распределение по компаниям на конкретный месяц (правка в
+    ведомости). Заменяет весь набор процентов сотрудника за этот период."""
+    _require_finance_role(actor)
+    _check_cell_access(actor, payload.employee_id, db)
+    if not (1 <= payload.month <= 12) or not (2000 <= payload.year <= 2100):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month")
+    for s in payload.shares:
+        _check_company_exists(db, s.company_id)
+        if s.percent < 0:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Процент не может быть отрицательным")
+
+    # Полностью заменяем набор за период.
+    db.query(CompanyShareOverride).filter(
+        CompanyShareOverride.employee_id == payload.employee_id,
+        CompanyShareOverride.year == payload.year,
+        CompanyShareOverride.month == payload.month,
+    ).delete(synchronize_session=False)
+    for s in payload.shares:
+        if s.percent <= 0:
+            continue
+        db.add(CompanyShareOverride(
+            employee_id=payload.employee_id,
+            company_id=s.company_id,
+            year=payload.year,
+            month=payload.month,
+            percent=s.percent,
+            created_by_id=actor.id,
+        ))
+    log_action(
+        db, actor, "company_share_override", payload.employee_id, "set",
+        after={"year": payload.year, "month": payload.month,
+               "shares": {s.company_id: str(s.percent) for s in payload.shares}},
+    )
+    db.commit()
+    return {"employee_id": payload.employee_id, "year": payload.year, "month": payload.month}
+
+
+@router.delete(
+    "/distribution/{employee_id}/{year}/{month}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_distribution_override(
+    employee_id: int,
+    year: int,
+    month: int,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Убрать переопределение — вернуть проценты по умолчанию из карточки."""
+    _require_finance_role(actor)
+    _check_cell_access(actor, employee_id, db)
+    deleted = db.query(CompanyShareOverride).filter(
+        CompanyShareOverride.employee_id == employee_id,
+        CompanyShareOverride.year == year,
+        CompanyShareOverride.month == month,
+    ).delete(synchronize_session=False)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Переопределение не найдено")
+    log_action(db, actor, "company_share_override", employee_id, "delete",
+               before={"year": year, "month": month})
+    db.commit()
+
+
+@router.get("/{year}/{month}/statement/export/excel")
+def export_statement_excel(
+    year: int,
+    month: int,
+    department_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Выгрузка сводной ведомости «Расчёт ЗП» в Excel (задача 3.11b п.3)."""
+    _require_finance_role(actor)
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
+        )
+    if actor.role == "manager" and department_id is not None and department_id != actor.department_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
+    entries = get_month_entries(db, employees, year, month)
+    statement = build_payroll_statement(db, employees, entries, year, month)
+
+    from app.services.payroll_statement_export import generate_statement_excel
+    excel_bytes = generate_statement_excel(statement)
+
+    log_action(
+        db, actor, "payroll_statement", None, "statement_exported_excel",
+        after={"year": year, "month": month, "department_id": department_id},
+    )
+    db.commit()
+
+    filename = f"vedomost_{year}_{month:02d}.xlsx"
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{year}/{month}", response_model=TimesheetMonthResponse)
