@@ -26,6 +26,7 @@ import { listDepartments } from '../api/departments';
 import { companyColorByIndex } from '../utils/colors';
 import { useTimesheetViewStore } from '../store/timesheetView';
 import { TimesheetCompanyView } from './TimesheetCompanyView';
+import type { AutofillPreview } from '../types/api';
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
@@ -245,6 +246,8 @@ export function TimesheetPage() {
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [autofillPreview, setAutofillPreview] = useState<AutofillPreview | null>(null);
+  const [autofillLoading, setAutofillLoading] = useState(false);
 
   // ── Загрузка данных ──
   const reload = useCallback(async () => {
@@ -458,6 +461,25 @@ export function TimesheetPage() {
     } finally {
       setExporting(false);
     }
+  };
+
+  // ── Автозаполнение по графику ──
+  const handleAutofill = async () => {
+    setAutofillLoading(true);
+    try {
+      const preview = await timesheetApi.autofillPreview(year, month, departmentFilter ?? undefined);
+      setAutofillPreview(preview);
+    } catch (err: any) {
+      toast.error('Ошибка автозаполнения: ' + (err?.message ?? err));
+    } finally {
+      setAutofillLoading(false);
+    }
+  };
+
+  const handleAutofillApply = async () => {
+    const res = await timesheetApi.autofillApply(year, month, departmentFilter ?? undefined);
+    toast.success(`Заполнено: ${res.entries_created} записей для ${res.employees_count} сотрудников`);
+    await reload();
   };
 
   // ── Period actions ──
@@ -838,12 +860,11 @@ export function TimesheetPage() {
 
           {allEditable && (
             <button
-              className="px-3 py-1.5 text-sm rounded border border-gray-300 hover:bg-gray-50"
-              onClick={() =>
-                toast.info('Кнопка автозаполнения — см. отдельный модал на странице')
-              }
+              className="px-3 py-1.5 text-sm rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={autofillLoading}
+              onClick={handleAutofill}
             >
-              Заполнить по графику
+              {autofillLoading ? 'Загрузка…' : 'Заполнить по графику'}
             </button>
           )}
 
@@ -1185,6 +1206,15 @@ export function TimesheetPage() {
           onChanged={() => reload()}
         />
       )}
+
+      {/* ── Модал автозаполнения по графику ── */}
+      {autofillPreview && (
+        <AutofillModal
+          preview={autofillPreview}
+          onApply={handleAutofillApply}
+          onClose={() => setAutofillPreview(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1192,6 +1222,101 @@ export function TimesheetPage() {
 // ──────────────────────────────────────────────────────────────
 // Подкомпоненты
 // ──────────────────────────────────────────────────────────────
+
+// ── AutofillModal: превью автозаполнения по графику + применение ──
+interface AutofillModalProps {
+  preview: AutofillPreview;
+  onApply: () => Promise<void>;
+  onClose: () => void;
+}
+
+function AutofillModal({ preview, onApply, onClose }: AutofillModalProps) {
+  const [loading, setLoading] = useState(false);
+  const [showSkipped, setShowSkipped] = useState(false);
+
+  const byEmployee = new Map<number, { count: number; hours: number }>();
+  for (const e of preview.entries_to_create) {
+    const hours = parseFloat(e.hours as unknown as string);
+    const existing = byEmployee.get(e.employee_id);
+    if (existing) { existing.count += 1; existing.hours += hours; }
+    else byEmployee.set(e.employee_id, { count: 1, hours });
+  }
+
+  const handleApply = async () => {
+    setLoading(true);
+    try { await onApply(); onClose(); }
+    catch (err: any) { toast.error('Не удалось применить: ' + (err?.message ?? err)); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl flex flex-col max-h-[85vh]">
+        <div className="p-6 border-b border-gray-100">
+          <h2 className="text-lg font-semibold text-gray-900">Заполнить по графику</h2>
+          <p className="mt-1 text-sm text-gray-500">
+            Будет создано <strong>{preview.entries_to_create.length}</strong> записей для{' '}
+            <strong>{preview.employees_processed}</strong> сотрудников
+            {preview.cells_skipped > 0 && ` (${preview.cells_skipped} ячеек оставлено как есть)`}
+          </p>
+        </div>
+        <div className="overflow-y-auto flex-1 p-6">
+          {byEmployee.size > 0 && (
+            <table className="w-full text-sm mb-4">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+                  <th className="pb-2 font-medium">ID</th>
+                  <th className="pb-2 font-medium">Дней</th>
+                  <th className="pb-2 font-medium">Часов</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from(byEmployee.entries()).map(([empId, info]) => (
+                  <tr key={empId} className="border-b border-gray-50">
+                    <td className="py-1 text-gray-700">#{empId}</td>
+                    <td className="py-1 text-gray-700">{info.count}</td>
+                    <td className="py-1 text-gray-700">{info.hours}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {preview.employees_skipped.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <button onClick={() => setShowSkipped((v) => !v)}
+                className="text-sm font-medium text-amber-800 hover:underline">
+                {preview.employees_skipped.length} сотрудников пропущено {showSkipped ? '▲' : '▼'}
+              </button>
+              {showSkipped && (
+                <ul className="mt-2 space-y-1">
+                  {preview.employees_skipped.map((s) => (
+                    <li key={s.employee_id} className="text-xs text-amber-700">
+                      #{s.employee_id} {s.employee_name} — {s.reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {preview.entries_to_create.length === 0 && preview.employees_skipped.length === 0 && (
+            <p className="text-sm text-gray-500">Нечего заполнять</p>
+          )}
+        </div>
+        <div className="p-6 border-t border-gray-100 flex justify-end gap-2">
+          <button type="button" onClick={onClose}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">
+            Отмена
+          </button>
+          <button type="button" onClick={handleApply}
+            disabled={loading || preview.entries_to_create.length === 0}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+            {loading ? 'Применяется...' : 'Применить'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function dayTypeLabel(t: DayType): string {
   return {
