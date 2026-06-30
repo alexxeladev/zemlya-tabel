@@ -301,14 +301,14 @@ def test_export_hours_match_entries(
     )
     wb = _get_workbook(resp)
     ws = wb.active
-    from app.services.timesheet_export import _total_col
+    from app.services.timesheet_export import _COL_COMPANY, _total_col
 
     # Итого Ч компании для Иванова/Альфа = 8*5 = 40 ч (per-row, _total_col)
     total_days = 30  # июнь
     found_40 = False
     for row in ws.iter_rows():
         for cell in row:
-            if cell.column == 5 and cell.value == "ООО Альфа":
+            if cell.column == _COL_COMPANY and cell.value == "ООО Альфа":
                 if ws.cell(row=cell.row, column=_total_col(total_days)).value == 40:
                     found_40 = True
     assert found_40, "Не найдено итого 40ч для Иванова/Альфа"
@@ -372,6 +372,7 @@ def test_export_per_company_rows_columns(
     общий Итого Ч (merge) считаются корректно."""
     from app.models.schedules import Schedule
     from app.services.timesheet_export import (
+        _COL_COMPANY,
         _grand_total_col,
         _norm_col,
         _ot_hours_col,
@@ -424,7 +425,7 @@ def test_export_per_company_rows_columns(
     start_row = None
     for row in ws.iter_rows():
         for cell in row:
-            if cell.column == 5 and cell.value == "ООО Альфа":
+            if cell.column == _COL_COMPANY and cell.value == "ООО Альфа":
                 start_row = cell.row
                 break
         if start_row:

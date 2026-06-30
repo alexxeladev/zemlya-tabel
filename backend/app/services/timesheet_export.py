@@ -49,10 +49,6 @@ def _header_font(bold: bool = True) -> Font:
     return Font(name="Arial", size=9, bold=bold)
 
 
-def _apply_border(ws, row: int, col: int) -> None:
-    ws.cell(row=row, column=col).border = _thin_border()
-
-
 def _set_cell(ws, row: int, col: int, value=None, *, bold=False, center=False,
               wrap=False, fill=None, font_color="000000") -> None:
     c = ws.cell(row=row, column=col)
@@ -69,65 +65,87 @@ def _set_cell(ws, row: int, col: int, value=None, *, bold=False, center=False,
         c.fill = fill
 
 
-# ── Column layout ─────────────────────────────────────────────────────────────
-
-# Fixed left columns (1-based): № → Таб.№ → ФИО → Должность → Компания
-# (задача 3.11a п.5: табельный номер сразу после порядкового, перед ФИО)
+# ── Column layout (задача: структура столбцов по образцу финдира) ──────────────
+#
+# Порядок фиксированных колонок слева:
+#   № → Таб.№ → ФИО → Компания → Подразделение → Должность → График
+# Затем дни месяца (1-я / 2-я половина, без промежуточных подытогов), затем
+# сводные колонки:
+#   Кол-во дней отпуска → Кол-во дней больничного → Норма дней → Факт дней →
+#   НОРМА ч/мес → ФАКТ ч/мес → Итого Ч компании → Сверхур. Ч → Праздн. Ч →
+#   Итого Ч сотруд.
+#
+# Компания, дни, Итого Ч компании, Сверхур. Ч, Праздн. Ч — per-row (на каждую
+# компанию сотрудника). Остальное — employee-level (merge по строкам компаний).
 _COL_NUM = 1
 _COL_TAB = 2
 _COL_NAME = 3
-_COL_POS = 4
-_COL_COMPANY = 5
-_FIXED_COLS = 5
+_COL_COMPANY = 4
+_COL_DEPT = 5
+_COL_POS = 6
+_COL_SCHED = 7
+_FIXED_COLS = 7
 
 
 def _day_col(day: int, total_days: int) -> int:
-    """Column index for a calendar day (1-based day → column index)."""
-    if day <= 15:
-        return _FIXED_COLS + day            # days 1-15 → cols 6-20
-    # After day 15 there's the subtotal1 column at col 21, so day 16 starts at 22
-    return _FIXED_COLS + 15 + 1 + (day - 15)  # day 16 → 22, day 30 → 36
+    """Column index for a calendar day (1-based day → column index).
+    Подытогов 1-15 / 16-конец больше нет: дни идут сплошняком."""
+    return _FIXED_COLS + day
 
 
-def _subtotal1_col() -> int:
-    """Column for 'Итого 1-15'."""
-    return _FIXED_COLS + 15 + 1
+def _vac_col(total_days: int) -> int:
+    """Кол-во дней отпуска (employee-level, задел на будущее — пока пусто)."""
+    return _FIXED_COLS + total_days + 1
 
 
-def _subtotal2_col(total_days: int) -> int:
-    """Column for 'Итого 16-end'."""
-    days_second_half = total_days - 15
-    return _FIXED_COLS + 15 + 1 + days_second_half + 1
+def _sick_col(total_days: int) -> int:
+    """Кол-во дней больничного (employee-level, задел на будущее — пока пусто)."""
+    return _FIXED_COLS + total_days + 2
 
 
-def _total_col(total_days: int) -> int:
-    """Column for 'Итого Ч' этой компании (per-row, итог компании за месяц)."""
-    return _subtotal2_col(total_days) + 1
+def _norm_days_col(total_days: int) -> int:
+    """Норма дней (employee-level)."""
+    return _FIXED_COLS + total_days + 3
 
 
-def _ot_hours_col(total_days: int) -> int:
-    """Column for 'Сверхур. Ч' по компании (per-row)."""
-    return _total_col(total_days) + 1
-
-
-def _hol_hours_col(total_days: int) -> int:
-    """Column for 'Праздн. Ч' по компании (per-row)."""
-    return _total_col(total_days) + 2
-
-
-def _grand_total_col(total_days: int) -> int:
-    """Column for общий 'Итого Ч' сотрудника (merge по строкам компаний)."""
-    return _total_col(total_days) + 3
+def _fact_days_col(total_days: int) -> int:
+    """Факт дней — кол-во дней с часами (employee-level)."""
+    return _FIXED_COLS + total_days + 4
 
 
 def _norm_col(total_days: int) -> int:
-    """Column for 'Норма' (merge по строкам компаний)."""
-    return _total_col(total_days) + 4
+    """НОРМА кол-во раб. часов в месяце (employee-level, merge)."""
+    return _FIXED_COLS + total_days + 5
+
+
+def _fact_hours_col(total_days: int) -> int:
+    """ФАКТ кол-во отработанных часов в месяце (employee-level, merge)."""
+    return _FIXED_COLS + total_days + 6
+
+
+def _total_col(total_days: int) -> int:
+    """Итого Ч этой компании (per-row, итог компании за месяц)."""
+    return _FIXED_COLS + total_days + 7
+
+
+def _ot_hours_col(total_days: int) -> int:
+    """Сверхур. Ч по компании (per-row)."""
+    return _FIXED_COLS + total_days + 8
+
+
+def _hol_hours_col(total_days: int) -> int:
+    """Праздн. Ч по компании (per-row)."""
+    return _FIXED_COLS + total_days + 9
+
+
+def _grand_total_col(total_days: int) -> int:
+    """Общий Итого Ч сотрудника (merge по строкам компаний)."""
+    return _FIXED_COLS + total_days + 10
 
 
 def _last_col(total_days: int) -> int:
     """Самая правая колонка таблицы."""
-    return _norm_col(total_days)
+    return _grand_total_col(total_days)
 
 
 def _distribute_int(total: int, weights: dict[int, float]) -> dict[int, int]:
@@ -215,19 +233,20 @@ def generate_t13_excel(
 
     # ── Ширины колонок ───────────────────────────────────────────────────────
     ws.column_dimensions[get_column_letter(_COL_NUM)].width = 5
+    ws.column_dimensions[get_column_letter(_COL_TAB)].width = 11
     ws.column_dimensions[get_column_letter(_COL_NAME)].width = 28
-    ws.column_dimensions[get_column_letter(_COL_POS)].width = 15
-    ws.column_dimensions[get_column_letter(_COL_TAB)].width = 8
-    ws.column_dimensions[get_column_letter(_COL_COMPANY)].width = 16
+    ws.column_dimensions[get_column_letter(_COL_COMPANY)].width = 22
+    ws.column_dimensions[get_column_letter(_COL_DEPT)].width = 14
+    ws.column_dimensions[get_column_letter(_COL_POS)].width = 18
+    ws.column_dimensions[get_column_letter(_COL_SCHED)].width = 7
     for d in range(1, total_days + 1):
         ws.column_dimensions[get_column_letter(_day_col(d, total_days))].width = 4
-    ws.column_dimensions[get_column_letter(_subtotal1_col())].width = 8
-    ws.column_dimensions[get_column_letter(_subtotal2_col(total_days))].width = 8
-    ws.column_dimensions[get_column_letter(_total_col(total_days))].width = 8
-    ws.column_dimensions[get_column_letter(_ot_hours_col(total_days))].width = 8
-    ws.column_dimensions[get_column_letter(_hol_hours_col(total_days))].width = 8
-    ws.column_dimensions[get_column_letter(_grand_total_col(total_days))].width = 9
-    ws.column_dimensions[get_column_letter(_norm_col(total_days))].width = 8
+    for col_fn, width in (
+        (_vac_col, 8), (_sick_col, 8), (_norm_days_col, 7), (_fact_days_col, 7),
+        (_norm_col, 9), (_fact_hours_col, 9), (_total_col, 8),
+        (_ot_hours_col, 8), (_hol_hours_col, 8), (_grand_total_col, 9),
+    ):
+        ws.column_dimensions[get_column_letter(col_fn(total_days))].width = width
 
     # ── Шапка документа ─────────────────────────────────────────────────────
     cur_row = _write_document_header(ws, year, month, department_id, db, total_days)
@@ -326,15 +345,7 @@ def _write_table_header(
     r = start_row
     weekday_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
-    # Заголовки фиксированных колонок — объединяем 2 строки
-    fixed_headers = [
-        (_COL_NUM, "№"),
-        (_COL_TAB, "Таб. №"),
-        (_COL_NAME, "ФИО"),
-        (_COL_POS, "Должность"),
-        (_COL_COMPANY, "Компания"),
-    ]
-    for col, label in fixed_headers:
+    def _merged_header(col: int, label: str) -> None:
         ws.merge_cells(start_row=r, start_column=col, end_row=r + 1, end_column=col)
         c = ws.cell(row=r, column=col)
         c.value = label
@@ -342,6 +353,18 @@ def _write_table_header(
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         c.border = _thin_border()
         ws.cell(row=r + 1, column=col).border = _thin_border()
+
+    # Заголовки фиксированных колонок — объединяем 2 строки
+    for col, label in (
+        (_COL_NUM, "№"),
+        (_COL_TAB, "Таб. №"),
+        (_COL_NAME, "ФИО"),
+        (_COL_COMPANY, "Компания"),
+        (_COL_DEPT, "Подразделение"),
+        (_COL_POS, "Должность"),
+        (_COL_SCHED, "График"),
+    ):
+        _merged_header(col, label)
 
     # День 1-15: строка 1 — «1-я половина месяца», строка 2 — числа
     first_half_start = _day_col(1, total_days)
@@ -354,16 +377,6 @@ def _write_table_header(
     c.alignment = Alignment(horizontal="center", vertical="center")
     c.border = _thin_border()
 
-    # Subtotal 1-15
-    st1 = _subtotal1_col()
-    ws.merge_cells(start_row=r, start_column=st1, end_row=r + 1, end_column=st1)
-    c = ws.cell(row=r, column=st1)
-    c.value = "Итого\n1-15"
-    c.font = _header_font()
-    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    c.border = _thin_border()
-    ws.cell(row=r + 1, column=st1).border = _thin_border()
-
     # День 16-end: строка 1 — «2-я половина»
     second_half_start = _day_col(16, total_days)
     second_half_end = _day_col(total_days, total_days)
@@ -375,32 +388,20 @@ def _write_table_header(
     c.alignment = Alignment(horizontal="center", vertical="center")
     c.border = _thin_border()
 
-    # Subtotal 16-end
-    st2 = _subtotal2_col(total_days)
-    ws.merge_cells(start_row=r, start_column=st2, end_row=r + 1, end_column=st2)
-    c = ws.cell(row=r, column=st2)
-    c.value = f"Итого\n16-{total_days}"
-    c.font = _header_font()
-    c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    c.border = _thin_border()
-    ws.cell(row=r + 1, column=st2).border = _thin_border()
-
-    # Per-row / per-company и employee-level колонки (2-строчные заголовки)
-    right_headers = [
+    # Сводные employee-/per-company колонки (2-строчные заголовки)
+    for col, label in (
+        (_vac_col(total_days), "Кол-во дней\nотпуска"),
+        (_sick_col(total_days), "Кол-во дней\nбольничного"),
+        (_norm_days_col(total_days), "Норма\nдней"),
+        (_fact_days_col(total_days), "Факт\nдней"),
+        (_norm_col(total_days), "НОРМА\nч/мес"),
+        (_fact_hours_col(total_days), "ФАКТ\nч/мес"),
         (_total_col(total_days), "Итого Ч\nкомпании"),
         (_ot_hours_col(total_days), "Сверхур.\nЧ"),
         (_hol_hours_col(total_days), "Праздн.\nЧ"),
         (_grand_total_col(total_days), "Итого Ч\nсотруд."),
-        (_norm_col(total_days), "Норма\nч"),
-    ]
-    for col, label in right_headers:
-        ws.merge_cells(start_row=r, start_column=col, end_row=r + 1, end_column=col)
-        c = ws.cell(row=r, column=col)
-        c.value = label
-        c.font = _header_font()
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        c.border = _thin_border()
-        ws.cell(row=r + 1, column=col).border = _thin_border()
+    ):
+        _merged_header(col, label)
 
     # Вторая строка заголовка: числа дней
     for d in range(1, total_days + 1):
@@ -459,55 +460,50 @@ def _write_employee_rows(
     comp_totals: dict[int, float] = {}
     comp_holiday: dict[int, float] = {}
 
-    # № п/п — merge по всем строкам сотрудника
-    if n > 1:
-        ws.merge_cells(start_row=start_row, start_column=_COL_NUM,
-                       end_row=end_row, end_column=_COL_NUM)
-    c = ws.cell(row=start_row, column=_COL_NUM)
-    c.value = seq
-    c.font = _header_font(bold=False)
-    c.alignment = Alignment(horizontal="center", vertical="center")
-    c.border = _thin_border()
-    for r in range(start_row + 1, end_row + 1):
-        ws.cell(row=r, column=_COL_NUM).border = _thin_border()
+    def _fmt(v: float):
+        return int(v) if v == int(v) else round(v, 2)
 
-    # ФИО — merge
-    if n > 1:
-        ws.merge_cells(start_row=start_row, start_column=_COL_NAME,
-                       end_row=end_row, end_column=_COL_NAME)
-    c = ws.cell(row=start_row, column=_COL_NAME)
-    c.value = emp.full_name
-    c.font = _header_font(bold=False)
-    c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    c.border = _thin_border()
-    for r in range(start_row + 1, end_row + 1):
-        ws.cell(row=r, column=_COL_NAME).border = _thin_border()
+    # ── Employee-level колонки (merge по всем строкам сотрудника) ─────────────
+    schedule = emp.schedule
+    is_standard = schedule is not None and schedule.schedule_type != "shift"
+    norm_days = (
+        sum(1 for d in range(1, total_days + 1) if d not in off_days)
+        if is_standard else None
+    )
+    fact_days = sum(
+        1 for d in range(1, total_days + 1)
+        if any(h > 0 for h in entries_index.get((emp.id, d), {}).values())
+    )
+    norm_hours = _employee_norm_hours(emp, total_days, short_days, off_days)
 
-    # Должность — merge
-    if n > 1:
-        ws.merge_cells(start_row=start_row, start_column=_COL_POS,
-                       end_row=end_row, end_column=_COL_POS)
-    c = ws.cell(row=start_row, column=_COL_POS)
-    c.value = emp.position or ""
-    c.font = _header_font(bold=False)
-    c.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    c.border = _thin_border()
-    for r in range(start_row + 1, end_row + 1):
-        ws.cell(row=r, column=_COL_POS).border = _thin_border()
+    def _emp_cell(col: int, value, *, bold=False, left=False):
+        if n > 1:
+            ws.merge_cells(start_row=start_row, start_column=col,
+                           end_row=end_row, end_column=col)
+        c = ws.cell(row=start_row, column=col)
+        if value is not None and value != "":
+            c.value = value
+        c.font = _header_font(bold=bold)
+        horizontal = "left" if left else "center"
+        c.alignment = Alignment(horizontal=horizontal, vertical="center", wrap_text=left)
+        c.border = _thin_border()
+        for rr in range(start_row + 1, end_row + 1):
+            ws.cell(row=rr, column=col).border = _thin_border()
 
-    # Таб. № — merge
-    if n > 1:
-        ws.merge_cells(start_row=start_row, start_column=_COL_TAB,
-                       end_row=end_row, end_column=_COL_TAB)
-    c = ws.cell(row=start_row, column=_COL_TAB)
-    c.value = emp.tab_number or ""
-    c.font = _header_font(bold=False)
-    c.alignment = Alignment(horizontal="center", vertical="center")
-    c.border = _thin_border()
-    for r in range(start_row + 1, end_row + 1):
-        ws.cell(row=r, column=_COL_TAB).border = _thin_border()
+    _emp_cell(_COL_NUM, seq)
+    _emp_cell(_COL_TAB, emp.tab_number or "")
+    _emp_cell(_COL_NAME, emp.full_name, left=True)
+    _emp_cell(_COL_DEPT, emp.department.name if emp.department else "", left=True)
+    _emp_cell(_COL_POS, emp.position or "", left=True)
+    _emp_cell(_COL_SCHED, emp.schedule.name if emp.schedule else "")
+    # Отпуск / больничный — задел на будущее, данных пока нет → пусто.
+    _emp_cell(_vac_col(total_days), None)
+    _emp_cell(_sick_col(total_days), None)
+    _emp_cell(_norm_days_col(total_days), norm_days if norm_days else None)
+    _emp_cell(_fact_days_col(total_days), fact_days if fact_days else None)
+    _emp_cell(_norm_col(total_days), _fmt(norm_hours) if norm_hours else None)
 
-    # Строки по компаниям
+    # Строки по компаниям (per-row): Компания, дни, Итого Ч компании
     for i, comp_id in enumerate(company_ids):
         row = start_row + i
         comp = companies_by_id.get(comp_id)
@@ -521,8 +517,6 @@ def _write_employee_rows(
         c.border = _thin_border()
 
         total_hours = 0.0
-        first_half = 0.0
-        second_half = 0.0
         holiday_hours = 0.0
 
         for d in range(1, total_days + 1):
@@ -537,24 +531,6 @@ def _write_employee_rows(
                 total_hours += hours
                 if d in off_days:
                     holiday_hours += hours
-                if d <= 15:
-                    first_half += hours
-                else:
-                    second_half += hours
-
-        # Итого 1-15
-        c = ws.cell(row=row, column=_subtotal1_col())
-        c.value = int(first_half) if first_half == int(first_half) else first_half
-        c.font = _header_font()
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = _thin_border()
-
-        # Итого 16-end
-        c = ws.cell(row=row, column=_subtotal2_col(total_days))
-        c.value = int(second_half) if second_half == int(second_half) else second_half
-        c.font = _header_font()
-        c.alignment = Alignment(horizontal="center", vertical="center")
-        c.border = _thin_border()
 
         # Итого Ч компании (per-row)
         c = ws.cell(row=row, column=_total_col(total_days))
@@ -570,18 +546,13 @@ def _write_employee_rows(
     # переработка = факт_будних_часов − месячная_норма (если положительно).
     # Праздничные/выходные часы — отдельная категория, в переработку не входят.
     overtime = 0
-    schedule = emp.schedule
-    if schedule is not None and schedule.schedule_type != "shift":
-        norm_month = _employee_norm_hours(emp, total_days, short_days, off_days)
+    if is_standard:
         regular_hours = sum(comp_totals.values()) - sum(comp_holiday.values())
-        overtime = max(0, int(regular_hours - norm_month))
+        overtime = max(0, int(regular_hours - norm_hours))
 
     # Переработка по компаниям — пропорционально часам (метод наибольших остатков)
     ot_weights = {cid: comp_totals.get(cid, 0.0) for cid in company_ids}
     comp_overtime = _distribute_int(overtime, ot_weights)
-
-    def _fmt(v: float):
-        return int(v) if v == int(v) else round(v, 2)
 
     # ── Per-row: Сверхур. Ч и Праздн. Ч по компании ──────────────────────────
     for i, comp_id in enumerate(company_ids):
@@ -600,30 +571,12 @@ def _write_employee_rows(
         c.alignment = Alignment(horizontal="center", vertical="center")
         c.border = _thin_border()
 
-    # ── Employee-level (merge): Итого Ч сотрудника и Норма ───────────────────
+    # ── Employee-level (merge): ФАКТ ч/мес и Итого Ч сотрудника ───────────────
     grand_total = sum(comp_totals.values())
-    gc = _grand_total_col(total_days)
-    if n > 1:
-        ws.merge_cells(start_row=start_row, start_column=gc, end_row=end_row, end_column=gc)
-    c = ws.cell(row=start_row, column=gc)
-    c.value = _fmt(grand_total) if grand_total > 0 else None
-    c.font = _header_font(bold=True)
-    c.alignment = Alignment(horizontal="center", vertical="center")
-    c.border = _thin_border()
-    for rr in range(start_row + 1, end_row + 1):
-        ws.cell(row=rr, column=gc).border = _thin_border()
-
-    nc = _norm_col(total_days)
-    if n > 1:
-        ws.merge_cells(start_row=start_row, start_column=nc, end_row=end_row, end_column=nc)
-    norm_val = _employee_norm_hours(emp, total_days, short_days, off_days)
-    c = ws.cell(row=start_row, column=nc)
-    c.value = _fmt(norm_val) if norm_val else None
-    c.font = _header_font(bold=False)
-    c.alignment = Alignment(horizontal="center", vertical="center")
-    c.border = _thin_border()
-    for rr in range(start_row + 1, end_row + 1):
-        ws.cell(row=rr, column=nc).border = _thin_border()
+    _emp_cell(_fact_hours_col(total_days),
+              _fmt(grand_total) if grand_total > 0 else None)
+    _emp_cell(_grand_total_col(total_days),
+              _fmt(grand_total) if grand_total > 0 else None, bold=True)
 
     # ── Подсветка блока сотрудника (задача 3.11a п.6) ─────────────────────────
     # Чередующаяся заливка инфо/итоговых колонок для читаемости. Дни не трогаем,
@@ -631,10 +584,13 @@ def _write_employee_rows(
     if seq % 2 == 0:
         fill = _zebra_fill()
         info_cols = [
-            _COL_NUM, _COL_TAB, _COL_NAME, _COL_POS, _COL_COMPANY,
-            _subtotal1_col(), _subtotal2_col(total_days), _total_col(total_days),
-            _ot_hours_col(total_days), _hol_hours_col(total_days),
-            _grand_total_col(total_days), _norm_col(total_days),
+            _COL_NUM, _COL_TAB, _COL_NAME, _COL_COMPANY, _COL_DEPT,
+            _COL_POS, _COL_SCHED,
+            _vac_col(total_days), _sick_col(total_days),
+            _norm_days_col(total_days), _fact_days_col(total_days),
+            _norm_col(total_days), _fact_hours_col(total_days),
+            _total_col(total_days), _ot_hours_col(total_days),
+            _hol_hours_col(total_days), _grand_total_col(total_days),
         ]
         for rr in range(start_row, end_row + 1):
             for col in info_cols:
