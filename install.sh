@@ -3,10 +3,11 @@
 #
 #   ./install.sh
 #
-# Делает всё: проверяет docker → создаёт .env.preprod с генерацией секретов
-# (если файла нет) → собирает образы → поднимает Postgres → миграции
-# (alembic upgrade head) → создаёт первичного админа → поднимает backend+web
-# (nginx: статика + прокси /api) → печатает URL и данные для входа.
+# Делает всё: ставит Docker если его нет (get.docker.com, нужен sudo) →
+# создаёт .env.preprod с генерацией секретов (если файла нет) → собирает образы
+# (зависимости backend/frontend ставятся внутри образов) → поднимает Postgres →
+# миграции (alembic upgrade head) → создаёт первичного админа → поднимает
+# backend+web (nginx: статика + прокси /api) → печатает URL и данные для входа.
 #
 # Идемпотентна: повторный запуск не перезатирает .env.preprod и не пересоздаёт
 # админа. Для обновления уже установленного препрода используй ./deploy.sh.
@@ -16,7 +17,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$ROOT/.env.preprod"
 COMPOSE_FILE="$ROOT/docker-compose.preprod.yml"
 
-DC() { docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
+DKR="docker"   # может стать "sudo docker" после свежей установки (до релогина)
+DC() { $DKR compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
 say() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 err() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; }
 # Читает значение ключа из .env.preprod (всё после первого '='), без source.
@@ -28,10 +30,52 @@ gen_secret() {  # $1 = число байт → hex-строка (shell/URL-safe)
 # Health-check без зависимости от host-утилит: busybox wget внутри web-контейнера.
 health_ok() { DC exec -T web wget -q -O /dev/null http://localhost/health 2>/dev/null; }
 
-# ── 0. Проверки окружения ──
-command -v docker >/dev/null 2>&1 || { err "docker не найден. Установи Docker."; exit 1; }
-docker compose version >/dev/null 2>&1 || { err "docker compose (v2) не найден."; exit 1; }
-docker info >/dev/null 2>&1 || { err "docker daemon не запущен. Подними его и повтори."; exit 1; }
+# ── 0. Docker: проверка + авто-установка при отсутствии ──
+# Ставит Docker Engine + compose-плагин официальным скриптом get.docker.com
+# (автоопределяет дистрибутив). Требует root или sudo. Отключить: AUTO_INSTALL_DOCKER=0.
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 && return 0
+  err "docker не найден."
+  [[ "${AUTO_INSTALL_DOCKER:-1}" == "1" ]] || { err "Авто-установка отключена (AUTO_INSTALL_DOCKER=0). Поставь Docker вручную."; exit 1; }
+  [[ "$(uname -s)" == "Linux" ]] || { err "Авто-установка Docker только для Linux. Вручную: https://docs.docker.com/get-docker/"; exit 1; }
+
+  local SUDO=""
+  if [[ "$(id -u)" -ne 0 ]]; then
+    command -v sudo >/dev/null 2>&1 || { err "Нужен root или sudo для установки Docker."; exit 1; }
+    SUDO="sudo"
+  fi
+
+  say "Устанавливаю Docker (официальный скрипт get.docker.com)…"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO /tmp/get-docker.sh https://get.docker.com
+  else
+    err "Нет curl/wget — нечем скачать установщик Docker."; exit 1
+  fi
+  $SUDO sh /tmp/get-docker.sh
+  rm -f /tmp/get-docker.sh
+
+  say "Запускаю docker-демон…"
+  $SUDO systemctl enable --now docker 2>/dev/null || $SUDO service docker start 2>/dev/null || true
+  if [[ -n "$SUDO" ]]; then
+    $SUDO usermod -aG docker "$USER" 2>/dev/null || true
+    echo "  Добавил '$USER' в группу docker (без sudo заработает после релогина)."
+  fi
+}
+ensure_docker
+
+# Если демон недоступен под текущим пользователем (свежая установка, ещё не в группе
+# docker), но доступен под sudo — в этой сессии зовём docker через sudo.
+if ! docker info >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+    DKR="sudo docker"
+    echo "  (в этой сессии docker вызывается через sudo — до релогина)"
+  fi
+fi
+
+$DKR compose version >/dev/null 2>&1 || { err "docker compose (v2) не найден."; exit 1; }
+$DKR info >/dev/null 2>&1 || { err "docker daemon не запущен. Подними его и повтори."; exit 1; }
 
 # ── 1. .env.preprod ──
 if [[ -f "$ENV_FILE" ]]; then

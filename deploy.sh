@@ -18,15 +18,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$ROOT/.env.preprod"
 COMPOSE_FILE="$ROOT/docker-compose.preprod.yml"
 
-DC() { docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
+DKR="docker"   # может стать "sudo docker", если пользователь ещё не в группе docker
+DC() { $DKR compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
 say() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 err() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; }
 getenv() { grep -E "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2-; }
 health_ok() { DC exec -T web wget -q -O /dev/null http://localhost/health 2>/dev/null; }
 
-command -v docker >/dev/null 2>&1 || { err "docker не найден."; exit 1; }
-docker compose version >/dev/null 2>&1 || { err "docker compose (v2) не найден."; exit 1; }
-docker info >/dev/null 2>&1 || { err "docker daemon не запущен."; exit 1; }
+command -v docker >/dev/null 2>&1 || { err "docker не найден — сначала запусти ./install.sh"; exit 1; }
+# Свежая установка до релогина: демон доступен только под sudo.
+if ! docker info >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then DKR="sudo docker"; fi
+fi
+$DKR compose version >/dev/null 2>&1 || { err "docker compose (v2) не найден."; exit 1; }
+$DKR info >/dev/null 2>&1 || { err "docker daemon не запущен."; exit 1; }
 [[ -f "$ENV_FILE" ]] || { err ".env.preprod не найден — сначала запусти ./install.sh"; exit 1; }
 
 DO_PULL=0
