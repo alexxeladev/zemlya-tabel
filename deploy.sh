@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # deploy.sh — обновление уже установленного препрода до текущего кода ОДНОЙ командой.
 #
-#   ./deploy.sh          пересобрать образы из текущего кода → миграции → перезапуск
-#   ./deploy.sh --pull   сначала git pull --ff-only, затем то же самое
+#   ./deploy.sh              бэкап БД → пересборка образов → миграции → перезапуск
+#   ./deploy.sh --pull       сначала git pull --ff-only, затем то же самое
+#   ./deploy.sh --no-backup  пропустить авто-бэкап БД (флаги можно совмещать)
+#
+# Перед миграциями делается pg_dump в $BACKUP_DIR (по умолчанию ~/backups/zemlya-tabel),
+# хранятся последние $BACKUP_KEEP (по умолчанию 10). Оба параметра можно задать
+# в .env.preprod (BACKUP_DIR=..., BACKUP_KEEP=...). Если бэкап не удался — деплой
+# прерывается (обойти: --no-backup).
 #
 # Обычный цикл обновления с dev:  git push (на dev)  →  на препроде:  git pull && ./deploy.sh
 # .env.preprod и данные БД (том tabel-preprod-data) сохраняются.
@@ -23,7 +29,17 @@ docker compose version >/dev/null 2>&1 || { err "docker compose (v2) не най
 docker info >/dev/null 2>&1 || { err "docker daemon не запущен."; exit 1; }
 [[ -f "$ENV_FILE" ]] || { err ".env.preprod не найден — сначала запусти ./install.sh"; exit 1; }
 
-if [[ "${1:-}" == "--pull" ]]; then
+DO_PULL=0
+DO_BACKUP=1
+for arg in "$@"; do
+  case "$arg" in
+    --pull) DO_PULL=1 ;;
+    --no-backup) DO_BACKUP=0 ;;
+    *) err "Неизвестный аргумент: $arg (доступно: --pull, --no-backup)"; exit 1 ;;
+  esac
+done
+
+if [[ "$DO_PULL" == "1" ]]; then
   say "git pull --ff-only…"
   git -C "$ROOT" pull --ff-only
 fi
@@ -31,6 +47,8 @@ fi
 POSTGRES_USER="$(getenv POSTGRES_USER)"
 POSTGRES_DB="$(getenv POSTGRES_DB)"
 PREPROD_HTTP_PORT="$(getenv PREPROD_HTTP_PORT)"; PREPROD_HTTP_PORT="${PREPROD_HTTP_PORT:-8080}"
+BACKUP_DIR="$(getenv BACKUP_DIR)"; BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/zemlya-tabel}"
+BACKUP_KEEP="$(getenv BACKUP_KEEP)"; BACKUP_KEEP="${BACKUP_KEEP:-10}"
 
 say "Сборка образов…"
 DC build
@@ -42,6 +60,26 @@ for i in $(seq 1 30); do
   [[ $i -eq 30 ]] && { err "БД не поднялась за 30с."; exit 1; }
   sleep 1
 done
+
+# ── Бэкап БД перед миграциями (pg_dump | gzip) с ротацией ──
+if [[ "$DO_BACKUP" == "1" ]]; then
+  say "Бэкап БД перед миграциями…"
+  mkdir -p "$BACKUP_DIR"
+  DUMP="$BACKUP_DIR/tabel_$(date +%Y%m%d_%H%M%S).sql.gz"
+  if DC exec -T db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" | gzip > "$DUMP" && [[ -s "$DUMP" ]]; then
+    echo "  Сохранён: $DUMP ($(du -h "$DUMP" | cut -f1))"
+    # Ротация: оставляем последние BACKUP_KEEP.
+    ls -1t "$BACKUP_DIR"/tabel_*.sql.gz 2>/dev/null | tail -n +"$((BACKUP_KEEP + 1))" | xargs -r rm -f || true
+    echo "  Храню последние $BACKUP_KEEP бэкапов в $BACKUP_DIR."
+  else
+    rm -f "$DUMP"
+    err "Бэкап не удался (pg_dump упал или пустой дамп). Деплой прерван."
+    err "Обойти (если уверен): ./deploy.sh --no-backup"
+    exit 1
+  fi
+else
+  say "Бэкап пропущен (--no-backup)."
+fi
 
 say "Миграции (alembic upgrade head)…"
 DC run --rm backend alembic upgrade head

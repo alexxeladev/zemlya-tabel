@@ -38,7 +38,28 @@ git pull && ./deploy.sh
 ./deploy.sh --pull
 ```
 
-`deploy.sh` пересоберёт образы из текущего кода → накатит новые миграции → перезапустит backend+web. Данные БД (том `tabel-preprod-data`) и `.env.preprod` сохраняются.
+`deploy.sh` по шагам: **бэкап БД** → пересборка образов из текущего кода → миграции (`alembic upgrade head`) → перезапуск backend+web. Данные БД (том `tabel-preprod-data`) и `.env.preprod` сохраняются.
+
+### Авто-бэкап перед миграциями
+
+Перед накатом миграций `deploy.sh` делает `pg_dump | gzip` в `$BACKUP_DIR`
+(по умолчанию `~/backups/zemlya-tabel`) и хранит последние `$BACKUP_KEEP`
+(по умолчанию 10). Оба параметра можно задать в `.env.preprod`:
+
+```
+BACKUP_DIR=/var/backups/zemlya-tabel
+BACKUP_KEEP=10
+```
+
+Если бэкап не удался (pg_dump упал или дамп пустой) — **деплой прерывается**,
+миграции не выполняются. Пропустить бэкап осознанно: `./deploy.sh --no-backup`.
+
+Восстановление из бэкапа:
+
+```bash
+DC="docker compose --env-file .env.preprod -f docker-compose.preprod.yml"
+gunzip -c ~/backups/zemlya-tabel/tabel_YYYYmmdd_HHMMSS.sql.gz | $DC exec -T db psql -U tabel tabel
+```
 
 ## Prod
 
