@@ -23,6 +23,7 @@ import { Confirm } from '../../components/Confirm'
 import { Button } from '../../components/Button'
 import { Select } from '../../components/Select'
 import { ApiError } from '../../api/client'
+import { copyText } from '../../utils/clipboard'
 
 const ROLE_LABELS: Record<string, string> = {
   admin: 'Администратор',
@@ -719,7 +720,11 @@ export function EmployeesPage() {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => { navigator.clipboard.writeText(tempPassword ?? ''); toast.success('Скопировано') }}
+              onClick={async () => {
+                const ok = await copyText(tempPassword ?? '')
+                if (ok) toast.success('Скопировано')
+                else toast.error('Не удалось скопировать')
+              }}
             >
               Скопировать
             </Button>
