@@ -79,6 +79,13 @@ frontend/
 ./dev.sh --seed    # то же + сброс данных и заливка тестовых перед стартом
                    # Ctrl+C гасит backend/frontend; Postgres остаётся в Docker.
 
+# ── Preprod/prod: полный контейнерный стек одной командой (см. docs/DEPLOY.md) ──
+./install.sh       # первая установка: генерит .env.preprod (секреты) → build →
+                   # Postgres → миграции → первичный админ → backend+web(nginx :8080)
+git pull && ./deploy.sh   # обновление препрода до текущего кода (build → миграции → restart)
+# Стек: docker-compose.preprod.yml (db + backend uvicorn + web nginx: статика + прокси /api).
+# Обновление всегда через git (dev → push → на сервере pull && ./deploy.sh), не заливкой с dev.
+
 # ── Или вручную, по компонентам ──
 
 # БД (Docker)
