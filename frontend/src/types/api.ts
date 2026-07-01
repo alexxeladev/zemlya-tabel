@@ -110,6 +110,7 @@ export interface StatementRow {
   deductions: string
   net_payout: string
   is_overridden: boolean
+  is_auto_distributed: boolean
   percent_sum: string
   distribution: StatementCompanyAmount[]
   distribution_total: string

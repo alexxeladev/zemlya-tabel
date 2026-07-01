@@ -216,6 +216,94 @@ class TestStatement:
         row2 = next(x for x in r2.json()["rows"] if x["employee_id"] == worker.id)
         assert row2["is_overridden"] is False
 
+class TestAutoDistributionByHours:
+    """Задача task_distribution_fix: если ручной % не задан — распределять
+    автоматически по фактическим часам сотрудника из табеля."""
+
+    def _two_company_entries(self, db: Session, emp_id, c0, c1):
+        """167 ч на c0 (20×8 + 1×7) + 4 ч на c1 (1×4) = 171 ч всего."""
+        wd = MAY_WORKDAYS
+        for d in wd[:20]:
+            db.add(TimesheetEntry(employee_id=emp_id, work_date=date(2026, 5, d),
+                                  company_id=c0, hours=8))
+        db.add(TimesheetEntry(employee_id=emp_id, work_date=date(2026, 5, wd[20]),
+                              company_id=c0, hours=7))
+        db.add(TimesheetEntry(employee_id=emp_id, work_date=date(2026, 5, wd[21]),
+                              company_id=c1, hours=4))
+        db.commit()
+
+    def test_auto_by_hours_no_manual_percent(self, client, admin, worker, companies,
+                                             schedule, calendar, db_session):
+        """167 ksec + 4 rest, без ручных % → 97.66% / 2.34%, сумма = Итого начислено."""
+        self._two_company_entries(db_session, worker.id, companies[0].id, companies[1].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+
+        assert row["is_auto_distributed"] is True
+        assert row["is_overridden"] is False
+        pcts = {d["company_id"]: Decimal(d["percent"]) for d in row["distribution"]}
+        assert pcts[companies[0].id] == Decimal("97.66")
+        assert pcts[companies[1].id] == Decimal("2.34")
+
+        accrued = Decimal(row["accrued_total"])
+        amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
+        assert sum(amounts.values()) == accrued
+        assert Decimal(row["distribution_total"]) == accrued
+        # доля больших часов получает большую сумму
+        assert amounts[companies[0].id] > amounts[companies[1].id]
+
+    def test_manual_percent_overrides_hours(self, client, admin, worker, companies,
+                                            schedule, calendar, db_session):
+        """С ручными % распределение по ним, часы игнорируются (не авто)."""
+        self._two_company_entries(db_session, worker.id, companies[0].id, companies[1].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+            {"company_id": companies[0].id, "percent": "50"},
+            {"company_id": companies[1].id, "percent": "30"},
+            {"company_id": companies[2].id, "percent": "20"},
+        ]}, headers=_h(client, token))
+
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["is_auto_distributed"] is False
+        accrued = Decimal(row["accrued_total"])
+        amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
+        assert amounts[companies[0].id] == (accrued * Decimal("50") / Decimal("100")).quantize(Decimal("1"))
+        assert companies[2].id in amounts  # компания без часов, но с ручным %
+
+    def test_clearing_manual_returns_to_auto(self, client, admin, worker, companies,
+                                             schedule, calendar, db_session):
+        """Override → ручное; удаление override и пустая карточка → снова авто по часам."""
+        self._two_company_entries(db_session, worker.id, companies[0].id, companies[1].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        client.put("/api/timesheet/distribution", json={
+            "employee_id": worker.id, "year": 2026, "month": 5,
+            "shares": [{"company_id": companies[2].id, "percent": "100"}],
+        }, headers=_h(client, token))
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["is_overridden"] is True
+        assert row["is_auto_distributed"] is False
+
+        client.delete(f"/api/timesheet/distribution/{worker.id}/2026/5", headers=_h(client, token))
+        r2 = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row2 = next(x for x in r2.json()["rows"] if x["employee_id"] == worker.id)
+        assert row2["is_overridden"] is False
+        assert row2["is_auto_distributed"] is True
+        pcts = {d["company_id"]: Decimal(d["percent"]) for d in row2["distribution"]}
+        assert pcts[companies[0].id] == Decimal("97.66")
+
+    def test_no_hours_no_percent_falls_back_to_main(self, client, admin, worker,
+                                                    companies, schedule, calendar, db_session):
+        """Нет часов и нет % → не падает, всё на основную компанию."""
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["is_auto_distributed"] is True
+        assert len(row["distribution"]) == 1
+        assert row["distribution"][0]["company_id"] == companies[0].id  # default_company
+
     def test_employee_forbidden(self, client: TestClient, db_session):
         emp = Employee(full_name="E", email="stmtemp@example.com",
                        hashed_password=hash_password("emp12345"), role="employee",

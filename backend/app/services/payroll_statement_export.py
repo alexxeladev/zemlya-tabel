@@ -126,13 +126,15 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
         c.border = border
         c.alignment = center
         c.number_format = "#,##0.00"
-        # Подсветка строки если сумма процентов ≠ 100
-        if r.distribution and r.percent_sum != Decimal("100"):
+        # Подсветка строки если ручная сумма процентов ≠ 100 (авто-доли не трогаем)
+        if r.distribution and not r.is_auto_distributed and r.percent_sum != Decimal("100"):
             c.fill = warn_fill
         # Примечание
         note = r.note or ""
         if r.is_overridden:
             note = (note + "; " if note else "") + "проценты переопределены на месяц"
+        elif r.is_auto_distributed and r.distribution:
+            note = (note + "; " if note else "") + "распределено по часам (авто)"
         c = ws.cell(row=row, column=note_col, value=note)
         c.font = normal
         c.border = border

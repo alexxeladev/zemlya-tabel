@@ -22,6 +22,9 @@ function buildEdits(stmt: PayrollStatement): Edits {
   const e: Edits = {}
   for (const row of stmt.rows) {
     e[row.employee_id] = {}
+    // Авто-распределённые строки (ручной % не задан) НЕ префиллим — поля остаются
+    // пустыми (плейсхолдер), чтобы видна была разница «авто по часам» vs «ручной».
+    if (row.is_auto_distributed) continue
     for (const d of row.distribution) {
       e[row.employee_id][d.company_id] = d.percent
     }
@@ -83,6 +86,11 @@ export function PayrollPage() {
     const e = edits[empId] ?? {}
     return Object.values(e).reduce((s, v) => s + num(v), 0)
   }
+
+  // Авто-строка: бэк распределил по часам (ручной % не задан) и пользователь
+  // ещё ничего не ввёл вручную. Ввод любого % перекрывает авто.
+  const isAutoRow = (row: StatementRow): boolean =>
+    row.is_auto_distributed && rowPercentSum(row.employee_id) === 0
 
   const saveRow = async (row: StatementRow) => {
     const e = edits[row.employee_id] ?? {}
@@ -164,10 +172,17 @@ export function PayrollPage() {
       acc.deductions += num(row.deductions)
       acc.net += num(row.net_payout)
       const accrued = num(row.accrued_total)
-      const e = edits[row.employee_id] ?? {}
-      for (const c of companies) {
-        const pct = num(e[c.id])
-        if (pct > 0) acc.dist[c.id] += Math.round((accrued * pct) / 100)
+      if (isAutoRow(row)) {
+        // Авто-распределение по часам — берём суммы, посчитанные бэком.
+        for (const d of row.distribution) {
+          if (d.company_id in acc.dist) acc.dist[d.company_id] += num(d.amount)
+        }
+      } else {
+        const e = edits[row.employee_id] ?? {}
+        for (const c of companies) {
+          const pct = num(e[c.id])
+          if (pct > 0) acc.dist[c.id] += Math.round((accrued * pct) / 100)
+        }
       }
     }
     return acc
@@ -273,6 +288,9 @@ export function PayrollPage() {
                 const pctSum = rowPercentSum(row.employee_id)
                 const pctWarn = pctSum > 0 && Math.abs(pctSum - 100) > 0.5
                 const e = edits[row.employee_id] ?? {}
+                const auto = isAutoRow(row)
+                const autoByCompany: Record<number, { percent: string; amount: string }> = {}
+                if (auto) for (const d of row.distribution) autoByCompany[d.company_id] = d
                 let liveDistTotal = 0
                 return (
                   <tr key={row.employee_id} className="border-b border-gray-100 hover:bg-gray-50/60">
@@ -303,7 +321,13 @@ export function PayrollPage() {
                     <td className="px-2 py-1.5 text-center font-bold text-emerald-700">{formatMoney(row.net_payout, { showZero: true })}</td>
                     {companies.map((c) => {
                       const pct = e[c.id] ?? ''
-                      const amount = num(pct) > 0 ? Math.round((accrued * num(pct)) / 100) : 0
+                      const autoEntry = auto ? autoByCompany[c.id] : undefined
+                      const autoPctLabel = autoEntry
+                        ? String(Math.round(num(autoEntry.percent) * 100) / 100)
+                        : '0'
+                      const amount = num(pct) > 0
+                        ? Math.round((accrued * num(pct)) / 100)
+                        : (autoEntry ? num(autoEntry.amount) : 0)
                       liveDistTotal += amount
                       return (
                         <td key={c.id} className="px-1.5 py-1 text-center bg-indigo-50/40">
@@ -316,12 +340,15 @@ export function PayrollPage() {
                               disabled={!canEdit}
                               value={pct}
                               onChange={(ev) => setPercent(row.employee_id, c.id, ev.target.value)}
-                              className={`w-12 rounded border px-1 py-0.5 text-right text-[11px] ${pctWarn ? 'border-amber-400 bg-amber-50' : 'border-gray-300'} disabled:bg-gray-100`}
-                              placeholder="0"
+                              className={`w-12 rounded border px-1 py-0.5 text-right text-[11px] ${pctWarn ? 'border-amber-400 bg-amber-50' : 'border-gray-300'} ${autoEntry ? 'border-dashed text-gray-400 placeholder:text-gray-400' : ''} disabled:bg-gray-100`}
+                              placeholder={autoPctLabel}
+                              title={autoEntry ? 'Авто по часам — введите % чтобы задать вручную' : undefined}
                             />
                             <span className="text-gray-400">%</span>
                           </div>
-                          <div className="mt-0.5 text-[10px] text-gray-500">{amount > 0 ? formatMoney(String(amount)) : '—'}</div>
+                          <div className={`mt-0.5 text-[10px] ${autoEntry ? 'italic text-gray-400' : 'text-gray-500'}`}>
+                            {amount > 0 ? formatMoney(String(amount)) : '—'}
+                          </div>
                         </td>
                       )
                     })}
@@ -353,6 +380,9 @@ export function PayrollPage() {
                       )}
                       {row.is_overridden && (
                         <div className="mt-0.5 text-[9px] text-indigo-500">правка на месяц</div>
+                      )}
+                      {auto && (
+                        <div className="mt-0.5 text-[9px] italic text-gray-400">авто по часам</div>
                       )}
                     </td>
                   </tr>

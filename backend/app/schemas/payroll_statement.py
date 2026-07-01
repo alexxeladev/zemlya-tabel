@@ -69,6 +69,7 @@ class StatementRow(BaseModel):
     net_payout: Decimal           # К выплате
 
     is_overridden: bool           # проценты распределения переопределены на месяц
+    is_auto_distributed: bool     # распределено авто по фактическим часам (ручной % не задан)
     percent_sum: Decimal          # сумма процентов (для подсветки ≠ 100)
     distribution: list[StatementCompanyAmount]
     distribution_total: Decimal

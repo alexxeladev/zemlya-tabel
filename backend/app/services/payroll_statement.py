@@ -209,6 +209,35 @@ def distribute_by_percent(
     return _distribute_whole_rubles(total, positive)
 
 
+def _auto_shares_by_hours(
+    total: Decimal,
+    breakdown,
+    main_company,
+) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
+    """Авто-распределение, когда ручной % не задан: пропорционально фактическим
+    часам сотрудника по компаниям (из табеля).
+
+    Возвращает (shares %, amounts ₽). Доли в рублях — методом наибольших остатков
+    (сумма частей = total). Проценты — справочные (часы/всего × 100, до сотых).
+    Если часов нет — вся сумма на основную компанию (default_company).
+    """
+    company_hours = {bd.company_id: bd.hours for bd in breakdown if bd.hours > _ZERO}
+    total_hours = sum(company_hours.values(), _ZERO)
+
+    if total_hours > _ZERO:
+        amounts = _distribute_whole_rubles(total, company_hours)
+        shares = {
+            cid: (h / total_hours * _HUNDRED).quantize(Decimal("0.01"))
+            for cid, h in company_hours.items()
+        }
+        return shares, amounts
+
+    # Нет часов вообще → вся сумма на основную компанию.
+    if main_company is not None:
+        return {main_company.id: _HUNDRED}, {main_company.id: total}
+    return {}, {}
+
+
 # ── Сводная ведомость ─────────────────────────────────────────────────────────
 
 def build_payroll_statement(
@@ -240,13 +269,26 @@ def build_payroll_statement(
         emp = emp_by_id.get(p.employee_id)
         base_salary = p.base_amount + p.holiday_amount
         accrued = base_salary + p.overtime_amount + p.premium_amount + p.kpi_amount
+        main_company = emp.default_company if emp else None
 
         overrides = override_shares.get(p.employee_id, {})
         is_overridden = bool(overrides)
-        shares = overrides if is_overridden else default_shares.get(p.employee_id, {})
+        manual_shares = overrides if is_overridden else default_shares.get(p.employee_id, {})
+        manual_sum = sum(manual_shares.values(), _ZERO)
+
+        if manual_sum > _ZERO:
+            # Ручное распределение (переопределение на месяц или дефолт из карточки)
+            is_auto = False
+            shares = manual_shares
+            dist_amounts = distribute_by_percent(accrued, shares)
+        else:
+            # Ручной % не задан → авто-распределение по фактическим часам табеля
+            is_auto = True
+            shares, dist_amounts = _auto_shares_by_hours(
+                accrued, p.breakdown_by_company, main_company,
+            )
         percent_sum = sum(shares.values(), _ZERO)
 
-        dist_amounts = distribute_by_percent(accrued, shares)
         distribution = [
             StatementCompanyAmount(
                 company_id=cid,
@@ -261,7 +303,6 @@ def build_payroll_statement(
         overtime_coeff = getattr(emp, "overtime_coefficient", None) if emp else None
         overtime_coeff = Decimal("1.5") if overtime_coeff is None else Decimal(str(overtime_coeff))
 
-        main_company = emp.default_company if emp else None
         rows.append(StatementRow(
             employee_id=p.employee_id,
             tab_number=emp.tab_number if emp else None,
@@ -285,6 +326,7 @@ def build_payroll_statement(
             deductions=p.total_deductions,
             net_payout=p.net_payout,
             is_overridden=is_overridden,
+            is_auto_distributed=is_auto,
             percent_sum=percent_sum,
             distribution=distribution,
             distribution_total=sum(dist_amounts.values(), _ZERO),
