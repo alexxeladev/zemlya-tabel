@@ -22,7 +22,9 @@ DC() { $DKR compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
 say() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 err() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; }
 # Читает значение ключа из .env.preprod (всё после первого '='), без source.
-getenv() { grep -E "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2-; }
+# `|| true` обязательно: grep по отсутствующему ключу возвращает 1, что при
+# set -e + pipefail молча убивает скрипт на подстановке $(getenv ...).
+getenv() { grep -E "^$1=" "$ENV_FILE" | head -n1 | cut -d= -f2- || true; }
 gen_secret() {  # $1 = число байт → hex-строка (shell/URL-safe)
   if command -v openssl >/dev/null 2>&1; then openssl rand -hex "$1"
   else python3 -c "import secrets,sys;print(secrets.token_hex(int(sys.argv[1])))" "$1"; fi
