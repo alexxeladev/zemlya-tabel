@@ -610,20 +610,28 @@ function AbsenceCodeCell({
   onClear: () => void;
 }) {
   const meta = absenceMeta(absence.kind);
-  const bg = meta?.bg ?? '#e5e7eb';
-  const color = meta?.color ?? '#4b5563';
+  // Больничный сверх годового лимита — за свой счёт: гасим цвет и метим «*»
+  const over = !!absence.over_limit;
+  const bg = over ? '#f3f4f6' : meta?.bg ?? '#e5e7eb';
+  const color = over ? '#6b7280' : meta?.color ?? '#4b5563';
+  const label = over
+    ? 'Больничный сверх годового лимита — за свой счёт'
+    : meta?.label ?? absence.code;
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClear}
       className="w-full rounded text-[11px] font-mono font-bold leading-5 disabled:cursor-default"
-      style={{ background: bg, color, border: `1px solid ${color}40` }}
-      title={
-        (meta?.label ?? absence.code) + (disabled ? '' : ' — нажмите, чтобы убрать отметку')
-      }
+      style={{
+        background: bg,
+        color,
+        border: over ? `1px dashed ${color}80` : `1px solid ${color}40`,
+      }}
+      title={label + (disabled ? '' : ' — нажмите, чтобы убрать отметку')}
     >
       {absence.code}
+      {over && '*'}
     </button>
   );
 }

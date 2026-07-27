@@ -65,6 +65,7 @@ export type Absence = {
   work_date: string; // 'YYYY-MM-DD'
   kind: AbsenceKind;
   code: string;
+  over_limit?: boolean; // больничный сверх годового лимита — за свой счёт
 };
 
 export type TimesheetEntry = {
@@ -107,6 +108,10 @@ export type EmployeePayroll = {
   sick_paid_days?: number;
   vacation_amount?: string;
   sick_amount?: string;
+  sick_limit_days?: number;
+  sick_days_used_before?: number;
+  sick_unpaid_days?: number;
+  sick_limit_remaining?: number;
   weekend_pay_type?: 'coefficient' | 'fixed_rate' | null;
   weekend_coefficient?: string | null;
   weekend_fixed_rate?: string | null;
@@ -228,6 +233,23 @@ function absenceDaysTitle(label: string, days?: number, paidDays?: number): stri
   const paid = paidDays ?? days;
   const suffix = paid === days ? '' : ` (оплачено рабочих: ${paid})`;
   return `${label}: ${days} дн.${suffix}`;
+}
+
+// Подсказка по годовому лимиту больничного: сколько израсходовано за год и
+// сколько дней месяца ушло за свой счёт (лимит считается с 1 января).
+export function sickLimitTitle(pay?: EmployeePayroll | null): string {
+  if (!pay) return 'Больничный: нет';
+  const limit = pay.sick_limit_days ?? 0;
+  if (!limit) return absenceDaysTitle('Больничный', pay.sick_days, pay.sick_paid_days);
+  const used = (pay.sick_days_used_before ?? 0) + (pay.sick_paid_days ?? 0);
+  const lines = [
+    `Больничный: ${pay.sick_days ?? 0} дн. в месяце, оплачено ${pay.sick_paid_days ?? 0}`,
+    `Годовой лимит: использовано ${used}/${limit}, остаток ${pay.sick_limit_remaining ?? 0}`,
+  ];
+  if (pay.sick_unpaid_days) {
+    lines.push(`Сверх лимита (за свой счёт): ${pay.sick_unpaid_days} дн.`);
+  }
+  return lines.join('\n');
 }
 
 // Коэффициент/режим оплаты выходных сотрудника — для колонки «Коэф.» (п.3)
@@ -779,11 +801,16 @@ export function TimesheetPage() {
             </td>
             <td
               className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
-              title={absenceDaysTitle('Больничный', pay?.sick_days, pay?.sick_paid_days)}
+              title={sickLimitTitle(pay)}
             >
               {fmtMoney(pay?.sick_amount ?? null)}
               {!!pay?.sick_days && (
-                <span className="ml-1 text-[10px] text-gray-400">{pay.sick_days}д</span>
+                <span className="ml-1 text-[10px] text-gray-400">
+                  {pay.sick_days}д
+                  {!!pay.sick_unpaid_days && (
+                    <span className="text-amber-600"> ({pay.sick_unpaid_days} б/о)</span>
+                  )}
+                </span>
               )}
             </td>
             {/* Премия — своя кнопка */}
@@ -1005,6 +1032,14 @@ export function TimesheetPage() {
               <span className="font-sans font-normal">{a.label}</span>
             </span>
           ))}
+          <span
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-mono font-bold text-gray-500"
+            style={{ background: '#f3f4f6', border: '1px dashed #6b728080' }}
+            title="Больничный сверх годового лимита — за свой счёт"
+          >
+            Б*
+            <span className="font-sans font-normal">сверх лимита, не оплачивается</span>
+          </span>
           <span className="text-gray-500">
             «+» = слот компании · «·» = код отсутствия · серый = выходной
           </span>
@@ -1696,16 +1731,30 @@ function AbsenceChip({
   onClear: () => void;
 }) {
   const meta = absenceMeta(absence.kind);
-  const bg = meta?.bg ?? '#e5e7eb';
-  const color = meta?.color ?? '#4b5563';
+  // Больничный сверх годового лимита — за свой счёт: гасим цвет и метим «*»
+  const over = !!absence.over_limit;
+  const bg = over ? '#f3f4f6' : meta?.bg ?? '#e5e7eb';
+  const color = over ? '#6b7280' : meta?.color ?? '#4b5563';
 
   return (
     <div
       className="flex items-center justify-center gap-1 px-1.5 py-1 rounded text-[11px] font-mono font-bold"
-      style={{ background: bg, color, border: `1px solid ${color}40`, opacity: disabled ? 0.7 : 1 }}
-      title={meta?.label ?? absence.code}
+      style={{
+        background: bg,
+        color,
+        border: over ? `1px dashed ${color}80` : `1px solid ${color}40`,
+        opacity: disabled ? 0.7 : 1,
+      }}
+      title={
+        over
+          ? 'Больничный сверх годового лимита — за свой счёт, не оплачивается'
+          : meta?.label ?? absence.code
+      }
     >
-      <span>{absence.code}</span>
+      <span>
+        {absence.code}
+        {over && <span className="font-sans">*</span>}
+      </span>
       {!disabled && (
         <button
           type="button"

@@ -362,7 +362,25 @@ export function PayrollPage() {
                         : '—'}
                     </td>
                     <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.vacation_amount)}</td>
-                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.sick_amount)}</td>
+                    <td
+                      className="px-2 py-1.5 text-center text-gray-700"
+                      title={
+                        `Годовой лимит: остаток ${row.sick_limit_remaining} из ${row.sick_limit_days} дн.` +
+                        (row.sick_unpaid_days
+                          ? `\nСверх лимита (за свой счёт): ${row.sick_unpaid_days} дн.`
+                          : '')
+                      }
+                    >
+                      {formatMoney(row.sick_amount)}
+                      {row.sick_days > 0 && (
+                        <div className="text-[10px] text-gray-400">
+                          лимит {row.sick_limit_remaining}/{row.sick_limit_days}
+                          {row.sick_unpaid_days > 0 && (
+                            <span className="text-amber-600"> · {row.sick_unpaid_days} б/о</span>
+                          )}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.premium_amount)}</td>
                     <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.kpi_amount)}</td>
                     <td className="px-2 py-1.5 text-center font-bold text-blue-700">{formatMoney(row.accrued_total, { showZero: true })}</td>

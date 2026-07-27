@@ -39,6 +39,11 @@ export interface EmployeePayroll {
   sick_paid_days: number
   vacation_amount: string
   sick_amount: string
+  // Годовой лимит больничного
+  sick_limit_days: number
+  sick_days_used_before: number
+  sick_unpaid_days: number
+  sick_limit_remaining: number
   weekend_pay_type: WeekendPayType | null
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
@@ -137,6 +142,9 @@ export interface StatementRow {
   absent_days: number
   vacation_amount: string
   sick_amount: string
+  sick_limit_days: number
+  sick_unpaid_days: number
+  sick_limit_remaining: number
   accrued_total: string
   deductions: string
   net_payout: string
@@ -196,6 +204,8 @@ export interface Absence {
   work_date: string  // YYYY-MM-DD
   kind: AbsenceKind
   code: string       // ОТ / ДО / Б / Н
+  // Больничный сверх годового лимита — отмечен, но не оплачивается
+  over_limit: boolean
 }
 
 export interface TimesheetMonthResponse {
