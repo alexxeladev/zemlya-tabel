@@ -22,6 +22,7 @@ import { Modal } from '../../components/Modal'
 import { Confirm } from '../../components/Confirm'
 import { Button } from '../../components/Button'
 import { Select } from '../../components/Select'
+import { SharesEditor } from '../../components/SharesEditor'
 import { ApiError } from '../../api/client'
 import { copyText } from '../../utils/clipboard'
 
@@ -552,7 +553,11 @@ export function EmployeesPage() {
 
           {/* Section 3b-3 — Распределение затрат по юрлицам по умолчанию (3.11b п.1) */}
           {editTarget && !isMgr && (
-            <CompanySharesEditor employeeId={editTarget.id} companies={companies ?? []} />
+            <CompanySharesEditor
+              employeeId={editTarget.id}
+              companies={companies ?? []}
+              mainCompanyId={editTarget.default_company_id}
+            />
           )}
 
           {/* Section 3c — Заём (задача 3.11a). Гасится равными долями автоматически. */}
@@ -742,10 +747,13 @@ export function EmployeesPage() {
 }
 
 // ── Распределение затрат по юрлицам по умолчанию (задача 3.11b п.1) ──
-function CompanySharesEditor({ employeeId, companies }: { employeeId: number; companies: Company[] }) {
+function CompanySharesEditor({
+  employeeId, companies, mainCompanyId,
+}: { employeeId: number; companies: Company[]; mainCompanyId?: number | null }) {
   const [shares, setShares] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [loadedAt, setLoadedAt] = useState(0)
 
   useEffect(() => {
     setLoading(true)
@@ -754,13 +762,11 @@ function CompanySharesEditor({ employeeId, companies }: { employeeId: number; co
         const map: Record<number, string> = {}
         for (const s of data.shares) map[s.company_id] = s.percent
         setShares(map)
+        setLoadedAt((n) => n + 1)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [employeeId])
-
-  const sum = Object.values(shares).reduce((acc, v) => acc + (Number(v) || 0), 0)
-  const warn = sum > 0 && Math.abs(sum - 100) > 0.5
 
   const save = async () => {
     const list = Object.entries(shares)
@@ -785,25 +791,13 @@ function CompanySharesEditor({ employeeId, companies }: { employeeId: number; co
         Распределение затрат по юрлицам (по умолчанию)
       </p>
       <div className="flex flex-col gap-2">
-        {companies.filter((c) => c.is_active).map((c) => (
-          <div key={c.id} className="flex items-center gap-2">
-            <span className="w-40 truncate text-sm text-gray-700" title={c.name}>{c.name}</span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              step="0.1"
-              value={shares[c.id] ?? ''}
-              onChange={(e) => setShares((p) => ({ ...p, [c.id]: e.target.value }))}
-              className="w-20 rounded-lg border border-gray-300 px-2 py-1 text-right text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="0"
-            />
-            <span className="text-sm text-gray-400">%</span>
-          </div>
-        ))}
-        <div className={`text-xs ${warn ? 'text-amber-600' : 'text-gray-400'}`}>
-          Сумма: {sum}% {warn && '(должно быть ≈100%)'}
-        </div>
+        <SharesEditor
+          companies={companies}
+          shares={shares}
+          onChange={setShares}
+          mainCompanyId={mainCompanyId}
+          resetKey={`${employeeId}-${loadedAt}`}
+        />
         <div>
           <Button type="button" variant="secondary" size="sm" onClick={save} disabled={saving}>
             Сохранить распределение
