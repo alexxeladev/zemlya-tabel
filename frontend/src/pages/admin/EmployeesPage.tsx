@@ -14,7 +14,7 @@ import { listSchedules } from '../../api/schedules'
 import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../hooks/useAuth'
 import { toast } from '../../store/toasts'
-import type { Company, Employee, UserRole } from '../../types/api'
+import type { Company, Employee, EmployeeShares, UserRole } from '../../types/api'
 import { PageHeader } from '../../components/PageHeader'
 import { Table, Th, Td } from '../../components/Table'
 import { Badge } from '../../components/Badge'
@@ -754,19 +754,23 @@ function CompanySharesEditor({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [loadedAt, setLoadedAt] = useState(0)
+  const [inherited, setInherited] = useState<EmployeeShares | null>(null)
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true)
     getCompanyShares(employeeId)
       .then((data) => {
         const map: Record<number, string> = {}
         for (const s of data.shares) map[s.company_id] = s.percent
         setShares(map)
+        setInherited(data)
         setLoadedAt((n) => n + 1)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [employeeId])
+
+  useEffect(load, [load])
 
   const save = async () => {
     const list = Object.entries(shares)
@@ -774,8 +778,13 @@ function CompanySharesEditor({
       .map(([cid, v]) => ({ company_id: Number(cid), percent: String(Number(v)) }))
     try {
       setSaving(true)
-      await setCompanyShares(employeeId, list)
-      toast.success('Распределение по умолчанию сохранено')
+      const saved = await setCompanyShares(employeeId, list)
+      setInherited(saved)
+      toast.success(
+        list.length === 0 && saved.inherits_department
+          ? 'Своё распределение убрано — используется дефолт отдела'
+          : 'Распределение по умолчанию сохранено',
+      )
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : 'Ошибка сохранения')
     } finally {
@@ -785,11 +794,35 @@ function CompanySharesEditor({
 
   if (loading) return null
 
+  // Наследование от отдела (task_distribution_v2 ч.3): своё распределение пусто —
+  // значит применяется дефолт отдела; показываем какой именно.
+  const companyName = (id: number) => companies.find((c) => c.id === id)?.name ?? `#${id}`
+  const deptHint = inherited?.inherits_department
+    ? inherited.department_shares
+        .map((s) => `${companyName(s.company_id)} — ${Number(s.percent)}%`)
+        .join(', ')
+    : null
+
   return (
     <div>
       <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
         Распределение затрат по юрлицам (по умолчанию)
       </p>
+      {deptHint && (
+        <div className="mb-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+          Своё распределение не задано — используется дефолт отдела
+          {inherited?.department_name ? ` «${inherited.department_name}»` : ''}: {deptHint}.
+          Заполните проценты ниже, чтобы задать индивидуальное (оно перекроет отдел).
+        </div>
+      )}
+      {inherited && !inherited.inherits_department && inherited.department_shares.length > 0
+        && Number(inherited.percent_sum) > 0 && (
+        <div className="mb-2 text-[11px] text-gray-400">
+          Задано индивидуальное распределение — дефолт отдела
+          {inherited.department_name ? ` «${inherited.department_name}»` : ''} не применяется.
+          Очистите проценты и сохраните, чтобы вернуться к отделу.
+        </div>
+      )}
       <div className="flex flex-col gap-2">
         <SharesEditor
           companies={companies}

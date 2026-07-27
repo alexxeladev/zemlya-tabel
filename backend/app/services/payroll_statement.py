@@ -13,7 +13,6 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.models.companies import Company
-from app.models.company_shares import CompanyShareOverride, EmployeeCompanyShare
 from app.models.employees import Employee
 from app.models.production_calendars import ProductionCalendar
 from app.schemas.payroll import (
@@ -26,6 +25,11 @@ from app.schemas.payroll_statement import (
     StatementCompanyAmount,
     StatementCompanyRef,
     StatementRow,
+)
+from app.services.company_shares import (
+    load_department_shares,
+    load_employee_shares,
+    load_month_overrides,
 )
 from app.services.distribution import distribute
 from app.services.payout import (
@@ -157,44 +161,38 @@ def build_payroll_summary(
 
 # ── Распределение по компаниям (проценты) ─────────────────────────────────────
 
-def load_default_shares(
-    db: Session, emp_ids: list[int]
-) -> dict[int, dict[int, Decimal]]:
-    """{employee_id: {company_id: percent}} — проценты по умолчанию из карточек."""
-    result: dict[int, dict[int, Decimal]] = {}
-    if not emp_ids:
-        return result
-    rows = (
-        db.query(EmployeeCompanyShare)
-        .filter(EmployeeCompanyShare.employee_id.in_(emp_ids))
-        .all()
-    )
-    for r in rows:
-        pct = r.percent if isinstance(r.percent, Decimal) else Decimal(str(r.percent))
-        result.setdefault(r.employee_id, {})[r.company_id] = pct
-    return result
+# Загрузка наборов процентов — в app.services.company_shares (общая с роутерами).
+
+# Откуда взято распределение (task_distribution_v2 ч.3) — видно в ведомости и Excel.
+SOURCE_MONTH = "month"          # ручной % за конкретный месяц
+SOURCE_EMPLOYEE = "employee"    # распределение в карточке сотрудника
+SOURCE_DEPARTMENT = "department"  # дефолт отдела
+SOURCE_HOURS = "hours"          # авто по фактическим часам табеля
 
 
-def load_share_overrides(
-    db: Session, emp_ids: list[int], year: int, month: int
-) -> dict[int, dict[int, Decimal]]:
-    """{employee_id: {company_id: percent}} — переопределения за конкретный месяц."""
-    result: dict[int, dict[int, Decimal]] = {}
-    if not emp_ids:
-        return result
-    rows = (
-        db.query(CompanyShareOverride)
-        .filter(
-            CompanyShareOverride.employee_id.in_(emp_ids),
-            CompanyShareOverride.year == year,
-            CompanyShareOverride.month == month,
-        )
-        .all()
+def resolve_shares(
+    employee_id: int,
+    department_id: int | None,
+    month_overrides: dict[int, dict[int, Decimal]],
+    employee_shares: dict[int, dict[int, Decimal]],
+    department_shares: dict[int, dict[int, Decimal]],
+) -> tuple[dict[int, Decimal], str]:
+    """Каскад приоритетов распределения: берётся ПЕРВОЕ заданное сверху вниз —
+    месячный % > карточка сотрудника > дефолт отдела > авто по часам.
+
+    Дефолт отдела применяется ТОЛЬКО к сотрудникам без своего распределения:
+    правка дефолта отдела не трогает тех, у кого задана карточка или месяц.
+    Возвращает (проценты, источник). Для авто — пустой набор.
+    """
+    levels = (
+        (month_overrides.get(employee_id, {}), SOURCE_MONTH),
+        (employee_shares.get(employee_id, {}), SOURCE_EMPLOYEE),
+        (department_shares.get(department_id, {}) if department_id else {}, SOURCE_DEPARTMENT),
     )
-    for r in rows:
-        pct = r.percent if isinstance(r.percent, Decimal) else Decimal(str(r.percent))
-        result.setdefault(r.employee_id, {})[r.company_id] = pct
-    return result
+    for shares, source in levels:
+        if sum(shares.values(), _ZERO) > _ZERO:
+            return shares, source
+    return {}, SOURCE_HOURS
 
 
 def distribute_by_percent(
@@ -260,8 +258,12 @@ def build_payroll_statement(
         StatementCompanyRef(id=c.id, code=c.code, name=c.name) for c in companies
     ]
 
-    default_shares = load_default_shares(db, emp_ids)
-    override_shares = load_share_overrides(db, emp_ids, year, month)
+    # Каскад приоритетов: месячный % > карточка > отдел > авто по часам.
+    employee_shares = load_employee_shares(db, emp_ids)
+    override_shares = load_month_overrides(db, emp_ids, year, month)
+    dept_shares = load_department_shares(
+        db, [e.department_id for e in employees if e.department_id]
+    )
 
     rows: list[StatementRow] = []
     distribution_totals: dict[int, Decimal] = {c.id: _ZERO for c in companies}
@@ -272,21 +274,22 @@ def build_payroll_statement(
         accrued = base_salary + p.overtime_amount + p.premium_amount + p.kpi_amount
         main_company = emp.default_company if emp else None
 
-        overrides = override_shares.get(p.employee_id, {})
-        is_overridden = bool(overrides)
-        manual_shares = overrides if is_overridden else default_shares.get(p.employee_id, {})
-        manual_sum = sum(manual_shares.values(), _ZERO)
+        shares, source = resolve_shares(
+            employee_id=p.employee_id,
+            department_id=emp.department_id if emp else None,
+            month_overrides=override_shares,
+            employee_shares=employee_shares,
+            department_shares=dept_shares,
+        )
+        is_overridden = source == SOURCE_MONTH
+        is_auto = source == SOURCE_HOURS
 
-        if manual_sum > _ZERO:
-            # Ручное распределение (переопределение на месяц или дефолт из карточки)
-            is_auto = False
-            shares = manual_shares
+        if not is_auto:
             dist_amounts = distribute_by_percent(
                 accrued, shares, main_company.id if main_company else None
             )
         else:
-            # Ручной % не задан → авто-распределение по фактическим часам табеля
-            is_auto = True
+            # Ни на одном уровне каскада % не задан → авто по фактическим часам.
             shares, dist_amounts = _auto_shares_by_hours(
                 accrued, p.breakdown_by_company, main_company,
             )
@@ -330,6 +333,7 @@ def build_payroll_statement(
             net_payout=p.net_payout,
             is_overridden=is_overridden,
             is_auto_distributed=is_auto,
+            distribution_source=source,
             percent_sum=percent_sum,
             distribution=distribution,
             distribution_total=sum(dist_amounts.values(), _ZERO),

@@ -73,7 +73,21 @@ export interface EmployeeShares {
   employee_id: number
   shares: CompanyShare[]
   percent_sum: string
+  // Дефолт отдела — наследуется, если своего распределения нет (каскад, ч.3)
+  department_id: number | null
+  department_name: string | null
+  department_shares: CompanyShare[]
+  inherits_department: boolean
 }
+
+export interface DepartmentShares {
+  department_id: number
+  shares: CompanyShare[]
+  percent_sum: string
+}
+
+/** Уровень каскада, откуда взято распределение по юрлицам. */
+export type DistributionSource = 'month' | 'employee' | 'department' | 'hours'
 
 export interface StatementCompanyRef {
   id: number
@@ -111,6 +125,7 @@ export interface StatementRow {
   net_payout: string
   is_overridden: boolean
   is_auto_distributed: boolean
+  distribution_source: DistributionSource
   percent_sum: string
   distribution: StatementCompanyAmount[]
   distribution_total: string

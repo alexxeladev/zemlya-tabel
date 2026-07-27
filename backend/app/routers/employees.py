@@ -10,7 +10,6 @@ from app.core.audit import log_action
 from app.core.deps import get_current_user, require_role
 from app.core.security import hash_password
 from app.database import get_db
-from app.models.companies import Company
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
 from app.schemas.employee import (
@@ -25,6 +24,11 @@ from app.schemas.payroll_statement import (
     CompanyShareInput,
     EmployeeSharesRead,
     EmployeeSharesUpdate,
+)
+from app.services.company_shares import (
+    SharesValidationError,
+    load_department_shares,
+    validate_shares,
 )
 
 router = APIRouter()
@@ -369,6 +373,31 @@ def revoke_access(
 
 # ── Распределение по компаниям по умолчанию (задача 3.11b п.1) ──────────────────
 
+def _shares_response(db: Session, emp: Employee) -> EmployeeSharesRead:
+    """Своё распределение сотрудника + дефолт его отдела (наследуется, если своего
+    нет — task_distribution_v2 ч.3, каскад)."""
+    rows = (
+        db.query(EmployeeCompanyShare)
+        .filter(EmployeeCompanyShare.employee_id == emp.id)
+        .all()
+    )
+    percent_sum = sum((r.percent for r in rows), Decimal("0"))
+    dept_map = load_department_shares(db, [emp.department_id] if emp.department_id else [])
+    dept_shares = dept_map.get(emp.department_id, {}) if emp.department_id else {}
+    return EmployeeSharesRead(
+        employee_id=emp.id,
+        shares=[CompanyShareInput(company_id=r.company_id, percent=r.percent) for r in rows],
+        percent_sum=percent_sum,
+        department_id=emp.department_id,
+        department_name=emp.department.name if emp.department else None,
+        department_shares=[
+            CompanyShareInput(company_id=cid, percent=pct)
+            for cid, pct in sorted(dept_shares.items())
+        ],
+        inherits_department=percent_sum <= 0 and bool(dept_shares),
+    )
+
+
 @router.get("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
 def get_company_shares(
     emp_id: int,
@@ -383,14 +412,7 @@ def get_company_shares(
     if current_user.role == "manager" and emp.department_id != current_user.department_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
 
-    rows = (
-        db.query(EmployeeCompanyShare)
-        .filter(EmployeeCompanyShare.employee_id == emp_id)
-        .all()
-    )
-    shares = [CompanyShareInput(company_id=r.company_id, percent=r.percent) for r in rows]
-    percent_sum = sum((r.percent for r in rows), Decimal("0"))
-    return EmployeeSharesRead(employee_id=emp_id, shares=shares, percent_sum=percent_sum)
+    return _shares_response(db, emp)
 
 
 @router.put("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
@@ -406,23 +428,11 @@ def set_company_shares(
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-    total = Decimal("0")
-    seen: set[int] = set()
-    for s in payload.shares:
-        if s.percent < 0:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Процент не может быть отрицательным")
-        if s.company_id in seen:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Компания указана дважды")
-        seen.add(s.company_id)
-        if not db.get(Company, s.company_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
-        total += s.percent
-    positive = [s for s in payload.shares if s.percent > 0]
-    if positive and not (Decimal("99") <= total <= Decimal("101")):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Сумма процентов должна быть ≈100% (сейчас {total})",
-        )
+    try:
+        positive = validate_shares(db, payload.shares)
+    except SharesValidationError as e:
+        code = status.HTTP_404_NOT_FOUND if e.not_found else status.HTTP_422_UNPROCESSABLE_ENTITY
+        raise HTTPException(status_code=code, detail=str(e)) from e
 
     db.query(EmployeeCompanyShare).filter(
         EmployeeCompanyShare.employee_id == emp_id
@@ -434,12 +444,4 @@ def set_company_shares(
     log_action(db, actor, "employee_company_shares", emp_id, "set",
                after={s.company_id: str(s.percent) for s in positive})
     db.commit()
-
-    rows = (
-        db.query(EmployeeCompanyShare)
-        .filter(EmployeeCompanyShare.employee_id == emp_id)
-        .all()
-    )
-    shares = [CompanyShareInput(company_id=r.company_id, percent=r.percent) for r in rows]
-    percent_sum = sum((r.percent for r in rows), Decimal("0"))
-    return EmployeeSharesRead(employee_id=emp_id, shares=shares, percent_sum=percent_sum)
+    return _shares_response(db, emp)

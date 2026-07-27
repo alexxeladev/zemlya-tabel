@@ -395,3 +395,221 @@ class TestAutoDistributionByHours:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         assert len(r.content) > 0
+
+
+# ── Дефолт отдела и каскад приоритетов (task_distribution_v2 ч.3) ─────────────
+
+class TestDepartmentDefaultShares:
+    """Каскад: месячный % > карточка сотрудника > дефолт отдела > авто по часам."""
+
+    def _set_dept_shares(self, client, token, dept_id, shares):
+        return client.put(f"/api/departments/{dept_id}/company-shares",
+                          json={"shares": shares}, headers=_h(client, token))
+
+    def test_set_and_get_department_shares(self, client: TestClient, admin, dept, companies):
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        r = self._set_dept_shares(client, token, dept.id, [
+            {"company_id": companies[0].id, "percent": "60"},
+            {"company_id": companies[1].id, "percent": "40"},
+        ])
+        assert r.status_code == 200
+        assert Decimal(r.json()["percent_sum"]) == Decimal("100")
+
+        g = client.get(f"/api/departments/{dept.id}/company-shares", headers=_h(client, token))
+        assert g.status_code == 200
+        assert len(g.json()["shares"]) == 2
+
+    def test_reject_sum_not_100(self, client: TestClient, admin, dept, companies):
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        r = self._set_dept_shares(client, token, dept.id, [
+            {"company_id": companies[0].id, "percent": "70"},
+        ])
+        assert r.status_code == 422
+
+    def test_employee_without_own_shares_inherits_department(
+        self, client: TestClient, admin, worker, dept, companies, schedule, calendar, db_session
+    ):
+        """Нет своего распределения → берётся дефолт отдела (не авто по часам)."""
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        self._set_dept_shares(client, token, dept.id, [
+            {"company_id": companies[1].id, "percent": "75"},
+            {"company_id": companies[2].id, "percent": "25"},
+        ])
+
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["distribution_source"] == "department"
+        assert row["is_auto_distributed"] is False
+        assert row["is_overridden"] is False
+        amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
+        assert amounts[companies[1].id] == Decimal("60000")
+        assert amounts[companies[2].id] == Decimal("20000")
+        assert sum(amounts.values()) == Decimal(row["accrued_total"])
+
+    def test_own_shares_win_over_department(
+        self, client: TestClient, admin, worker, dept, companies, schedule, calendar, db_session
+    ):
+        """Индивидуальное распределение перекрывает дефолт отдела."""
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        self._set_dept_shares(client, token, dept.id, [
+            {"company_id": companies[1].id, "percent": "100"},
+        ])
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+            {"company_id": companies[0].id, "percent": "100"},
+        ]}, headers=_h(client, token))
+
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["distribution_source"] == "employee"
+        amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
+        assert amounts[companies[0].id] == Decimal("80000")
+
+    def test_month_override_wins_over_all(
+        self, client: TestClient, admin, worker, dept, companies, schedule, calendar, db_session
+    ):
+        """Правка на месяц — верх каскада (выше карточки и отдела)."""
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        self._set_dept_shares(client, token, dept.id, [
+            {"company_id": companies[1].id, "percent": "100"},
+        ])
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+            {"company_id": companies[0].id, "percent": "100"},
+        ]}, headers=_h(client, token))
+        client.put("/api/timesheet/distribution", json={
+            "employee_id": worker.id, "year": 2026, "month": 5,
+            "shares": [{"company_id": companies[2].id, "percent": "100"}],
+        }, headers=_h(client, token))
+
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["distribution_source"] == "month"
+        amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
+        assert amounts[companies[2].id] == Decimal("80000")
+
+    def test_falls_back_to_hours_when_nothing_set(
+        self, client: TestClient, admin, worker, dept, companies, schedule, calendar, db_session
+    ):
+        """Ни одного уровня каскада → авто по часам."""
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["distribution_source"] == "hours"
+        assert row["is_auto_distributed"] is True
+
+    def test_clearing_department_default_returns_to_hours(
+        self, client: TestClient, admin, worker, dept, companies, schedule, calendar, db_session
+    ):
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        self._set_dept_shares(client, token, dept.id, [
+            {"company_id": companies[1].id, "percent": "100"},
+        ])
+        self._set_dept_shares(client, token, dept.id, [])
+
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["distribution_source"] == "hours"
+
+    def test_card_shows_inheritance(
+        self, client: TestClient, admin, worker, dept, companies
+    ):
+        """В карточке видно, что распределение наследуется от отдела."""
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        self._set_dept_shares(client, token, dept.id, [
+            {"company_id": companies[1].id, "percent": "100"},
+        ])
+        g = client.get(f"/api/employees/{worker.id}/company-shares", headers=_h(client, token))
+        data = g.json()
+        assert data["inherits_department"] is True
+        assert data["department_name"] == dept.name
+        assert len(data["department_shares"]) == 1
+
+        # Задали своё → наследование выключается
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+            {"company_id": companies[0].id, "percent": "100"},
+        ]}, headers=_h(client, token))
+        g2 = client.get(f"/api/employees/{worker.id}/company-shares", headers=_h(client, token))
+        assert g2.json()["inherits_department"] is False
+
+    def test_only_admin_can_set_department_shares(
+        self, client: TestClient, admin, dept, companies, db_session
+    ):
+        acc = Employee(full_name="Acc", email="stmtacc@example.com",
+                       hashed_password=hash_password("acc12345"), role="accountant",
+                       is_active=True, must_change_password=False)
+        db_session.add(acc)
+        db_session.commit()
+        token = get_token(client, "stmtacc@example.com", "acc12345")
+        r = self._set_dept_shares(client, token, dept.id, [
+            {"company_id": companies[0].id, "percent": "100"},
+        ])
+        assert r.status_code == 403
+        # читать бухгалтер может
+        g = client.get(f"/api/departments/{dept.id}/company-shares", headers=_h(client, token))
+        assert g.status_code == 200
+
+
+class TestScreenMatchesExcel:
+    """AC 1 и 6: 350000 на 6 компаний — сумма ровно 350000 и на экране, и в Excel.
+
+    Суммы следуют ЗАФИКСИРОВАННЫМ процентам (5 × 16.67% + основная 16.65%), а не
+    идеальной 1/6: иначе ₽ в строке не сходились бы с показанным рядом %. Ровно
+    1/6 (58333×5 + 58335 основной) получается при равных весах — см.
+    TestDistributionRounding.test_350000_on_six_companies. В обоих случаях сумма
+    частей ровно равна итогу, остаток — основной компании.
+    """
+
+    def test_six_equal_shares_sum_exactly(
+        self, client: TestClient, admin, worker, companies, schedule, calendar, db_session
+    ):
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+
+        # Оклад 350000, полная норма → Итого начислено ровно 350000.
+        worker.rate = Decimal("350000")
+        db_session.commit()
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+
+        extra = [Company(code=f"C{i}", name=f"Компания {i}", is_active=True) for i in range(3)]
+        db_session.add_all(extra)
+        db_session.commit()
+        six = companies + extra
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+
+        # «Разнести поровну» между 6 компаниями: 5 × 16.67 + основная 16.65 = 100
+        shares = split_equally([c.id for c in six], main_key=worker.default_company_id)
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+            {"company_id": cid, "percent": str(pct)} for cid, pct in shares.items()
+        ]}, headers=_h(client, token))
+
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert Decimal(row["accrued_total"]) == Decimal("350000")
+        screen = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
+        assert sum(screen.values()) == Decimal("350000")
+        # 16.67% → 58345 у пяти компаний, основная добирает остаток до итога
+        assert sorted(screen.values()) == [Decimal("58275")] + [Decimal("58345")] * 5
+        assert screen[worker.default_company_id] == Decimal("58275")
+        assert len(screen) == 6
+
+        # Excel считает те же суммы (единый источник распределения)
+        x = client.get("/api/timesheet/2026/5/statement/export/excel", headers=_h(client, token))
+        ws = load_workbook(BytesIO(x.content)).active
+        header_row, first_data_row = 4, 5
+        col_by_company = {
+            c.id: idx
+            for idx, cell in enumerate(ws[header_row], start=1)
+            for c in six
+            if cell.value == f"{c.code}\n{c.name}"
+        }
+        excel = {
+            cid: Decimal(str(ws.cell(row=first_data_row, column=col).value))
+            for cid, col in col_by_company.items()
+        }
+        assert excel == screen
+        assert sum(excel.values()) == Decimal("350000")

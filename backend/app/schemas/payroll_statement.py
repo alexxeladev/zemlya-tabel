@@ -11,10 +11,19 @@ class CompanyShareInput(BaseModel):
 
 
 class EmployeeSharesRead(BaseModel):
-    """Проценты распределения по умолчанию из карточки сотрудника."""
+    """Проценты распределения по умолчанию из карточки сотрудника.
+
+    Дополнительно отдаётся дефолт отдела — чтобы в карточке было видно, что
+    при пустом собственном распределении наследуется отдел (ч.3 каскада).
+    """
     employee_id: int
     shares: list[CompanyShareInput]
     percent_sum: Decimal
+    department_id: int | None = None
+    department_name: str | None = None
+    department_shares: list[CompanyShareInput] = []
+    # Своё распределение не задано, а у отдела есть → сотрудник наследует отдел
+    inherits_department: bool = False
 
 
 class EmployeeSharesUpdate(BaseModel):
@@ -70,6 +79,9 @@ class StatementRow(BaseModel):
 
     is_overridden: bool           # проценты распределения переопределены на месяц
     is_auto_distributed: bool     # распределено авто по фактическим часам (ручной % не задан)
+    # Уровень каскада, откуда взято распределение:
+    # month (правка на месяц) > employee (карточка) > department (отдел) > hours (авто)
+    distribution_source: str
     percent_sum: Decimal          # сумма процентов (для подсветки ≠ 100)
     distribution: list[StatementCompanyAmount]
     distribution_total: Decimal

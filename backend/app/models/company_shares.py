@@ -40,6 +40,33 @@ class EmployeeCompanyShare(Base):
     )
 
 
+class DepartmentCompanyShare(Base):
+    """
+    Распределение затрат по юрлицам по умолчанию НА УРОВНЕ ОТДЕЛА
+    (task_distribution_v2 ч.3). Наследуется сотрудниками отдела, у которых нет
+    своего распределения (ни помесячного переопределения, ни процентов в карточке).
+    Каскад: месячный % > карточка > отдел > авто по часам.
+    """
+
+    __tablename__ = "department_company_shares"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    department_id: Mapped[int] = mapped_column(
+        ForeignKey("departments.id"), index=True, nullable=False
+    )
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    percent: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+
+    created_at: Mapped[str] = mapped_column(server_default=func.now())
+    updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+    company: Mapped[Company] = relationship("Company", foreign_keys=[company_id])
+
+    __table_args__ = (
+        UniqueConstraint("department_id", "company_id", name="uq_dept_company_share"),
+    )
+
+
 class CompanyShareOverride(Base):
     """
     Помесячное переопределение распределения по компаниям (гибрид как у займа,

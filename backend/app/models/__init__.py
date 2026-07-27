@@ -1,6 +1,10 @@
 from app.models.audit_log import AuditLog
 from app.models.companies import Company
-from app.models.company_shares import CompanyShareOverride, EmployeeCompanyShare
+from app.models.company_shares import (
+    CompanyShareOverride,
+    DepartmentCompanyShare,
+    EmployeeCompanyShare,
+)
 from app.models.departments import Department
 from app.models.employee_adjustments import AdjustmentKind, EmployeeAdjustment
 from app.models.employees import Employee, EmployeeRole
@@ -16,6 +20,7 @@ __all__ = [
     "Company",
     "CompanyShareOverride",
     "Department",
+    "DepartmentCompanyShare",
     "Employee",
     "EmployeeAdjustment",
     "EmployeeCompanyShare",

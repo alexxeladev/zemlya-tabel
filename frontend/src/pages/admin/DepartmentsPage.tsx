@@ -2,10 +2,15 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { listDepartments, createDepartment, updateDepartment, deleteDepartment } from '../../api/departments'
+import {
+  listDepartments, createDepartment, updateDepartment, deleteDepartment,
+  getDepartmentShares, setDepartmentShares,
+} from '../../api/departments'
+import { listCompanies } from '../../api/companies'
 import { useApi } from '../../hooks/useApi'
 import { toast } from '../../store/toasts'
-import type { Department } from '../../types/api'
+import type { CompanyShare, Department } from '../../types/api'
+import { SharesEditor, type SharesMap } from '../../components/SharesEditor'
 import { PageHeader } from '../../components/PageHeader'
 import { Table, Th, Td } from '../../components/Table'
 import { Badge } from '../../components/Badge'
@@ -22,35 +27,60 @@ type FormData = z.infer<typeof schema>
 
 export function DepartmentsPage() {
   const { data: departments, isLoading, refetch } = useApi(listDepartments)
+  const { data: companies } = useApi(listCompanies)
   const [editTarget, setEditTarget] = useState<Department | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Department | null>(null)
+  // Дефолт распределения по юрлицам для отдела (task_distribution_v2 ч.3)
+  const [shares, setShares] = useState<SharesMap>({})
+  const [sharesKey, setSharesKey] = useState(0)
 
   const form = useForm<FormData>({ resolver: zodResolver(schema) })
 
   const openCreate = () => {
     form.reset({ name: '', code: '' })
+    setShares({})
+    setSharesKey((n) => n + 1)
     setShowCreate(true)
   }
 
   const openEdit = (dept: Department) => {
     setEditTarget(dept)
     form.reset({ name: dept.name, code: dept.code })
+    setShares({})
+    getDepartmentShares(dept.id)
+      .then((d) => {
+        const map: SharesMap = {}
+        for (const s of d.shares) map[s.company_id] = s.percent
+        setShares(map)
+      })
+      .catch(() => {})
+      .finally(() => setSharesKey((n) => n + 1))
   }
 
   const closeModal = () => {
     setShowCreate(false)
     setEditTarget(null)
+    setShares({})
     form.reset()
   }
 
+  const shareList = (): CompanyShare[] =>
+    Object.entries(shares)
+      .filter(([, v]) => (Number(v) || 0) > 0)
+      .map(([cid, v]) => ({ company_id: Number(cid), percent: String(Number(v)) }))
+
   const onSubmit = async (data: FormData) => {
     try {
+      const list = shareList()
       if (editTarget) {
         await updateDepartment(editTarget.id, data)
+        // Пустой список очищает дефолт отдела — сотрудники уходят на авто по часам.
+        await setDepartmentShares(editTarget.id, list)
         toast.success('Отдел обновлён')
       } else {
-        await createDepartment(data)
+        const created = await createDepartment(data)
+        if (list.length > 0) await setDepartmentShares(created.id, list)
         toast.success('Отдел создан')
       }
       closeModal()
@@ -150,6 +180,24 @@ export function DepartmentsPage() {
             {form.formState.errors.code && (
               <p className="text-xs text-red-600">{form.formState.errors.code.message}</p>
             )}
+          </div>
+
+          {/* Дефолт распределения по юрлицам (task_distribution_v2 ч.3) */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+              Распределение по компаниям по умолчанию
+            </p>
+            <SharesEditor
+              companies={companies ?? []}
+              shares={shares}
+              onChange={setShares}
+              resetKey={sharesKey}
+            />
+            <p className="mt-2 text-[11px] text-gray-400">
+              Наследуют сотрудники отдела, у которых НЕ задано своё распределение
+              (в карточке или правкой на месяц). Пусто — распределение считается
+              автоматически по фактическим часам табеля.
+            </p>
           </div>
         </form>
       </Modal>
