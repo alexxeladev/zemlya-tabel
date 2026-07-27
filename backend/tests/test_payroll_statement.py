@@ -13,6 +13,7 @@ from app.models.employees import Employee
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
+from app.services.distribution import distribute, split_equally
 from app.services.payroll_statement import distribute_by_percent
 from tests.conftest import get_token
 
@@ -48,6 +49,73 @@ class TestDistributeByPercent:
 
     def test_empty_shares(self):
         assert distribute_by_percent(Decimal("1000"), {}) == {}
+
+
+# ── Unit: единый модуль распределения (task_distribution_v2 ч.1) ───────────────
+
+class TestDistributionRounding:
+    def test_350000_on_six_companies(self):
+        """Пример из ТЗ: 350000 на 6 равных долей → 5×58333 + основная 58335."""
+        shares = {c: Decimal("16.67") for c in range(1, 7)}
+        result = distribute(Decimal("350000"), shares, main_key=3)
+        assert sum(result.values()) == Decimal("350000")
+        assert result[3] == Decimal("58335")
+        assert sorted(result.values()) == [Decimal("58333")] * 5 + [Decimal("58335")]
+
+    def test_remainder_goes_to_main_company(self):
+        shares = {1: Decimal("1"), 2: Decimal("1"), 3: Decimal("1")}
+        result = distribute(Decimal("100"), shares, main_key=2)
+        assert sum(result.values()) == Decimal("100")
+        assert result[2] == Decimal("34")
+        assert result[1] == result[3] == Decimal("33")
+
+    def test_remainder_to_largest_share_when_main_absent(self):
+        """Основная компания не входит в распределение → остаток компании с наибольшей долей."""
+        shares = {1: Decimal("20"), 2: Decimal("50"), 3: Decimal("30")}
+        result = distribute(Decimal("1001"), shares, main_key=99)
+        assert sum(result.values()) == Decimal("1001")
+        assert result[2] == Decimal("501")  # наибольшая доля забрала остаток
+        assert result[1] == Decimal("200")
+        assert result[3] == Decimal("300")
+
+    def test_sum_exact_for_many_random_percents(self):
+        shares = {i: Decimal("100") / 7 for i in range(1, 8)}
+        for total in (Decimal("1"), Decimal("999"), Decimal("123457"), Decimal("350000")):
+            result = distribute(total, shares, main_key=1)
+            assert sum(result.values()) == total
+
+    def test_statement_uses_same_function(self):
+        """distribute_by_percent — тонкая обёртка над общим distribute."""
+        shares = {1: Decimal("16.67"), 2: Decimal("16.67"), 3: Decimal("16.67"),
+                  4: Decimal("16.67"), 5: Decimal("16.67"), 6: Decimal("16.65")}
+        assert (distribute_by_percent(Decimal("350000"), shares, 1)
+                == distribute(Decimal("350000"), shares, 1))
+
+
+class TestSplitEqually:
+    def test_six_companies_sum_100(self):
+        """Пример из ТЗ: 6 компаний → по 16.67, основная 16.65, сумма ровно 100."""
+        result = split_equally([1, 2, 3, 4, 5, 6], main_key=6)
+        assert sum(result.values()) == Decimal("100")
+        assert result[6] == Decimal("16.65")
+        assert result[1] == Decimal("16.67")
+
+    def test_three_companies(self):
+        result = split_equally([10, 20, 30], main_key=10)
+        assert sum(result.values()) == Decimal("100")
+        assert result[10] == Decimal("33.34")
+        assert result[20] == result[30] == Decimal("33.33")
+
+    def test_single_company_gets_all(self):
+        assert split_equally([7]) == {7: Decimal("100")}
+
+    def test_empty_selection(self):
+        assert split_equally([]) == {}
+
+    def test_duplicates_ignored(self):
+        result = split_equally([1, 1, 2])
+        assert len(result) == 2
+        assert sum(result.values()) == Decimal("100")
 
 
 # ── Integration fixtures ──────────────────────────────────────────────────────

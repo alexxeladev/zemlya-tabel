@@ -27,13 +27,14 @@ from app.schemas.payroll_statement import (
     StatementCompanyRef,
     StatementRow,
 )
+from app.services.distribution import distribute
 from app.services.payout import (
     compute_payout,
     load_adjustment_sums,
     load_loan_overrides,
     loan_month_state,
 )
-from app.services.payroll import _distribute_whole_rubles, calculate_employee_payroll
+from app.services.payroll import calculate_employee_payroll
 
 _ZERO = Decimal("0")
 _HUNDRED = Decimal("100")
@@ -197,16 +198,13 @@ def load_share_overrides(
 
 
 def distribute_by_percent(
-    total: Decimal, shares: dict[int, Decimal]
+    total: Decimal, shares: dict[int, Decimal], main_company_id: int | None = None
 ) -> dict[int, Decimal]:
     """Распределяет total по компаниям пропорционально процентам так, чтобы сумма
-    частей была РОВНО равна total (метод наибольших остатков). Нормализует, если
-    сумма процентов ≠ 100 (расхождение относится на компании с наибольшим остатком).
+    частей была РОВНО равна total. Вся логика округления — в `services.distribution`
+    (один источник для экрана, Excel и фронта). Нормализует, если Σ% ≠ 100.
     """
-    positive = {cid: pct for cid, pct in shares.items() if pct > _ZERO}
-    if not positive:
-        return {}
-    return _distribute_whole_rubles(total, positive)
+    return distribute(total, shares, main_company_id)
 
 
 def _auto_shares_by_hours(
@@ -217,15 +215,18 @@ def _auto_shares_by_hours(
     """Авто-распределение, когда ручной % не задан: пропорционально фактическим
     часам сотрудника по компаниям (из табеля).
 
-    Возвращает (shares %, amounts ₽). Доли в рублях — методом наибольших остатков
-    (сумма частей = total). Проценты — справочные (часы/всего × 100, до сотых).
+    Возвращает (shares %, amounts ₽). Доли в рублях — через общий `distribute`
+    (сумма частей = total, остаток основной компании). Проценты — справочные
+    (часы/всего × 100, до сотых).
     Если часов нет — вся сумма на основную компанию (default_company).
     """
     company_hours = {bd.company_id: bd.hours for bd in breakdown if bd.hours > _ZERO}
     total_hours = sum(company_hours.values(), _ZERO)
 
     if total_hours > _ZERO:
-        amounts = _distribute_whole_rubles(total, company_hours)
+        amounts = distribute(
+            total, company_hours, main_company.id if main_company else None
+        )
         shares = {
             cid: (h / total_hours * _HUNDRED).quantize(Decimal("0.01"))
             for cid, h in company_hours.items()
@@ -280,7 +281,9 @@ def build_payroll_statement(
             # Ручное распределение (переопределение на месяц или дефолт из карточки)
             is_auto = False
             shares = manual_shares
-            dist_amounts = distribute_by_percent(accrued, shares)
+            dist_amounts = distribute_by_percent(
+                accrued, shares, main_company.id if main_company else None
+            )
         else:
             # Ручной % не задан → авто-распределение по фактическим часам табеля
             is_auto = True

@@ -5,6 +5,7 @@ import type { CompanyShare, Department, PayrollStatement, StatementRow } from '.
 import { timesheetApi } from '../../api/timesheet'
 import { apiClient } from '../../api/client'
 import { formatHours, formatMoney } from '../../utils/money'
+import { distribute } from '../../utils/distribution'
 
 const MONTH_NAMES = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -92,6 +93,23 @@ export function PayrollPage() {
   const isAutoRow = (row: StatementRow): boolean =>
     row.is_auto_distributed && rowPercentSum(row.employee_id) === 0
 
+  // Суммы распределения строки. Считаются ТЕМ ЖЕ алгоритмом, что на бэке
+  // (utils/distribution ≡ services/distribution.py): сумма долей ровно равна
+  // «Итого начислено», остаток — основной компании. Иначе экран и Excel
+  // разъезжаются (350010 против 350000).
+  const rowAmounts = (row: StatementRow): Record<number, number> => {
+    if (isAutoRow(row)) {
+      const m: Record<number, number> = {}
+      for (const d of row.distribution) m[d.company_id] = num(d.amount)
+      return m
+    }
+    const weights: Record<number, number> = {}
+    for (const [cid, v] of Object.entries(edits[row.employee_id] ?? {})) {
+      if (num(v) > 0) weights[Number(cid)] = num(v)
+    }
+    return distribute(num(row.accrued_total), weights, row.main_company_id)
+  }
+
   const saveRow = async (row: StatementRow) => {
     const e = edits[row.employee_id] ?? {}
     const shares: CompanyShare[] = Object.entries(e)
@@ -171,18 +189,9 @@ export function PayrollPage() {
       acc.accrued += num(row.accrued_total)
       acc.deductions += num(row.deductions)
       acc.net += num(row.net_payout)
-      const accrued = num(row.accrued_total)
-      if (isAutoRow(row)) {
-        // Авто-распределение по часам — берём суммы, посчитанные бэком.
-        for (const d of row.distribution) {
-          if (d.company_id in acc.dist) acc.dist[d.company_id] += num(d.amount)
-        }
-      } else {
-        const e = edits[row.employee_id] ?? {}
-        for (const c of companies) {
-          const pct = num(e[c.id])
-          if (pct > 0) acc.dist[c.id] += Math.round((accrued * pct) / 100)
-        }
+      const amounts = rowAmounts(row)
+      for (const [cid, amt] of Object.entries(amounts)) {
+        if (Number(cid) in acc.dist) acc.dist[Number(cid)] += amt
       }
     }
     return acc
@@ -291,6 +300,7 @@ export function PayrollPage() {
                 const auto = isAutoRow(row)
                 const autoByCompany: Record<number, { percent: string; amount: string }> = {}
                 if (auto) for (const d of row.distribution) autoByCompany[d.company_id] = d
+                const amounts = rowAmounts(row)
                 let liveDistTotal = 0
                 return (
                   <tr key={row.employee_id} className="border-b border-gray-100 hover:bg-gray-50/60">
@@ -325,9 +335,7 @@ export function PayrollPage() {
                       const autoPctLabel = autoEntry
                         ? String(Math.round(num(autoEntry.percent) * 100) / 100)
                         : '0'
-                      const amount = num(pct) > 0
-                        ? Math.round((accrued * num(pct)) / 100)
-                        : (autoEntry ? num(autoEntry.amount) : 0)
+                      const amount = amounts[c.id] ?? 0
                       liveDistTotal += amount
                       return (
                         <td key={c.id} className="px-1.5 py-1 text-center bg-indigo-50/40">
