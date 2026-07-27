@@ -26,6 +26,7 @@ from app.schemas.payroll_statement import (
     StatementCompanyRef,
     StatementRow,
 )
+from app.services.absences import get_month_absences
 from app.services.company_shares import (
     load_department_shares,
     load_employee_shares,
@@ -67,6 +68,12 @@ def build_payroll_summary(
     for e in entries:
         entries_by_employee.setdefault(e.employee_id, []).append(e)
 
+    # Отсутствия месяца (ОТ/ДО/Б/Н) — дают отпускные/больничные и уменьшают
+    # оклад пропорционально (в дне отсутствия часов нет).
+    absences_by_employee: dict[int, list] = {}
+    for a in get_month_absences(db, employees, year, month):
+        absences_by_employee.setdefault(a.employee_id, []).append(a)
+
     emp_ids = [emp.id for emp in employees]
     adjustment_sums = load_adjustment_sums(db, emp_ids, year, month)
     loan_overrides = load_loan_overrides(db, emp_ids)
@@ -75,7 +82,8 @@ def build_payroll_summary(
     for emp in employees:
         emp_entries = entries_by_employee.get(emp.id, [])
         p = calculate_employee_payroll(
-            emp, emp_entries, calendar_data, year, month, companies_by_id
+            emp, emp_entries, calendar_data, year, month, companies_by_id,
+            absences=absences_by_employee.get(emp.id, []),
         )
 
         sums = adjustment_sums.get(emp.id, {})
@@ -125,6 +133,14 @@ def build_payroll_summary(
             overtime_amount=p.overtime_amount,
             holiday_amount=p.holiday_amount,
             total_amount=p.total_amount,
+            vacation_days=p.vacation_days,
+            unpaid_days=p.unpaid_days,
+            sick_days=p.sick_days,
+            absent_days=p.absent_days,
+            vacation_paid_days=p.vacation_paid_days,
+            sick_paid_days=p.sick_paid_days,
+            vacation_amount=p.vacation_amount,
+            sick_amount=p.sick_amount,
             weekend_pay_type=emp.weekend_pay_type,
             weekend_coefficient=emp.weekend_coefficient,
             weekend_fixed_rate=emp.weekend_fixed_rate,
@@ -151,6 +167,8 @@ def build_payroll_summary(
         total_base_amount=sum((p.base_amount for p in payroll_items), _ZERO),
         total_overtime_amount=sum((p.overtime_amount for p in payroll_items), _ZERO),
         total_holiday_amount=sum((p.holiday_amount for p in payroll_items), _ZERO),
+        total_vacation_amount=sum((p.vacation_amount for p in payroll_items), _ZERO),
+        total_sick_amount=sum((p.sick_amount for p in payroll_items), _ZERO),
         grand_total=sum((p.total_amount for p in payroll_items), _ZERO),
         total_premium=sum((p.premium_amount for p in payroll_items), _ZERO),
         total_kpi=sum((p.kpi_amount for p in payroll_items), _ZERO),
@@ -271,7 +289,12 @@ def build_payroll_statement(
     for p in summary.employees:
         emp = emp_by_id.get(p.employee_id)
         base_salary = p.base_amount + p.holiday_amount
-        accrued = base_salary + p.overtime_amount + p.premium_amount + p.kpi_amount
+        # Отпускные/больничные — часть «Итого начислено» и, значит, базы
+        # распределения по юрлицам (само отсутствие к юрлицу не привязано).
+        accrued = (
+            base_salary + p.overtime_amount + p.vacation_amount + p.sick_amount
+            + p.premium_amount + p.kpi_amount
+        )
         main_company = emp.default_company if emp else None
 
         shares, source = resolve_shares(
@@ -328,6 +351,12 @@ def build_payroll_statement(
             premium_amount=p.premium_amount,
             kpi_amount=p.kpi_amount,
             premium_extra_amount=_ZERO,
+            vacation_days=p.vacation_days,
+            sick_days=p.sick_days,
+            unpaid_days=p.unpaid_days,
+            absent_days=p.absent_days,
+            vacation_amount=p.vacation_amount,
+            sick_amount=p.sick_amount,
             accrued_total=accrued,
             deductions=p.total_deductions,
             net_payout=p.net_payout,
@@ -348,6 +377,8 @@ def build_payroll_statement(
         rows=rows,
         total_overtime_amount=sum((r.overtime_amount for r in rows), _ZERO),
         total_base_salary=sum((r.base_salary for r in rows), _ZERO),
+        total_vacation_amount=sum((r.vacation_amount for r in rows), _ZERO),
+        total_sick_amount=sum((r.sick_amount for r in rows), _ZERO),
         total_premium=sum((r.premium_amount for r in rows), _ZERO),
         total_kpi=sum((r.kpi_amount for r in rows), _ZERO),
         total_accrued=sum((r.accrued_total for r in rows), _ZERO),

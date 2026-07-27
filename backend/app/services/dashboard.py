@@ -28,6 +28,7 @@ from app.schemas.dashboard import (
     PeriodStatusRowRead,
     TrendPointRead,
 )
+from app.services.absences import get_month_absences
 from app.services.payroll import EmployeePayroll, calculate_employee_payroll
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 
@@ -76,11 +77,18 @@ def _month_payrolls(
     for e in entries:
         by_emp.setdefault(e.employee_id, []).append(e)
 
+    # Отсутствия — тоже часть ФОТ (отпускные/больничные), иначе дашборд
+    # разойдётся с /payroll у сотрудников с ОТ/Б.
+    absences_by_emp: dict[int, list] = {}
+    for a in get_month_absences(db, employees, year, month):
+        absences_by_emp.setdefault(a.employee_id, []).append(a)
+
     return [
         (
             emp,
             calculate_employee_payroll(
-                emp, by_emp.get(emp.id, []), calendar_data, year, month, companies_by_id
+                emp, by_emp.get(emp.id, []), calendar_data, year, month, companies_by_id,
+                absences=absences_by_emp.get(emp.id, []),
             ),
         )
         for emp in employees

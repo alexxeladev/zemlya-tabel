@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 
+from app.models.employee_absences import ABSENCE_CODES, AbsenceKind
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.calendar import (
@@ -19,6 +20,10 @@ _HALF = Decimal("0.5")
 _ONE_HALF = Decimal("1.5")
 _HUNDRED = Decimal("100")
 _PERCENT_Q = Decimal("0.1")
+
+# День отпуска/больничного оплачивается как стандартная смена 8 ч
+# (формула образца финдира: оклад / норма_часов × дни × 8).
+ABSENCE_DAY_HOURS = Decimal("8")
 
 
 def _round(value: Decimal) -> Decimal:
@@ -120,6 +125,20 @@ def daily_overtime_hours(
     return overtime
 
 
+def absence_pay(
+    hourly_rate: Decimal | None, paid_days: int, day_hours: Decimal = ABSENCE_DAY_HOURS
+) -> Decimal:
+    """
+    Оплата дней отпуска/больничного: `оклад / норма_часов × (дни × 8)`.
+
+    Больничный в этой части — 100% по той же формуле, без годового лимита
+    (лимит — отдельная задача, часть 2).
+    """
+    if hourly_rate is None or paid_days <= 0:
+        return _ZERO
+    return hourly_rate * day_hours * Decimal(paid_days)
+
+
 @dataclass
 class CompanyBreakdown:
     company_id: int
@@ -158,6 +177,17 @@ class EmployeePayroll:
     holiday_amount: Decimal
     total_amount: Decimal
 
+    # Отсутствия (ОТ/ДО/Б/Н). *_days — сколько дней отмечено кодом,
+    # *_paid_days — сколько из них рабочих по календарю (за них и платим).
+    vacation_days: int
+    unpaid_days: int
+    sick_days: int
+    absent_days: int
+    vacation_paid_days: int
+    sick_paid_days: int
+    vacation_amount: Decimal
+    sick_amount: Decimal
+
     breakdown_by_company: list[CompanyBreakdown]
     is_calculable: bool
     reason_if_not_calculable: str | None
@@ -170,14 +200,30 @@ def calculate_employee_payroll(
     year: int,
     month: int,
     companies_by_id: dict[int, tuple[str, str]] | None = None,
+    absences: list | None = None,
 ) -> EmployeePayroll:
     """
     Чистая функция: считает зарплату сотрудника за период.
     Не лезет в БД, принимает все данные на вход.
     companies_by_id: dict[company_id → (code, name)]
+    absences: список EmployeeAbsence сотрудника за месяц (ОТ/ДО/Б/Н).
     """
     if companies_by_id is None:
         companies_by_id = {}
+
+    # ── Отсутствия: дни по видам + сколько из них рабочих по календарю ────────
+    # Норма от отсутствий НЕ меняется, факт часов — тоже (в день отсутствия
+    # часов нет по инварианту взаимоисключения). Меняются только начисления.
+    absence_days: dict[str, int] = {kind: 0 for kind in ABSENCE_CODES}
+    absence_paid_days: dict[str, int] = {kind: 0 for kind in ABSENCE_CODES}
+    for a in absences or []:
+        absence_days[a.kind] = absence_days.get(a.kind, 0) + 1
+        # Платим только за рабочие дни: выходной/праздник в норму не входит,
+        # иначе «оклад за отработанное + отпускные» вылезет за полный оклад.
+        if calendar_data is None or not is_holiday(
+            calendar_data, a.work_date.month, a.work_date.day
+        ):
+            absence_paid_days[a.kind] = absence_paid_days.get(a.kind, 0) + 1
 
     # Aggregate hours by company and by date; detect holiday hours per company.
     company_hours: dict[int, Decimal] = {}
@@ -270,19 +316,38 @@ def calculate_employee_payroll(
     overtime_amount = _ZERO
     holiday_amount = _ZERO
 
+    vacation_amount = _ZERO
+    sick_amount = _ZERO
+
     if is_calculable and rate is not None and norm_hours is not None and norm_hours > _ZERO:
         hourly_rate = rate / norm_hours
-        # Оклад от зачётных будних часов, но не больше полного оклада.
+        # Оклад ПРОПОРЦИОНАЛЬНО отработанному: зачётные будние часы / норма.
+        # Дни отсутствия часов не дают, поэтому оклад за них не начисляется —
+        # они оплачиваются отдельно (отпускные/больничные) и сумма не задваивается.
         base_amount = rate * min(_ONE, regular_credited_hours / norm_hours)
         # Переработка: (оклад/норма) × часы × коэффициент сотрудника (0/1/1.5).
         overtime_amount = overtime_hours * hourly_rate * _overtime_coeff(employee)
         # Праздничные/выходные — по персональным настройкам сотрудника (правка 3.9-3).
         holiday_amount = _weekend_pay(employee, total_holiday_hours, hourly_rate)
+        # Отпуск и больничный — отдельные начисления по «дни × 8».
+        vacation_amount = absence_pay(
+            hourly_rate, absence_paid_days[AbsenceKind.vacation.value]
+        )
+        sick_amount = absence_pay(
+            hourly_rate, absence_paid_days[AbsenceKind.sick.value]
+        )
 
     base_amount = _round(base_amount)
     overtime_amount = _round(overtime_amount)
     holiday_amount = _round(holiday_amount)
-    total_amount = base_amount + overtime_amount + holiday_amount
+    vacation_amount = _round(vacation_amount)
+    sick_amount = _round(sick_amount)
+    # Итог включает оплату отсутствий; распределение по компаниям (breakdown)
+    # ниже — только по «рабочим» категориям: отсутствие к юрлицу не привязано,
+    # разнесение отпускных по юрлицам делает ведомость (проценты каскада).
+    total_amount = (
+        base_amount + overtime_amount + holiday_amount + vacation_amount + sick_amount
+    )
 
     # Company breakdown — суммы частей по каждой категории сходятся с итогом
     breakdown: list[CompanyBreakdown] = []
@@ -332,6 +397,14 @@ def calculate_employee_payroll(
         overtime_amount=overtime_amount,
         holiday_amount=holiday_amount,
         total_amount=total_amount,
+        vacation_days=absence_days[AbsenceKind.vacation.value],
+        unpaid_days=absence_days[AbsenceKind.unpaid.value],
+        sick_days=absence_days[AbsenceKind.sick.value],
+        absent_days=absence_days[AbsenceKind.absent.value],
+        vacation_paid_days=absence_paid_days[AbsenceKind.vacation.value],
+        sick_paid_days=absence_paid_days[AbsenceKind.sick.value],
+        vacation_amount=vacation_amount,
+        sick_amount=sick_amount,
         breakdown_by_company=breakdown,
         is_calculable=is_calculable,
         reason_if_not_calculable=reason,

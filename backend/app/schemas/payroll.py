@@ -40,6 +40,17 @@ class EmployeePayrollRead(BaseModel):
     holiday_amount: Decimal
     total_amount: Decimal
 
+    # Отсутствия (ОТ/ДО/Б/Н). *_paid_days — рабочие дни из отмеченных,
+    # именно за них считается оплата «оклад/норма × дни × 8».
+    vacation_days: int = 0
+    unpaid_days: int = 0
+    sick_days: int = 0
+    absent_days: int = 0
+    vacation_paid_days: int = 0
+    sick_paid_days: int = 0
+    vacation_amount: Decimal = Decimal("0")
+    sick_amount: Decimal = Decimal("0")
+
     # Оплата выходных/праздничных (задача 3.11a п.3 — отображение коэффициента)
     weekend_pay_type: Optional[Literal["coefficient", "fixed_rate"]] = None
     weekend_coefficient: Optional[Decimal] = None
@@ -70,6 +81,8 @@ class PayrollSummaryRead(BaseModel):
     total_base_amount: Decimal
     total_overtime_amount: Decimal
     total_holiday_amount: Decimal
+    total_vacation_amount: Decimal = Decimal("0")
+    total_sick_amount: Decimal = Decimal("0")
     grand_total: Decimal
     total_premium: Decimal = Decimal("0")
     total_kpi: Decimal = Decimal("0")

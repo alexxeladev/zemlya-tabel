@@ -73,7 +73,16 @@ class StatementRow(BaseModel):
     kpi_amount: Decimal           # KPI
     premium_extra_amount: Decimal  # Премия (доп.) — пока не моделируется, плейсхолдер
 
-    accrued_total: Decimal        # Итого начислено = оклад + переработка + премии + KPI
+    # Отсутствия: дни и оплата (ДО/Н — только дни, денег не дают)
+    vacation_days: int = 0
+    sick_days: int = 0
+    unpaid_days: int = 0
+    absent_days: int = 0
+    vacation_amount: Decimal = Decimal("0")
+    sick_amount: Decimal = Decimal("0")
+
+    # Итого начислено = оклад + переработка + отпускные + больничные + премии + KPI
+    accrued_total: Decimal
     deductions: Decimal           # Аванс/Удержано (займ + аванс)
     net_payout: Decimal           # К выплате
 
@@ -98,6 +107,8 @@ class PayrollStatementRead(BaseModel):
 
     total_overtime_amount: Decimal
     total_base_salary: Decimal
+    total_vacation_amount: Decimal = Decimal("0")
+    total_sick_amount: Decimal = Decimal("0")
     total_premium: Decimal
     total_kpi: Decimal
     total_accrued: Decimal
