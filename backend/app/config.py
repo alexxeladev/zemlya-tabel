@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     CORS_ORIGINS: str = "http://localhost:5173"
 
+    # Годовой лимит оплачиваемого больничного (дней в календарном году).
+    # Первые N дней — 100%, сверх — за свой счёт (задача «Отсутствия», ч.2).
+    SICK_LEAVE_LIMIT_DAYS: int = 10
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

@@ -7,6 +7,7 @@ from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 from app.models.employee_absences import ABSENCE_CODES, AbsenceKind
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
+from app.services.absences import sick_limit_days, split_sick_dates_by_limit
 from app.services.calendar import (
     is_holiday,
     is_short_day,
@@ -188,6 +189,12 @@ class EmployeePayroll:
     vacation_amount: Decimal
     sick_amount: Decimal
 
+    # Годовой лимит больничного (часть 2): сколько оплачено, сколько сверх лимита
+    sick_limit_days: int
+    sick_days_used_before: int
+    sick_unpaid_days: int
+    sick_limit_remaining: int
+
     breakdown_by_company: list[CompanyBreakdown]
     is_calculable: bool
     reason_if_not_calculable: str | None
@@ -201,29 +208,52 @@ def calculate_employee_payroll(
     month: int,
     companies_by_id: dict[int, tuple[str, str]] | None = None,
     absences: list | None = None,
+    sick_days_used_before: int = 0,
+    sick_limit: int | None = None,
 ) -> EmployeePayroll:
     """
     Чистая функция: считает зарплату сотрудника за период.
     Не лезет в БД, принимает все данные на вход.
     companies_by_id: dict[company_id → (code, name)]
     absences: список EmployeeAbsence сотрудника за месяц (ОТ/ДО/Б/Н).
+    sick_days_used_before: оплачиваемых дней больничного израсходовано в этом
+        году ДО текущего месяца (годовой лимит, часть 2) — считает вызывающий
+        код по всем месяцам года, здесь только применяется остаток.
+    sick_limit: годовой лимит дней; None — из настроек.
     """
     if companies_by_id is None:
         companies_by_id = {}
+    if sick_limit is None:
+        sick_limit = sick_limit_days()
 
     # ── Отсутствия: дни по видам + сколько из них рабочих по календарю ────────
     # Норма от отсутствий НЕ меняется, факт часов — тоже (в день отсутствия
     # часов нет по инварианту взаимоисключения). Меняются только начисления.
     absence_days: dict[str, int] = {kind: 0 for kind in ABSENCE_CODES}
     absence_paid_days: dict[str, int] = {kind: 0 for kind in ABSENCE_CODES}
+    sick_dates: list[date] = []
     for a in absences or []:
         absence_days[a.kind] = absence_days.get(a.kind, 0) + 1
+        if a.kind == AbsenceKind.sick.value:
+            sick_dates.append(a.work_date)
+            continue  # больничный считаем ниже, через годовой лимит
         # Платим только за рабочие дни: выходной/праздник в норму не входит,
         # иначе «оклад за отработанное + отпускные» вылезет за полный оклад.
         if calendar_data is None or not is_holiday(
             calendar_data, a.work_date.month, a.work_date.day
         ):
             absence_paid_days[a.kind] = absence_paid_days.get(a.kind, 0) + 1
+
+    # Больничный: первые sick_limit рабочих дней в году — 100%, дальше 0.
+    # Хронология внутри месяца и между месяцами — по дате (см. services.absences).
+    sick_paid_dates, sick_over_dates = split_sick_dates_by_limit(
+        sick_dates, calendar_data, sick_limit, sick_days_used_before,
+    )
+    absence_paid_days[AbsenceKind.sick.value] = len(sick_paid_dates)
+    sick_unpaid_days = len(sick_over_dates)
+    sick_limit_remaining = max(
+        0, sick_limit - max(0, sick_days_used_before) - len(sick_paid_dates)
+    )
 
     # Aggregate hours by company and by date; detect holiday hours per company.
     company_hours: dict[int, Decimal] = {}
@@ -405,6 +435,10 @@ def calculate_employee_payroll(
         sick_paid_days=absence_paid_days[AbsenceKind.sick.value],
         vacation_amount=vacation_amount,
         sick_amount=sick_amount,
+        sick_limit_days=sick_limit,
+        sick_days_used_before=max(0, sick_days_used_before),
+        sick_unpaid_days=sick_unpaid_days,
+        sick_limit_remaining=sick_limit_remaining,
         breakdown_by_company=breakdown,
         is_calculable=is_calculable,
         reason_if_not_calculable=reason,

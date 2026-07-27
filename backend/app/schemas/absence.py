@@ -15,6 +15,8 @@ class AbsenceRead(BaseModel):
     work_date: date
     kind: AbsenceKindLiteral
     code: str  # ОТ / ДО / Б / Н — для отображения в табеле и Excel
+    # Больничный сверх годового лимита — отмечен, но не оплачивается (ч.2)
+    over_limit: bool = False
 
 
 class AbsenceInput(BaseModel):

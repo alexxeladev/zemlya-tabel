@@ -43,7 +43,13 @@ from app.schemas.timesheet_period import (
     TimesheetPeriodRead,
 )
 from app.models.company_shares import CompanyShareOverride
-from app.services.absences import absence_code, get_month_absences, set_absence
+from app.models.production_calendars import ProductionCalendar
+from app.services.absences import (
+    absence_code,
+    get_month_absences,
+    over_limit_sick_dates,
+    set_absence,
+)
 from app.services.payroll_statement import (
     build_payroll_statement,
     build_payroll_summary,
@@ -355,12 +361,19 @@ def get_month(
     entries = get_month_entries(db, employees, year, month)
     periods = _build_periods_for_response(db, employees, year, month, actor)
     extra_companies = compute_extra_companies_by_employee(employees, entries)
+    # Больничные сверх годового лимита помечаем сразу в выдаче: лимит считается
+    # хронологически по всему году, ячейка сама этого знать не может.
+    cal_for_year = db.query(ProductionCalendar).filter_by(year=year).first()
+    over_limit = over_limit_sick_dates(
+        db, [e.id for e in employees], year, cal_for_year.data if cal_for_year else None,
+    )
     absences = [
         AbsenceRead(
             employee_id=a.employee_id,
             work_date=a.work_date,
             kind=a.kind,
             code=absence_code(a.kind),
+            over_limit=a.work_date in over_limit.get(a.employee_id, ()),
         )
         for a in get_month_absences(db, employees, year, month)
     ]

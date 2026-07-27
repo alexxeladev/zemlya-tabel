@@ -80,6 +80,10 @@ class StatementRow(BaseModel):
     absent_days: int = 0
     vacation_amount: Decimal = Decimal("0")
     sick_amount: Decimal = Decimal("0")
+    # Годовой лимит больничного (часть 2)
+    sick_limit_days: int = 0
+    sick_unpaid_days: int = 0
+    sick_limit_remaining: int = 0
 
     # Итого начислено = оклад + переработка + отпускные + больничные + премии + KPI
     accrued_total: Decimal

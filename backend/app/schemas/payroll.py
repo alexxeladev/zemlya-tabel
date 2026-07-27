@@ -51,6 +51,13 @@ class EmployeePayrollRead(BaseModel):
     vacation_amount: Decimal = Decimal("0")
     sick_amount: Decimal = Decimal("0")
 
+    # Годовой лимит больничного (часть 2): израсходовано до месяца, сверх лимита
+    # в этом месяце и остаток на конец месяца.
+    sick_limit_days: int = 0
+    sick_days_used_before: int = 0
+    sick_unpaid_days: int = 0
+    sick_limit_remaining: int = 0
+
     # Оплата выходных/праздничных (задача 3.11a п.3 — отображение коэффициента)
     weekend_pay_type: Optional[Literal["coefficient", "fixed_rate"]] = None
     weekend_coefficient: Optional[Decimal] = None

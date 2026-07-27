@@ -26,7 +26,7 @@ from app.schemas.payroll_statement import (
     StatementCompanyRef,
     StatementRow,
 )
-from app.services.absences import get_month_absences
+from app.services.absences import get_month_absences, sick_days_used_before_month
 from app.services.company_shares import (
     load_department_shares,
     load_employee_shares,
@@ -77,6 +77,11 @@ def build_payroll_summary(
     emp_ids = [emp.id for emp in employees]
     adjustment_sums = load_adjustment_sums(db, emp_ids, year, month)
     loan_overrides = load_loan_overrides(db, emp_ids)
+    # Годовой лимит больничного: сколько оплачиваемых дней Б уже израсходовано
+    # с 1 января до этого месяца (часть 2).
+    sick_used_before = sick_days_used_before_month(
+        db, emp_ids, year, month, calendar_data
+    )
 
     payroll_items: list[EmployeePayrollRead] = []
     for emp in employees:
@@ -84,6 +89,7 @@ def build_payroll_summary(
         p = calculate_employee_payroll(
             emp, emp_entries, calendar_data, year, month, companies_by_id,
             absences=absences_by_employee.get(emp.id, []),
+            sick_days_used_before=sick_used_before.get(emp.id, 0),
         )
 
         sums = adjustment_sums.get(emp.id, {})
@@ -141,6 +147,10 @@ def build_payroll_summary(
             sick_paid_days=p.sick_paid_days,
             vacation_amount=p.vacation_amount,
             sick_amount=p.sick_amount,
+            sick_limit_days=p.sick_limit_days,
+            sick_days_used_before=p.sick_days_used_before,
+            sick_unpaid_days=p.sick_unpaid_days,
+            sick_limit_remaining=p.sick_limit_remaining,
             weekend_pay_type=emp.weekend_pay_type,
             weekend_coefficient=emp.weekend_coefficient,
             weekend_fixed_rate=emp.weekend_fixed_rate,
@@ -357,6 +367,9 @@ def build_payroll_statement(
             absent_days=p.absent_days,
             vacation_amount=p.vacation_amount,
             sick_amount=p.sick_amount,
+            sick_limit_days=p.sick_limit_days,
+            sick_unpaid_days=p.sick_unpaid_days,
+            sick_limit_remaining=p.sick_limit_remaining,
             accrued_total=accrued,
             deductions=p.total_deductions,
             net_payout=p.net_payout,
