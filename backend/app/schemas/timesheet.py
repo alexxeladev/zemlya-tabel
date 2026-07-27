@@ -4,6 +4,7 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.absence import AbsenceRead
 from app.schemas.company import CompanyRead
 from app.schemas.employee import EmployeeRead
 from app.schemas.payout import AdjustmentRead
@@ -41,6 +42,8 @@ class TimesheetMonthResponse(BaseModel):
     entries: list[TimesheetEntryRead]
     periods: list[TimesheetPeriodRead]
     extra_companies_by_employee: dict[int, list[int]] = {}
+    # Коды отсутствий (ОТ/ДО/Б/Н) — видны всем, включая employee (свои дни)
+    absences: list[AbsenceRead] = []
     payroll: PayrollSummaryRead | None = None
     adjustments: list[AdjustmentRead] = []
 

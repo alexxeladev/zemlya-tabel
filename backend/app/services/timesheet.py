@@ -104,6 +104,13 @@ def _upsert_cell_no_commit(
         .first()
     )
 
+    # Взаимоисключение часы/код отсутствия: часы в дне снимают код (день стал
+    # рабочим). Обратное направление — в services.absences.set_absence.
+    if hours != Decimal("0"):
+        from app.services.absences import delete_absence_for_day
+
+        delete_absence_for_day(db, actor, employee_id, work_date)
+
     if hours == Decimal("0"):
         if existing:
             log_action(

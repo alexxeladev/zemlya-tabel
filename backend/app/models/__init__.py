@@ -6,6 +6,12 @@ from app.models.company_shares import (
     EmployeeCompanyShare,
 )
 from app.models.departments import Department
+from app.models.employee_absences import (
+    ABSENCE_CODES,
+    PAID_ABSENCE_KINDS,
+    AbsenceKind,
+    EmployeeAbsence,
+)
 from app.models.employee_adjustments import AdjustmentKind, EmployeeAdjustment
 from app.models.employees import Employee, EmployeeRole
 from app.models.loan_deductions import LoanDeduction
@@ -15,6 +21,9 @@ from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
 
 __all__ = [
+    "ABSENCE_CODES",
+    "PAID_ABSENCE_KINDS",
+    "AbsenceKind",
     "AdjustmentKind",
     "AuditLog",
     "Company",
@@ -22,6 +31,7 @@ __all__ = [
     "Department",
     "DepartmentCompanyShare",
     "Employee",
+    "EmployeeAbsence",
     "EmployeeAdjustment",
     "EmployeeCompanyShare",
     "EmployeeRole",

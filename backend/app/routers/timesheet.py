@@ -14,6 +14,7 @@ from app.models.employee_adjustments import EmployeeAdjustment
 from app.models.employees import Employee
 from app.models.loan_deductions import LoanDeduction
 from app.models.timesheet_periods import TimesheetPeriod
+from app.schemas.absence import AbsenceInput, AbsenceRead
 from app.schemas.payout import (
     AdjustmentCreate,
     AdjustmentRead,
@@ -42,6 +43,7 @@ from app.schemas.timesheet_period import (
     TimesheetPeriodRead,
 )
 from app.models.company_shares import CompanyShareOverride
+from app.services.absences import absence_code, get_month_absences, set_absence
 from app.services.payroll_statement import (
     build_payroll_statement,
     build_payroll_summary,
@@ -353,6 +355,15 @@ def get_month(
     entries = get_month_entries(db, employees, year, month)
     periods = _build_periods_for_response(db, employees, year, month, actor)
     extra_companies = compute_extra_companies_by_employee(employees, entries)
+    absences = [
+        AbsenceRead(
+            employee_id=a.employee_id,
+            work_date=a.work_date,
+            kind=a.kind,
+            code=absence_code(a.kind),
+        )
+        for a in get_month_absences(db, employees, year, month)
+    ]
 
     payroll = None
     adjustments: list[AdjustmentRead] = []
@@ -369,6 +380,7 @@ def get_month(
         entries=entries,
         periods=periods,
         extra_companies_by_employee=extra_companies,
+        absences=absences,
         payroll=payroll,
         adjustments=adjustments,
     )
@@ -416,6 +428,44 @@ def save_cells_batch(
             detail=f"Период закрыт для редактирования, статус: {exc.status}",
         )
     return TimesheetBatchResponse(entries=results)
+
+
+# ── Absences: коды ОТ / ДО / Б / Н ────────────────────────────────────────────
+
+@router.put("/absence", response_model=Optional[AbsenceRead])
+def save_absence(
+    payload: AbsenceInput,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """
+    Поставить/снять код отсутствия на день (kind=null — снять).
+
+    Права те же, что у ячейки часов; период должен быть в draft. Постановка
+    кода удаляет часы этого дня (взаимоисключение, удаление в audit log).
+    """
+    _check_cell_access(actor, payload.employee_id, db)
+    try:
+        result = set_absence(
+            db, actor, payload.employee_id, payload.work_date, payload.kind,
+        )
+    except PeriodLockedException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Период закрыт для редактирования, статус: {exc.status}",
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    if result is None:
+        return None
+    return AbsenceRead(
+        employee_id=result.employee_id,
+        work_date=result.work_date,
+        kind=result.kind,
+        code=absence_code(result.kind),
+    )
 
 
 # ── Period workflow ───────────────────────────────────────────────────────────
