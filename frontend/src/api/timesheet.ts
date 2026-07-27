@@ -1,4 +1,4 @@
-import type { AuditLogEntry, AutofillPreview, CompanyShare, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
+import type { Absence, AbsenceKind, AuditLogEntry, AutofillPreview, CompanyShare, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
 export const timesheetApi = {
@@ -34,6 +34,14 @@ export const timesheetApi = {
   async saveCellsBatch(entries: TimesheetCellInput[]): Promise<(TimesheetEntry | null)[]> {
     const { data } = await apiClient.post<{ entries: (TimesheetEntry | null)[] }>('/api/timesheet/cells/batch', { entries })
     return data.entries
+  },
+
+  // ── Отсутствия: код ОТ/ДО/Б/Н на день (kind=null — снять отметку) ──
+  async setAbsence(input: {
+    employee_id: number; work_date: string; kind: AbsenceKind | null
+  }): Promise<Absence | null> {
+    const { data } = await apiClient.put<Absence | null>('/api/timesheet/absence', input)
+    return data
   },
 
   async submitPeriod(periodId: number): Promise<TimesheetPeriod> {

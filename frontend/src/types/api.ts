@@ -30,6 +30,15 @@ export interface EmployeePayroll {
   overtime_amount: string
   holiday_amount: string
   total_amount: string
+  // Отсутствия: дни по видам и оплата ОТ/Б
+  vacation_days: number
+  unpaid_days: number
+  sick_days: number
+  absent_days: number
+  vacation_paid_days: number
+  sick_paid_days: number
+  vacation_amount: string
+  sick_amount: string
   weekend_pay_type: WeekendPayType | null
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
@@ -56,6 +65,8 @@ export interface PayrollSummary {
   total_base_amount: string
   total_overtime_amount: string
   total_holiday_amount: string
+  total_vacation_amount: string
+  total_sick_amount: string
   grand_total: string
   total_premium: string
   total_kpi: string
@@ -120,6 +131,12 @@ export interface StatementRow {
   premium_amount: string
   kpi_amount: string
   premium_extra_amount: string
+  vacation_days: number
+  sick_days: number
+  unpaid_days: number
+  absent_days: number
+  vacation_amount: string
+  sick_amount: string
   accrued_total: string
   deductions: string
   net_payout: string
@@ -140,6 +157,8 @@ export interface PayrollStatement {
   rows: StatementRow[]
   total_overtime_amount: string
   total_base_salary: string
+  total_vacation_amount: string
+  total_sick_amount: string
   total_premium: string
   total_kpi: string
   total_accrued: string
@@ -169,6 +188,16 @@ export interface TimesheetEntry {
   hours: number  // decimal as number
 }
 
+// ── Отсутствия: коды ОТ / ДО / Б / Н ──
+export type AbsenceKind = 'vacation' | 'unpaid' | 'sick' | 'absent'
+
+export interface Absence {
+  employee_id: number
+  work_date: string  // YYYY-MM-DD
+  kind: AbsenceKind
+  code: string       // ОТ / ДО / Б / Н
+}
+
 export interface TimesheetMonthResponse {
   year: number
   month: number
@@ -177,6 +206,7 @@ export interface TimesheetMonthResponse {
   entries: TimesheetEntry[]
   periods: TimesheetPeriod[]
   extra_companies_by_employee: Record<string, number[]>
+  absences: Absence[]
   payroll: PayrollSummary | null
   adjustments: Adjustment[]
 }

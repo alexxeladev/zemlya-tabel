@@ -15,9 +15,12 @@
 
 import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { companyColorByIndex } from '../utils/colors';
+import { absenceMeta } from '../utils/absences';
+import type { AbsenceKind } from '../types/api';
 import {
   PeriodBadge,
   DeltaCell,
+  type Absence,
   type Employee,
   type Company,
   type DayType,
@@ -44,8 +47,11 @@ type Props = {
   grouped: boolean;
   groups: Group[];
   payrollByEmp: Map<number, EmployeePayroll>;
+  // Коды отсутствий: `empId:day` → отметка. День с кодом часов не имеет.
+  absenceByEmpDay: Map<string, Absence>;
   canSeeMoney: boolean;
   saveSlot: (employeeId: number, day: number, companyId: number, hours: number) => void;
+  setAbsence: (employeeId: number, day: number, kind: AbsenceKind | null) => void;
   periodForDept: (deptId: number | null) => Period | undefined;
   dayTotals: number[];
   onSubmit: (periodId: number) => void;
@@ -116,7 +122,8 @@ type CompanyRow = {
 export function TimesheetCompanyView(props: Props) {
   const {
     data, year, month, numDays, dayTypes, visibleEmployees, grouped, groups,
-    payrollByEmp, canSeeMoney, saveSlot, periodForDept, dayTotals,
+    payrollByEmp, absenceByEmpDay, canSeeMoney, saveSlot, setAbsence,
+    periodForDept, dayTotals,
     onSubmit, onClose, onReturn, onReopen,
   } = props;
 
@@ -364,9 +371,20 @@ export function TimesheetCompanyView(props: Props) {
                   : t === 'weekend' ? 'bg-gray-50/60'
                   : '';
                 const h = cid != null ? (cellHours.get(`${emp.id}:${cid}:${d}`) ?? 0) : 0;
+                const absence = absenceByEmpDay.get(`${emp.id}:${d}`);
                 return (
                   <td key={d} className={`border border-gray-200 p-0.5 text-center ${bgClass}`} style={{ minWidth: 44 }}>
-                    {cid != null ? (
+                    {absence ? (
+                      // Код отсутствия — на весь день сотрудника, поэтому рисуем
+                      // его один раз, на первой строке компаний. Часов в этом дне нет.
+                      first ? (
+                        <AbsenceCodeCell
+                          absence={absence}
+                          disabled={!periodEditable}
+                          onClear={() => setAbsence(emp.id, d, null)}
+                        />
+                      ) : null
+                    ) : cid != null ? (
                       <CompanyDayCell
                         value={h}
                         disabled={!periodEditable}
@@ -577,6 +595,36 @@ export function TimesheetCompanyView(props: Props) {
         )}
       </tbody>
     </table>
+  );
+}
+
+// ── День с кодом отсутствия (ОТ / ДО / Б / Н) ───────────────────
+// Поставить код можно в классическом виде; здесь код виден и снимается.
+function AbsenceCodeCell({
+  absence,
+  disabled,
+  onClear,
+}: {
+  absence: Absence;
+  disabled: boolean;
+  onClear: () => void;
+}) {
+  const meta = absenceMeta(absence.kind);
+  const bg = meta?.bg ?? '#e5e7eb';
+  const color = meta?.color ?? '#4b5563';
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClear}
+      className="w-full rounded text-[11px] font-mono font-bold leading-5 disabled:cursor-default"
+      style={{ background: bg, color, border: `1px solid ${color}40` }}
+      title={
+        (meta?.label ?? absence.code) + (disabled ? '' : ' — нажмите, чтобы убрать отметку')
+      }
+    >
+      {absence.code}
+    </button>
   );
 }
 

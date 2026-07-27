@@ -24,9 +24,10 @@ import { timesheetApi } from '../api/timesheet';
 import { apiClient } from '../api/client';
 import { listDepartments } from '../api/departments';
 import { companyColorByIndex } from '../utils/colors';
+import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
 import { useTimesheetViewStore } from '../store/timesheetView';
 import { TimesheetCompanyView } from './TimesheetCompanyView';
-import type { AutofillPreview } from '../types/api';
+import type { AbsenceKind, AutofillPreview } from '../types/api';
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
@@ -58,6 +59,13 @@ export type Adjustment = {
 };
 
 export type Company = { id: number; code: string; name: string };
+
+export type Absence = {
+  employee_id: number;
+  work_date: string; // 'YYYY-MM-DD'
+  kind: AbsenceKind;
+  code: string;
+};
 
 export type TimesheetEntry = {
   employee_id: number;
@@ -91,6 +99,14 @@ export type EmployeePayroll = {
   overtime_amount: string;
   holiday_amount: string;
   total_amount: string;
+  vacation_days?: number;
+  unpaid_days?: number;
+  sick_days?: number;
+  absent_days?: number;
+  vacation_paid_days?: number;
+  sick_paid_days?: number;
+  vacation_amount?: string;
+  sick_amount?: string;
   weekend_pay_type?: 'coefficient' | 'fixed_rate' | null;
   weekend_coefficient?: string | null;
   weekend_fixed_rate?: string | null;
@@ -114,6 +130,8 @@ type PayrollSummary = {
   total_base_amount: string;
   total_overtime_amount: string;
   total_holiday_amount: string;
+  total_vacation_amount?: string;
+  total_sick_amount?: string;
   grand_total: string;
   total_premium?: string;
   total_kpi?: string;
@@ -139,6 +157,7 @@ export type MonthResponse = {
   employees: Employee[];
   companies: Company[];
   entries: TimesheetEntry[];
+  absences?: Absence[];
   payroll: PayrollSummary | null;
   periods: Period[];
   adjustments?: Adjustment[];
@@ -200,6 +219,15 @@ function fmtMoney(value: string | null): string {
   const n = num(value);
   if (n === 0) return '—';
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(n) + ' ₽';
+}
+
+// Подсказка для колонок отпускных/больничных: сколько дней отмечено и сколько
+// из них оплачено (код на выходном отмечается, но не оплачивается — нормы нет).
+function absenceDaysTitle(label: string, days?: number, paidDays?: number): string {
+  if (!days) return `${label}: нет`;
+  const paid = paidDays ?? days;
+  const suffix = paid === days ? '' : ` (оплачено рабочих: ${paid})`;
+  return `${label}: ${days} дн.${suffix}`;
 }
 
 // Коэффициент/режим оплаты выходных сотрудника — для колонки «Коэф.» (п.3)
@@ -305,6 +333,16 @@ export function TimesheetPage() {
     return map;
   }, [data]);
 
+  // ── Индекс отсутствий: `empId:day` → код дня (в дне либо часы, либо код) ──
+  const absenceByEmpDay = useMemo(() => {
+    const map = new Map<string, Absence>();
+    for (const a of data?.absences ?? []) {
+      const day = parseInt(a.work_date.slice(-2), 10);
+      map.set(`${a.employee_id}:${day}`, a);
+    }
+    return map;
+  }, [data]);
+
   const payrollByEmp = useMemo(() => {
     const map = new Map<number, EmployeePayroll>();
     if (!data?.payroll) return map;
@@ -391,6 +429,24 @@ export function TimesheetPage() {
         await reload();
       } catch (err: any) {
         toast.error('Не удалось сохранить: ' + (err?.message ?? err));
+      }
+    },
+    [year, month, reload]
+  );
+
+  // Поставить/снять код отсутствия. Бэк сам удалит часы этого дня —
+  // взаимоисключение «часы или код» держится на сервере.
+  const setAbsence = useCallback(
+    async (employeeId: number, day: number, kind: AbsenceKind | null) => {
+      try {
+        await timesheetApi.setAbsence({
+          employee_id: employeeId,
+          work_date: dateStr(year, month, day),
+          kind,
+        });
+        await reload();
+      } catch (err: any) {
+        toast.error('Не удалось сохранить отметку: ' + (err?.message ?? err));
       }
     },
     [year, month, reload]
@@ -574,8 +630,9 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Праздн,Итого₽,Премия,KPI,Удержано,К выплате
-  const totalCols = 3 + numDays + (canSeeMoney ? 12 : 1);
+  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Праздн,Отпуск,Больн,Премия,KPI,
+  // Итого₽,Удержано,К выплате
+  const totalCols = 3 + numDays + (canSeeMoney ? 14 : 1);
 
   const renderEmployeeRow = (emp: Employee) => {
     const pay = payrollByEmp.get(emp.id);
@@ -612,6 +669,7 @@ export function TimesheetPage() {
         {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => {
           const t = dayTypes[d];
           const slots = entriesByEmpDay.get(`${emp.id}:${d}`) ?? [];
+          const absence = absenceByEmpDay.get(`${emp.id}:${d}`);
           const isOff = t === 'weekend' || t === 'holiday';
 
           const bgClass =
@@ -630,38 +688,47 @@ export function TimesheetPage() {
               style={{ minWidth: 60 }}
             >
               <div className="flex flex-col gap-1">
-                {slots.map((slot) => (
-                  <SlotChip
-                    key={`${slot.employee_id}-${slot.work_date}-${slot.company_id}`}
-                    slot={slot}
-                    companies={data.companies}
+                {/* День с кодом отсутствия: часов в нём нет по определению */}
+                {absence ? (
+                  <AbsenceChip
+                    absence={absence}
                     disabled={!periodEditable}
-                    onHoursChange={(h) => saveSlot(emp.id, d, slot.company_id, h)}
-                    onCompanyChange={(newCompId) =>
-                      changeSlotCompany(emp.id, d, slot.company_id, newCompId, num(slot.hours))
-                    }
-                    onDelete={() => saveSlot(emp.id, d, slot.company_id, 0)}
+                    onClear={() => setAbsence(emp.id, d, null)}
                   />
-                ))}
-                {periodEditable && !isOff && (
-                  <button
-                    type="button"
-                    onClick={() => addSlot(emp.id, d)}
-                    className="text-[10px] text-gray-400 border border-dashed border-gray-300 rounded px-1 py-0.5 hover:text-blue-600 hover:border-blue-300"
-                    title="Добавить слот"
-                  >
-                    +
-                  </button>
-                )}
-                {periodEditable && isOff && slots.length === 0 && (
-                  <button
-                    type="button"
-                    onClick={() => addSlot(emp.id, d)}
-                    className="text-[10px] text-gray-300 border border-dashed border-gray-200 rounded px-1 py-0.5 hover:text-amber-600 hover:border-amber-300"
-                    title="Добавить работу в выходной/праздник"
-                  >
-                    +
-                  </button>
+                ) : (
+                  <>
+                    {slots.map((slot) => (
+                      <SlotChip
+                        key={`${slot.employee_id}-${slot.work_date}-${slot.company_id}`}
+                        slot={slot}
+                        companies={data.companies}
+                        disabled={!periodEditable}
+                        onHoursChange={(h) => saveSlot(emp.id, d, slot.company_id, h)}
+                        onCompanyChange={(newCompId) =>
+                          changeSlotCompany(emp.id, d, slot.company_id, newCompId, num(slot.hours))
+                        }
+                        onDelete={() => saveSlot(emp.id, d, slot.company_id, 0)}
+                      />
+                    ))}
+                    {periodEditable && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => addSlot(emp.id, d)}
+                          className={
+                            'flex-1 text-[10px] border border-dashed rounded px-1 py-0.5 ' +
+                            (isOff
+                              ? 'text-gray-300 border-gray-200 hover:text-amber-600 hover:border-amber-300'
+                              : 'text-gray-400 border-gray-300 hover:text-blue-600 hover:border-blue-300')
+                          }
+                          title={isOff ? 'Добавить работу в выходной/праздник' : 'Добавить слот'}
+                        >
+                          +
+                        </button>
+                        <AbsencePicker onPick={(kind) => setAbsence(emp.id, d, kind)} />
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </td>
@@ -699,6 +766,25 @@ export function TimesheetPage() {
             </td>
             <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
               {fmtMoney(pay?.holiday_amount ?? null)}
+            </td>
+            {/* Отпускные / больничные — оплата дней отсутствия */}
+            <td
+              className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
+              title={absenceDaysTitle('Отпуск', pay?.vacation_days, pay?.vacation_paid_days)}
+            >
+              {fmtMoney(pay?.vacation_amount ?? null)}
+              {!!pay?.vacation_days && (
+                <span className="ml-1 text-[10px] text-gray-400">{pay.vacation_days}д</span>
+              )}
+            </td>
+            <td
+              className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
+              title={absenceDaysTitle('Больничный', pay?.sick_days, pay?.sick_paid_days)}
+            >
+              {fmtMoney(pay?.sick_amount ?? null)}
+              {!!pay?.sick_days && (
+                <span className="ml-1 text-[10px] text-gray-400">{pay.sick_days}д</span>
+              )}
             </td>
             {/* Премия — своя кнопка */}
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
@@ -906,8 +992,21 @@ export function TimesheetPage() {
               </span>
             );
           })}
+          <span className="text-gray-300">|</span>
+          {/* Легенда кодов отсутствий — расшифровка ОТ/ДО/Б/Н */}
+          {ABSENCE_KINDS.map((a) => (
+            <span
+              key={a.kind}
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-mono font-bold"
+              style={{ background: a.bg, color: a.color, border: `1px solid ${a.color}40` }}
+              title={a.paid ? 'Оплачивается' : 'Не оплачивается'}
+            >
+              {a.code}
+              <span className="font-sans font-normal">{a.label}</span>
+            </span>
+          ))}
           <span className="text-gray-500">
-            «+» = добавить слот компании · серый = выходной
+            «+» = слот компании · «·» = код отсутствия · серый = выходной
           </span>
         </div>
       </div>
@@ -926,8 +1025,10 @@ export function TimesheetPage() {
             grouped={grouped}
             groups={groups}
             payrollByEmp={payrollByEmp}
+            absenceByEmpDay={absenceByEmpDay}
             canSeeMoney={canSeeMoney}
             saveSlot={saveSlot}
+            setAbsence={setAbsence}
             periodForDept={periodForDept}
             dayTotals={dayTotals}
             onSubmit={submitPeriod}
@@ -1034,6 +1135,20 @@ export function TimesheetPage() {
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
                     style={{ minWidth: 90, zIndex: 20 }}
+                    title="Отпускные: оклад / норма × (дни × 8)"
+                  >
+                    Отпускные
+                  </th>
+                  <th
+                    className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
+                    style={{ minWidth: 90, zIndex: 20 }}
+                    title="Больничные: оклад / норма × (дни × 8)"
+                  >
+                    Больничные
+                  </th>
+                  <th
+                    className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
+                    style={{ minWidth: 90, zIndex: 20 }}
                     title="Премия"
                   >
                     Премия
@@ -1127,6 +1242,12 @@ export function TimesheetPage() {
                       {fmtMoney(data.payroll.total_holiday_amount)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
+                      {fmtMoney(data.payroll.total_vacation_amount ?? null)}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono">
+                      {fmtMoney(data.payroll.total_sick_amount ?? null)}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono">
                       {fmtMoney(data.payroll.total_premium ?? null)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
@@ -1143,7 +1264,7 @@ export function TimesheetPage() {
                     </td>
                   </>
                 ) : (
-                  [0,1,2,3,4,5,6,7,8,9,10].map(i => <td key={i} className="border border-gray-300 px-2 py-2" />)
+                  [0,1,2,3,4,5,6,7,8,9,10,11,12].map(i => <td key={i} className="border border-gray-300 px-2 py-2" />)
                 ))}
               </tr>
             )}
@@ -1561,6 +1682,68 @@ function SlotChip({
   );
 }
 
+
+// ──────────────────────────────────────────────────────────────
+// AbsenceChip — день с кодом отсутствия (ОТ / ДО / Б / Н)
+// ──────────────────────────────────────────────────────────────
+function AbsenceChip({
+  absence,
+  disabled,
+  onClear,
+}: {
+  absence: Absence;
+  disabled: boolean;
+  onClear: () => void;
+}) {
+  const meta = absenceMeta(absence.kind);
+  const bg = meta?.bg ?? '#e5e7eb';
+  const color = meta?.color ?? '#4b5563';
+
+  return (
+    <div
+      className="flex items-center justify-center gap-1 px-1.5 py-1 rounded text-[11px] font-mono font-bold"
+      style={{ background: bg, color, border: `1px solid ${color}40`, opacity: disabled ? 0.7 : 1 }}
+      title={meta?.label ?? absence.code}
+    >
+      <span>{absence.code}</span>
+      {!disabled && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="opacity-40 hover:opacity-100 leading-none font-sans"
+          title="Убрать отметку"
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────
+// AbsencePicker — выбор кода отсутствия вместо часов
+// ──────────────────────────────────────────────────────────────
+function AbsencePicker({ onPick }: { onPick: (kind: AbsenceKind) => void }) {
+  return (
+    <select
+      value=""
+      onChange={(e) => {
+        const v = e.target.value as AbsenceKind;
+        if (v) onPick(v);
+      }}
+      className="text-[10px] text-gray-400 border border-dashed border-gray-300 rounded px-0.5 py-0.5 bg-transparent hover:text-blue-600 hover:border-blue-300 cursor-pointer"
+      style={{ width: 26 }}
+      title="Поставить код отсутствия (часы этого дня будут убраны)"
+    >
+      <option value="">·</option>
+      {ABSENCE_KINDS.map((a) => (
+        <option key={a.kind} value={a.kind}>
+          {a.code} — {a.label}
+        </option>
+      ))}
+    </select>
+  );
+}
 
 // ──────────────────────────────────────────────────────────────
 // AdjustmentsModal — у каждого столбца своя категория:

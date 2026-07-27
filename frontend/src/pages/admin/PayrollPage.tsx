@@ -194,13 +194,18 @@ export function PayrollPage() {
 
   const footer = useMemo(() => {
     const acc = {
-      overtime: 0, base: 0, premium: 0, kpi: 0, accrued: 0, deductions: 0, net: 0,
+      overtime: 0, base: 0, vacation: 0, sick: 0, vacationDays: 0, sickDays: 0,
+      premium: 0, kpi: 0, accrued: 0, deductions: 0, net: 0,
       dist: {} as Record<number, number>,
     }
     for (const c of companies) acc.dist[c.id] = 0
     for (const row of visibleRows) {
       acc.overtime += num(row.overtime_amount)
       acc.base += num(row.base_salary)
+      acc.vacation += num(row.vacation_amount)
+      acc.sick += num(row.sick_amount)
+      acc.vacationDays += row.vacation_days
+      acc.sickDays += row.sick_days
       acc.premium += num(row.premium_amount)
       acc.kpi += num(row.kpi_amount)
       acc.accrued += num(row.accrued_total)
@@ -291,6 +296,9 @@ export function PayrollPage() {
                 <th className="px-2 py-2 text-center font-medium" title="Кол-во часов переработки">Пер. ч</th>
                 <th className="px-2 py-2 text-center font-medium">Сумма пер.</th>
                 <th className="px-2 py-2 text-center font-medium">Начисл. оклад</th>
+                <th className="px-2 py-2 text-center font-medium" title="Дней отпуска / больничного">Отп./Больн. дн.</th>
+                <th className="px-2 py-2 text-center font-medium" title="Отпускные: оклад / норма × (дни × 8)">Отпускные</th>
+                <th className="px-2 py-2 text-center font-medium" title="Больничные: оклад / норма × (дни × 8)">Больничные</th>
                 <th className="px-2 py-2 text-center font-medium">Премия</th>
                 <th className="px-2 py-2 text-center font-medium">KPI</th>
                 <th className="px-2 py-2 text-center font-semibold text-blue-700 min-w-[90px]">Итого начисл.</th>
@@ -307,7 +315,7 @@ export function PayrollPage() {
             </thead>
             <tbody>
               {visibleRows.length === 0 && (
-                <tr><td colSpan={20} className="px-4 py-8 text-center text-gray-400">Нет сотрудников</td></tr>
+                <tr><td colSpan={23} className="px-4 py-8 text-center text-gray-400">Нет сотрудников</td></tr>
               )}
               {visibleRows.map((row, i) => {
                 const accrued = num(row.accrued_total)
@@ -345,6 +353,16 @@ export function PayrollPage() {
                     <td className="px-2 py-1.5 text-center text-gray-600">{formatHours(row.overtime_hours)}</td>
                     <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.overtime_amount)}</td>
                     <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.base_salary)}</td>
+                    <td
+                      className="px-2 py-1.5 text-center text-gray-600"
+                      title={`ОТ: ${row.vacation_days} · Б: ${row.sick_days} · ДО: ${row.unpaid_days} · Н: ${row.absent_days}`}
+                    >
+                      {row.vacation_days || row.sick_days
+                        ? `${row.vacation_days} / ${row.sick_days}`
+                        : '—'}
+                    </td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.vacation_amount)}</td>
+                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.sick_amount)}</td>
                     <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.premium_amount)}</td>
                     <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.kpi_amount)}</td>
                     <td className="px-2 py-1.5 text-center font-bold text-blue-700">{formatMoney(row.accrued_total, { showZero: true })}</td>
@@ -421,6 +439,11 @@ export function PayrollPage() {
                 <td className="px-2 py-2 text-gray-700" colSpan={11}>Итого{visibleRows.length !== (data.rows.length) ? ` (отфильтровано: ${visibleRows.length})` : ''}</td>
                 <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.overtime))}</td>
                 <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.base))}</td>
+                <td className="px-2 py-2 text-center text-gray-600">
+                  {footer.vacationDays || footer.sickDays ? `${footer.vacationDays} / ${footer.sickDays}` : '—'}
+                </td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.vacation))}</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.sick))}</td>
                 <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.premium))}</td>
                 <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.kpi))}</td>
                 <td className="px-2 py-2 text-center font-bold text-blue-700">{formatMoney(String(footer.accrued), { showZero: true })}</td>
