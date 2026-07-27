@@ -477,3 +477,90 @@ def test_export_manager_cannot_see_other_dept(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 403
+
+
+def test_export_shows_absence_codes(
+    client: TestClient,
+    admin_emp: Employee,
+    employee_one: Employee,
+    entries_for_emp1,
+    company_alpha: Company,
+    company_beta: Company,
+    db_session: Session,
+):
+    """Коды отсутствий (ОТ/ДО/Б/Н) выводятся в ячейках дней вместо часов,
+    а количество дней отпуска/больничного — в сводных колонках."""
+    from app.models.employee_absences import EmployeeAbsence
+    from app.services.timesheet_export import _COL_NAME, _day_col, _sick_col, _vac_col
+
+    for day, kind in ((8, "vacation"), (9, "vacation"), (10, "sick"), (11, "absent")):
+        db_session.add(EmployeeAbsence(
+            employee_id=employee_one.id, work_date=date(YEAR, MONTH, day), kind=kind,
+        ))
+    db_session.commit()
+
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.get(
+        f"/api/timesheet/{YEAR}/{MONTH}/export/excel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    wb = _get_workbook(resp)
+    ws = wb.active
+    total_days = 30
+
+    start_row = next(
+        cell.row
+        for row in ws.iter_rows()
+        for cell in row
+        if cell.column == _COL_NAME and cell.value == "Иванов Иван Иванович"
+    )
+
+    assert ws.cell(row=start_row, column=_day_col(8, total_days)).value == "ОТ"
+    assert ws.cell(row=start_row, column=_day_col(9, total_days)).value == "ОТ"
+    assert ws.cell(row=start_row, column=_day_col(10, total_days)).value == "Б"
+    assert ws.cell(row=start_row, column=_day_col(11, total_days)).value == "Н"
+    assert ws.cell(row=start_row, column=_vac_col(total_days)).value == 2
+    assert ws.cell(row=start_row, column=_sick_col(total_days)).value == 1
+
+    # Легенда кодов присутствует в документе
+    all_text = " ".join(
+        str(cell.value) for row in ws.iter_rows() for cell in row if cell.value is not None
+    )
+    assert "ОТ — отпуск оплачиваемый" in all_text
+
+
+def test_export_includes_employee_with_only_absences(
+    client: TestClient,
+    admin_emp: Employee,
+    employee_two: Employee,
+    company_alpha: Company,
+    db_session: Session,
+):
+    """Сотрудник без часов, но с отсутствиями, всё равно попадает в табель."""
+    from app.models.employee_absences import EmployeeAbsence
+    from app.services.timesheet_export import _COL_NAME, _day_col
+
+    employee_two.default_company_id = company_alpha.id
+    for day in (1, 2, 3):
+        db_session.add(EmployeeAbsence(
+            employee_id=employee_two.id, work_date=date(YEAR, MONTH, day), kind="vacation",
+        ))
+    db_session.commit()
+
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.get(
+        f"/api/timesheet/{YEAR}/{MONTH}/export/excel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    wb = _get_workbook(resp)
+    ws = wb.active
+
+    start_row = next(
+        (cell.row
+         for row in ws.iter_rows()
+         for cell in row
+         if cell.column == _COL_NAME and cell.value == "Петров Пётр Петрович"),
+        None,
+    )
+    assert start_row is not None
+    assert ws.cell(row=start_row, column=_day_col(1, 30)).value == "ОТ"
