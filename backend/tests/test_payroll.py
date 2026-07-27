@@ -133,24 +133,83 @@ class TestOvertime:
         assert p.total_amount == Decimal("80000") + expected_overtime
 
 
-class TestMonthlyOvertime:
-    """Задача 3.11b п.0: переработка считается ПОМЕСЯЧНО (факт будних − норма)."""
+class TestDailyOvertime:
+    """
+    task_overtime_daily: переработка считается ПО ДНЯМ —
+    для каждого дня max(0, факт − дневная норма смены), сумма за месяц.
+    """
 
-    def test_single_day_no_monthly_overtime(self):
-        """10ч в один день при месячной норме 176 → переработки НЕТ (помесячно)."""
+    def test_single_day_overtime(self):
+        """10ч в один день при дневной норме 8 → переработка 2ч."""
         schedule = make_schedule(8)
         emp = make_employee(schedule=schedule)
         entries = [make_entry(work_date=date(2026, 5, 2), hours=Decimal("10"))]
 
         p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
 
-        assert p.overtime_hours == Decimal("0")
-        # база от 10 зачётных часов из нормы 176
-        expected_base = (Decimal("80000") * Decimal("10") / Decimal("176")).quantize(Decimal("1"))
+        assert p.overtime_hours == Decimal("2")
+        # зачётных будних часов 8 (10 − 2 переработки) из нормы 176
+        expected_base = (Decimal("80000") * Decimal("8") / Decimal("176")).quantize(Decimal("1"))
         assert p.base_amount == expected_base
 
-    def test_monthly_overtime_above_norm(self):
-        """Факт 180 будних часов при норме 176 → переработка 4ч (помесячно)."""
+    def test_undertime_does_not_offset_overtime(self):
+        """Пн 10ч (+2) и Вт 6ч (0) при норме 8 → переработка 2ч, а не 0 (AC 1)."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        entries = [
+            make_entry(work_date=date(2026, 5, 2), hours=Decimal("10")),
+            make_entry(work_date=date(2026, 5, 5), hours=Decimal("6")),
+        ]
+
+        p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
+
+        assert p.total_hours == Decimal("16")
+        assert p.overtime_hours == Decimal("2")
+        # зачётные будние = 8 + 6 = 14
+        expected_base = (Decimal("80000") * Decimal("14") / Decimal("176")).quantize(Decimal("1"))
+        assert p.base_amount == expected_base
+
+    def test_multicompany_hours_in_day_are_summed(self):
+        """8ч компания А + 4ч компания Б в один день (норма 8) → переработка 4ч (AC 2)."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        entries = [
+            make_entry(company_id=1, work_date=date(2026, 5, 2), hours=Decimal("8")),
+            make_entry(company_id=2, work_date=date(2026, 5, 2), hours=Decimal("4")),
+        ]
+
+        p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
+
+        assert p.overtime_hours == Decimal("4")
+
+    def test_short_day_norm_is_shift_minus_one(self):
+        """Сокращённый день: норма 7ч, отработано 8ч → переработка 1ч."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        # 8 мая в MAY_WITH_HOLIDAY — сокращённый день
+        entries = [make_entry(work_date=date(2026, 5, 8), hours=Decimal("8"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
+
+        assert p.overtime_hours == Decimal("1")
+
+    def test_daily_overtime_summed_across_days(self):
+        """Переработки разных дней складываются: +2, +3, 0 → 5ч."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        entries = [
+            make_entry(work_date=date(2026, 5, 2), hours=Decimal("10")),   # +2
+            make_entry(work_date=date(2026, 5, 5), hours=Decimal("11")),   # +3
+            make_entry(work_date=date(2026, 5, 6), hours=Decimal("8")),    # 0
+            make_entry(work_date=date(2026, 5, 7), hours=Decimal("3")),    # 0 (недоработка)
+        ]
+
+        p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
+
+        assert p.overtime_hours == Decimal("5")
+
+    def test_overtime_above_norm(self):
+        """Факт 180 будних часов при норме 176, 12ч в один день → переработка 4ч."""
         schedule = make_schedule(8)
         emp = make_employee(schedule=schedule)
         # 22 дня × 8ч = 176, плюс ещё один день со сверхнормой
@@ -166,19 +225,19 @@ class TestMonthlyOvertime:
         expected_ot = (Decimal("4") * hourly * Decimal("1.5")).quantize(Decimal("1"))
         assert p.overtime_amount == expected_ot
 
-    def test_undertime_no_overtime(self):
-        """Факт ниже нормы → переработки нет, оклад пропорционален."""
+    def test_undertime_never_negative(self):
+        """Недоработка в день не уходит в минус (AC 4)."""
         schedule = make_schedule(8)
         emp = make_employee(schedule=schedule)
         entries = [
-            make_entry(work_date=date(2026, 5, 2), hours=Decimal("10")),
+            make_entry(work_date=date(2026, 5, 2), hours=Decimal("4")),
             make_entry(work_date=date(2026, 5, 5), hours=Decimal("6")),
         ]
 
         p = calculate_employee_payroll(emp, entries, MAY_BASIC, 2026, 5)
 
         assert p.overtime_hours == Decimal("0")
-        assert p.total_hours == Decimal("16")
+        assert p.total_hours == Decimal("10")
 
     def test_exact_norm_no_overtime(self):
         """Ровно норма → переработки нет, полный оклад."""
@@ -468,8 +527,8 @@ class TestCompanyBreakdown:
         ]
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
 
-        # помесячно: будние часы (10+5=15) ниже нормы 167 → переработки нет
-        assert p.overtime_hours == Decimal("0")
+        # по дням: 2 мая 6+4=10ч при дневной норме 8 → 2ч переработки
+        assert p.overtime_hours == Decimal("2")
         assert p.holiday_hours == Decimal("15")
         bd = p.breakdown_by_company
         assert len(bd) == 3

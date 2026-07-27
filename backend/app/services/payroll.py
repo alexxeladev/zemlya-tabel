@@ -8,6 +8,7 @@ from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.calendar import (
     is_holiday,
+    is_short_day,
     norm_hours_for_period,
     workdays_in_month,
 )
@@ -82,6 +83,43 @@ def _overtime_coeff(employee: Employee) -> Decimal:
     return _ONE_HALF if coeff is None else Decimal(str(coeff))
 
 
+def daily_norm_hours(
+    calendar_data: dict, work_date: date, hours_per_shift: int | Decimal
+) -> Decimal:
+    """
+    Дневная норма сотрудника на конкретную дату:
+      - обычный рабочий день → длительность смены;
+      - сокращённый (предпраздничный) → смена − 1;
+      - выходной/праздник → 0 (эти часы — отдельная категория «праздничные»).
+    """
+    if is_holiday(calendar_data, work_date.month, work_date.day):
+        return _ZERO
+    shift = Decimal(str(hours_per_shift))
+    if is_short_day(calendar_data, work_date.month, work_date.day):
+        shift -= _ONE
+    return max(_ZERO, shift)
+
+
+def daily_overtime_hours(
+    calendar_data: dict,
+    hours_by_date: dict[date, Decimal],
+    hours_per_shift: int | Decimal,
+) -> Decimal:
+    """
+    Переработка ПО ДНЯМ: для каждого дня max(0, факт − дневная норма), сумма за месяц.
+    Часы всех компаний в дне уже должны быть просуммированы в hours_by_date.
+    Недоработка одного дня НЕ компенсирует переработку другого.
+    Праздничные/выходные дни сюда не попадают — там дневная норма 0 и часы
+    учитываются отдельной категорией (см. вызывающий код).
+    """
+    overtime = _ZERO
+    for work_date, hours in hours_by_date.items():
+        norm = daily_norm_hours(calendar_data, work_date, hours_per_shift)
+        if norm > _ZERO and hours > norm:
+            overtime += hours - norm
+    return overtime
+
+
 @dataclass
 class CompanyBreakdown:
     company_id: int
@@ -145,6 +183,9 @@ def calculate_employee_payroll(
     company_hours: dict[int, Decimal] = {}
     company_holiday_hours: dict[int, Decimal] = {}
     hours_by_date: dict[date, Decimal] = {}
+    # Будние (непраздничные) часы по дням — сумма по ВСЕМ компаниям в этот день.
+    # База для по-дневного расчёта переработки.
+    regular_hours_by_date: dict[date, Decimal] = {}
     total_hours = _ZERO
     total_holiday_hours = _ZERO
 
@@ -163,6 +204,10 @@ def calculate_employee_payroll(
         ):
             company_holiday_hours[cid] += h
             total_holiday_hours += h
+        else:
+            regular_hours_by_date[entry.work_date] = (
+                regular_hours_by_date.get(entry.work_date, _ZERO) + h
+            )
 
     # Норма/факт дней (правка 3.9-4) — справочные, в деньгах не участвуют.
     # Норма дней = рабочих дней по календарю (сокращённые считаются как полный день).
@@ -200,8 +245,10 @@ def calculate_employee_payroll(
         is_calculable = False
         reason = "Не задан оклад"
 
-    # Переработка ПОМЕСЯЧНО (уточнение финдиректора, задача 3.11b п.0):
-    # переработка = факт_будних_часов − месячная_норма (если положительно).
+    # Переработка ПО ДНЯМ (task_overtime_daily, финальное решение — откат помесячного
+    # варианта 3.11b п.0): для каждого дня max(0, факт_дня − дневная норма смены),
+    # суммируем за месяц. Часы всех компаний в дне складываются, недоработка одного
+    # дня не гасит переработку другого.
     # Праздничные/выходные часы — отдельная категория (правка 3.9-3): в переработку
     # и базу оклада не входят, оплачиваются по правилам выходных. Поэтому база
     # переработки — это будние (непраздничные) часы.
@@ -209,9 +256,12 @@ def calculate_employee_payroll(
     delta_hours: Decimal | None = None
     overtime_hours = _ZERO
     regular_credited_hours = regular_hours
-    if norm_hours is not None:
+    if norm_hours is not None and calendar_data is not None and schedule is not None:
         delta_hours = total_hours - norm_hours
-        overtime_hours = max(_ZERO, regular_hours - norm_hours)
+        overtime_hours = daily_overtime_hours(
+            calendar_data, regular_hours_by_date, schedule.hours_per_shift
+        )
+        # Зачётные будние часы = Σ min(факт_дня, дневная норма) ≤ месячная норма.
         regular_credited_hours = regular_hours - overtime_hours
 
     # Financial amounts

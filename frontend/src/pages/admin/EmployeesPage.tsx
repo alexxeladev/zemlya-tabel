@@ -545,7 +545,7 @@ export function EmployeesPage() {
                 className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               <p className="text-xs text-gray-400">
-                Помесячно: (оклад/норма) × часы переработки × коэффициент. 1.5 = полуторный, 1 = одинарный, 0 = не оплачивается
+                Часы переработки считаются по дням (сверх дневной нормы смены), оплата: (оклад/норма) × часы переработки × коэффициент. 1.5 = полуторный, 1 = одинарный, 0 = не оплачивается
               </p>
             </div>
           </div>
