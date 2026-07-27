@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuthStore } from '../../store/auth'
 import { toast } from '../../store/toasts'
-import type { CompanyShare, Department, PayrollStatement, StatementRow } from '../../types/api'
+import type {
+  CompanyShare, Department, DistributionSource, PayrollStatement, StatementRow,
+} from '../../types/api'
 import { timesheetApi } from '../../api/timesheet'
 import { apiClient } from '../../api/client'
 import { formatHours, formatMoney } from '../../utils/money'
@@ -18,6 +20,21 @@ const num = (v: string | null | undefined): number => {
 }
 
 type Edits = Record<number, Record<number, string>> // employee_id → company_id → percent
+
+// Откуда взято распределение по юрлицам (каскад task_distribution_v2 ч.3):
+// месячная правка > карточка сотрудника > дефолт отдела > авто по часам.
+const SOURCE_LABEL: Record<DistributionSource, string> = {
+  month: 'правка на месяц',
+  employee: 'из карточки',
+  department: 'дефолт отдела',
+  hours: 'авто по часам',
+}
+const SOURCE_STYLE: Record<DistributionSource, string> = {
+  month: 'text-indigo-500',
+  employee: 'text-gray-500',
+  department: 'text-teal-600',
+  hours: 'italic text-gray-400',
+}
 
 function buildEdits(stmt: PayrollStatement): Edits {
   const e: Edits = {}
@@ -133,7 +150,7 @@ export function PayrollPage() {
     try {
       setSavingId(row.employee_id)
       await timesheetApi.clearDistributionOverride(row.employee_id, year, month)
-      toast.success('Возвращены проценты из карточки')
+      toast.success('Правка на месяц убрана — вернулся следующий уровень каскада')
       reload()
     } catch {
       toast.error('Не удалось сбросить переопределение')
@@ -301,6 +318,10 @@ export function PayrollPage() {
                 const autoByCompany: Record<number, { percent: string; amount: string }> = {}
                 if (auto) for (const d of row.distribution) autoByCompany[d.company_id] = d
                 const amounts = rowAmounts(row)
+                // Ввод % вручную (ещё не сохранён) — это уже правка на месяц.
+                const sourceKey: DistributionSource =
+                  auto ? 'hours' : (pctSum > 0 && row.distribution_source === 'hours'
+                    ? 'month' : row.distribution_source)
                 let liveDistTotal = 0
                 return (
                   <tr key={row.employee_id} className="border-b border-gray-100 hover:bg-gray-50/60">
@@ -378,7 +399,7 @@ export function PayrollPage() {
                             <button
                               disabled={savingId === row.employee_id}
                               onClick={() => resetRow(row)}
-                              title="Вернуть проценты из карточки"
+                              title="Убрать правку на месяц (вернётся карточка → отдел → авто по часам)"
                               className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-700 hover:bg-gray-300 disabled:opacity-50"
                             >
                               ↺
@@ -386,12 +407,10 @@ export function PayrollPage() {
                           )}
                         </div>
                       )}
-                      {row.is_overridden && (
-                        <div className="mt-0.5 text-[9px] text-indigo-500">правка на месяц</div>
-                      )}
-                      {auto && (
-                        <div className="mt-0.5 text-[9px] italic text-gray-400">авто по часам</div>
-                      )}
+                      {/* Откуда взято распределение — каскад ч.3 */}
+                      <div className={`mt-0.5 text-[9px] ${SOURCE_STYLE[sourceKey]}`}>
+                        {SOURCE_LABEL[sourceKey]}
+                      </div>
                     </td>
                   </tr>
                 )

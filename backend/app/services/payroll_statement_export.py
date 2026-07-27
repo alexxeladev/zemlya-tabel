@@ -18,6 +18,14 @@ from app.schemas.payroll_statement import PayrollStatementRead
 
 _ORG_NAME = "ДЕВЕЛОПМЕНТ ГРУППА «ЗЕМЛЯ МО»"
 
+# Откуда взято распределение по юрлицам (каскад task_distribution_v2 ч.3)
+_SOURCE_LABELS = {
+    "month": "проценты переопределены на месяц",
+    "employee": "проценты из карточки сотрудника",
+    "department": "дефолт отдела",
+    "hours": "распределено по часам (авто)",
+}
+
 _MONTHS = [
     "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
@@ -129,12 +137,11 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
         # Подсветка строки если ручная сумма процентов ≠ 100 (авто-доли не трогаем)
         if r.distribution and not r.is_auto_distributed and r.percent_sum != Decimal("100"):
             c.fill = warn_fill
-        # Примечание
+        # Примечание — в т.ч. откуда взято распределение (каскад, ч.3)
         note = r.note or ""
-        if r.is_overridden:
-            note = (note + "; " if note else "") + "проценты переопределены на месяц"
-        elif r.is_auto_distributed and r.distribution:
-            note = (note + "; " if note else "") + "распределено по часам (авто)"
+        source_label = _SOURCE_LABELS.get(r.distribution_source)
+        if source_label and r.distribution:
+            note = (note + "; " if note else "") + source_label
         c = ws.cell(row=row, column=note_col, value=note)
         c.font = normal
         c.border = border
