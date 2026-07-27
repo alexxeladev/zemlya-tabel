@@ -10,8 +10,10 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session
 
 from app.models.companies import Company
+from app.models.employee_absences import AbsenceKind
 from app.models.employees import Employee
 from app.models.production_calendars import ProductionCalendar
+from app.services.absences import absence_code, get_month_absences
 from app.services.calendar import get_month_data, parse_days_string
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 
@@ -94,12 +96,12 @@ def _day_col(day: int, total_days: int) -> int:
 
 
 def _vac_col(total_days: int) -> int:
-    """Кол-во дней отпуска (employee-level, задел на будущее — пока пусто)."""
+    """Кол-во дней отпуска (employee-level)."""
     return _FIXED_COLS + total_days + 1
 
 
 def _sick_col(total_days: int) -> int:
-    """Кол-во дней больничного (employee-level, задел на будущее — пока пусто)."""
+    """Кол-во дней больничного (employee-level)."""
     return _FIXED_COLS + total_days + 2
 
 
@@ -200,6 +202,17 @@ def generate_t13_excel(
             entries_index[key] = {}
         entries_index[key][e.company_id] = float(e.hours)
 
+    # Отсутствия: {(employee_id, day): "ОТ"|"ДО"|"Б"|"Н"} — буквенный код Т-13
+    # вместо часов. Код на весь день, к юрлицу не привязан.
+    absences = get_month_absences(db, employees, year, month)
+    absence_index: dict[tuple[int, int], str] = {
+        (a.employee_id, a.work_date.day): a.kind for a in absences
+    }
+    absence_days_by_emp: dict[int, dict[str, int]] = {}
+    for a in absences:
+        bucket = absence_days_by_emp.setdefault(a.employee_id, {})
+        bucket[a.kind] = bucket.get(a.kind, 0) + 1
+
     # Для каждого сотрудника — список компаний, по которым есть entries в этом месяце
     emp_companies: dict[int, list[int]] = {}
     for emp in employees:
@@ -208,7 +221,12 @@ def generate_t13_excel(
             if e.employee_id == emp.id:
                 used.add(e.company_id)
         if not used:
-            continue  # сотрудник без entries — пропускаем
+            # Часов нет, но есть коды отсутствий — сотрудника всё равно показываем
+            # (месяц в отпуске/на больничном обязан попасть в табель).
+            if emp.id in absence_days_by_emp:
+                # None — «компания не определена», строка всё равно нужна ради кодов
+                emp_companies[emp.id] = [emp.default_company_id]
+            continue  # сотрудник без entries и без отсутствий — пропускаем
         # Сортируем по id для детерминизма
         emp_companies[emp.id] = sorted(used)
 
@@ -266,10 +284,17 @@ def generate_t13_excel(
             ws, cur_row, seq, emp, company_ids, companies_by_id,
             entries_index, total_days,
             non_working, short_days, weekends,
+            absence_index, absence_days_by_emp.get(emp.id, {}),
         )
 
-    # ── Подвал с подписями ──────────────────────────────────────────────────
-    _write_footer(ws, cur_row + 2)
+    # ── Легенда кодов отсутствий + подвал с подписями ────────────────────────
+    legend = ws.cell(row=cur_row + 1, column=1)
+    legend.value = (
+        "Условные обозначения: ОТ — отпуск оплачиваемый · ДО — отпуск за свой счёт "
+        "· Б — больничный · Н — неявка/прогул"
+    )
+    legend.font = Font(name="Arial", size=8, color="666666")
+    _write_footer(ws, cur_row + 3)
 
     buf = BytesIO()
     wb.save(buf)
@@ -440,17 +465,21 @@ def _write_employee_rows(
     start_row: int,
     seq: int,
     emp: Employee,
-    company_ids: list[int],
+    company_ids: list[int | None],
     companies_by_id: dict[int, Company],
     entries_index: dict[tuple[int, int], dict[int, float]],
     total_days: int,
     non_working: set[int] | None = None,
     short_days: set[int] | None = None,
     weekends: set[int] | None = None,
+    absence_index: dict[tuple[int, int], str] | None = None,
+    absence_days: dict[str, int] | None = None,
 ) -> int:
     non_working = non_working or set()
     short_days = short_days or set()
     weekends = weekends or set()
+    absence_index = absence_index or {}
+    absence_days = absence_days or {}
     off_days = non_working | weekends  # праздники/выходные → праздничные часы
 
     n = len(company_ids)
@@ -496,9 +525,10 @@ def _write_employee_rows(
     _emp_cell(_COL_DEPT, emp.department.name if emp.department else "", left=True)
     _emp_cell(_COL_POS, emp.position or "", left=True)
     _emp_cell(_COL_SCHED, emp.schedule.name if emp.schedule else "")
-    # Отпуск / больничный — задел на будущее, данных пока нет → пусто.
-    _emp_cell(_vac_col(total_days), None)
-    _emp_cell(_sick_col(total_days), None)
+    vac_days = absence_days.get(AbsenceKind.vacation.value, 0)
+    sick_days = absence_days.get(AbsenceKind.sick.value, 0)
+    _emp_cell(_vac_col(total_days), vac_days or None)
+    _emp_cell(_sick_col(total_days), sick_days or None)
     _emp_cell(_norm_days_col(total_days), norm_days if norm_days else None)
     _emp_cell(_fact_days_col(total_days), fact_days if fact_days else None)
     _emp_cell(_norm_col(total_days), _fmt(norm_hours) if norm_hours else None)
@@ -506,8 +536,11 @@ def _write_employee_rows(
     # Строки по компаниям (per-row): Компания, дни, Итого Ч компании
     for i, comp_id in enumerate(company_ids):
         row = start_row + i
-        comp = companies_by_id.get(comp_id)
-        comp_name = comp.name if comp else f"Компания #{comp_id}"
+        comp = companies_by_id.get(comp_id) if comp_id is not None else None
+        if comp is not None:
+            comp_name = comp.name
+        else:
+            comp_name = "—" if comp_id is None else f"Компания #{comp_id}"
 
         # Название компании
         c = ws.cell(row=row, column=_COL_COMPANY)
@@ -522,11 +555,19 @@ def _write_employee_rows(
         for d in range(1, total_days + 1):
             col = _day_col(d, total_days)
             hours = entries_index.get((emp.id, d), {}).get(comp_id)
+            kind = absence_index.get((emp.id, d))
             c = ws.cell(row=row, column=col)
             c.border = _thin_border()
             c.alignment = Alignment(horizontal="center", vertical="center")
             c.font = Font(name="Arial", size=9)
-            if hours is not None and hours > 0:
+            if kind is not None:
+                # День отсутствия: буквенный код Т-13 вместо часов. Часов в этом
+                # дне нет по инварианту взаимоисключения; код пишем один раз —
+                # на первой строке сотрудника, он не привязан к юрлицу.
+                if i == 0:
+                    c.value = absence_code(kind)
+                    c.font = Font(name="Arial", size=9, bold=True, color="1F4E79")
+            elif hours is not None and hours > 0:
                 c.value = int(hours) if hours == int(hours) else hours
                 total_hours += hours
                 if d in off_days:
