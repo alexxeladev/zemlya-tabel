@@ -233,7 +233,7 @@ function PayrollBlock({ data }: { data: DashboardData }) {
         <KpiCard label="Всего начислено" value={formatMoney(p.total, { showZero: true })} accent="text-blue-700" />
         <KpiCard label="Оклады" value={formatMoney(p.base, { showZero: true })} />
         <KpiCard label="Переработка" value={formatMoney(p.overtime, { showZero: true })} />
-        <KpiCard label="Праздничные" value={formatMoney(p.holiday, { showZero: true })} />
+        <KpiCard label="Вне графика" value={formatMoney(p.holiday, { showZero: true })} />
       </div>
 
       {p.non_calculable_employees > 0 && (

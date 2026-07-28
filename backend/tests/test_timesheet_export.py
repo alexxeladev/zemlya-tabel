@@ -368,7 +368,7 @@ def test_export_per_company_rows_columns(
     company_beta: Company,
     db_session: Session,
 ):
-    """Строки по компаниям: Итого Ч компании (per-row), Сверхур./Праздн. Ч,
+    """Строки по компаниям: Итого Ч компании (per-row), Сверхур./Вне граф. Ч,
     общий Итого Ч (merge) считаются корректно."""
     from app.models.schedules import Schedule
     from app.services.timesheet_export import (
@@ -416,7 +416,7 @@ def test_export_per_company_rows_columns(
         str(cell.value) for row in ws.iter_rows() for cell in row if cell.value is not None
     )
     assert "Сверхур" in header_text
-    assert "Праздн" in header_text
+    assert "Вне граф" in header_text
     assert "Норма" in header_text
     assert "ООО Альфа" in header_text
     assert "ООО Бета" in header_text
@@ -564,3 +564,59 @@ def test_export_includes_employee_with_only_absences(
     )
     assert start_row is not None
     assert ws.cell(row=start_row, column=_day_col(1, 30)).value == "ОТ"
+
+
+def test_export_off_schedule_hours_by_schedule_not_calendar(
+    client: TestClient,
+    admin_emp: Employee,
+    dept: Department,
+    company_alpha: Company,
+    calendar_june: ProductionCalendar,
+    db_session: Session,
+):
+    """task_schedule_based_pay: колонка «Вне граф. Ч» считает часы в дни,
+    не рабочие по ГРАФИКУ. 12 июня — праздник, но пятница (рабочий день 5/2)
+    → в колонку не идёт; 13 июня — суббота → идёт."""
+    from app.models.schedules import Schedule
+    from app.services.timesheet_export import _COL_NAME, _hol_hours_col, _ot_hours_col
+
+    sch = Schedule(name="5/2", hours_per_shift=8, is_active=True, schedule_type="standard")
+    db_session.add(sch)
+    db_session.commit()
+    db_session.refresh(sch)
+
+    emp = Employee(
+        full_name="Праздничный Работник",
+        tab_number="7777",
+        department_id=dept.id,
+        schedule_id=sch.id,
+        is_active=True,
+    )
+    db_session.add(emp)
+    db_session.commit()
+    db_session.refresh(emp)
+
+    for day in (12, 13):  # праздник-пятница и суббота
+        db_session.add(TimesheetEntry(employee_id=emp.id, work_date=date(YEAR, MONTH, day),
+                                      company_id=company_alpha.id, hours=8))
+    db_session.commit()
+
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.get(
+        f"/api/timesheet/{YEAR}/{MONTH}/export/excel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    wb = _get_workbook(resp)
+    ws = wb.active
+
+    row = next(
+        (cell.row for r in ws.iter_rows() for cell in r
+         if cell.column == _COL_NAME and cell.value == "Праздничный Работник"),
+        None,
+    )
+    assert row is not None
+    total_days = 30
+    # Только суббота 13 июня — вне графика; 12 июня (праздник в будни) — нет.
+    assert ws.cell(row=row, column=_hol_hours_col(total_days)).value == 8
+    # 8ч в рабочий день графика = ровно смена → переработки нет
+    assert (ws.cell(row=row, column=_ot_hours_col(total_days)).value or 0) == 0

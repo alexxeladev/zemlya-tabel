@@ -35,6 +35,21 @@ MAY_WITH_HOLIDAY = {
     "months": [{"month": 5, "days": "1,3,4,8*,10,11,17,18,24,25,31"}],
 }
 
+# Реальные дни недели мая 2026 (важно с task_schedule_based_pay: оплата часов
+# определяется ГРАФИКОМ, а рабочие дни графика 5/2 — это Пн–Пт):
+#   субботы: 2, 9, 16, 23, 30 | воскресенья: 3, 10, 17, 24, 31 | 1 мая — пятница.
+# В синтетических календарях выше нерабочими помечены Вс+Пн, а субботы —
+# рабочими (как «перенос»), поэтому для 5/2 выходными по графику там оказываются
+# только воскресенья. Тесты «выхода в свой выходной» используют воскресенья.
+MAY_SUNDAYS = (3, 10, 17, 24, 31)
+
+# Календарь с «настоящими» выходными: Сб+Вс нерабочие, 1 мая (пятница) — праздник.
+# Нерабочих 11 → рабочих 20 → норма для 8ч = 160.
+MAY_REAL = {
+    "year": 2026,
+    "months": [{"month": 5, "days": "1,2,3,9,10,16,17,23,24,30,31"}],
+}
+
 # Workdays in MAY_BASIC: all days NOT in the calendar's non-working set
 # The calendar defines non-working = {3,4,10,11,17,18,24,25,31}, workdays = everything else
 # norm_hours_for_period uses workdays_in_month which counts via the calendar, not weekday filter
@@ -270,25 +285,26 @@ class TestDailyOvertime:
         assert p0.overtime_hours == Decimal("4")
         assert p0.overtime_amount == Decimal("0")
 
-    def test_holiday_hours_excluded_from_overtime(self):
-        """Праздничные часы не попадают в переработку (отдельная категория)."""
+    def test_off_schedule_hours_excluded_from_overtime(self):
+        """Часы вне графика не попадают в переработку (отдельная категория)."""
         schedule = make_schedule(8)
         emp = make_employee(schedule=schedule)
-        # Будние дни MAY_WITH_HOLIDAY (без 1 мая — праздник): заполняем ровно по норме.
+        # Рабочие дни MAY_WITH_HOLIDAY (без 1 мая — праздник): заполняем ровно по норме.
         # 8ч в каждый, кроме сокращённого 8 мая (7ч) → 20*8 + 7 = 167 = норма.
         workdays = [d for d in range(1, 32) if d not in (1, 3, 4, 10, 11, 17, 18, 24, 25, 31)]
         entries = [
             make_entry(work_date=date(2026, 5, d), hours=Decimal("7" if d == 8 else "8"))
             for d in workdays
         ]
-        # May 1 — праздник; 12 часов сверху не дают переработки
-        entries.append(make_entry(work_date=date(2026, 5, 1), hours=Decimal("12")))
+        # 17 мая — воскресенье, выходной по графику 5/2; 12 часов сверху
+        # идут в категорию «вне графика» и переработки не дают.
+        entries.append(make_entry(work_date=date(2026, 5, 17), hours=Decimal("12")))
 
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
 
         assert p.norm_hours == Decimal("167")
         assert p.holiday_hours == Decimal("12")
-        # будние часы = 167 = норма → переработки нет, праздничные не считаются
+        # часы рабочих дней графика = 167 = норма → переработки нет
         assert p.overtime_hours == Decimal("0")
         assert p.base_amount == Decimal("80000")
 
@@ -323,28 +339,45 @@ class TestNormFactDays:
         assert p.norm_days is None
 
 
-class TestHolidayHours:
-    def test_holiday_hours_get_extra_pay(self):
-        """8h on May 1 (holiday) → holiday_amount = 8 * hourly * 1.5 (полная доплата).
+class TestOffScheduleHours:
+    """Часы ВНЕ ГРАФИКА (task_schedule_based_pay) — бывшие «праздничные»."""
 
-        База оклада праздничные часы НЕ включает (правка 3.9-2), поэтому
-        праздничные оплачиваются полным коэффициентом (по умолчанию 1.5),
+    def test_off_schedule_hours_get_extra_pay(self):
+        """8ч в воскресенье (выходной по графику 5/2) → 8 × hourly × 1.5.
+
+        База оклада эти часы НЕ включает (правка 3.9-2), поэтому выход вне
+        графика оплачивается полным коэффициентом (по умолчанию 1.5),
         а не доплатой 0.5 как раньше.
         """
         schedule = make_schedule(8)
         emp = make_employee(schedule=schedule)
-        # norm in MAY_WITH_HOLIDAY = 167h; add 8h on May 1 (holiday)
-        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+        # norm in MAY_WITH_HOLIDAY = 167h; 8ч в воскресенье 17 мая
+        entries = [make_entry(work_date=date(2026, 5, 17), hours=Decimal("8"))]
 
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
 
         assert p.is_calculable is True
         assert p.holiday_hours == Decimal("8")
-        # Праздничные часы не идут в зачёт оклада
+        # Часы вне графика не идут в зачёт оклада
         assert p.base_amount == Decimal("0")
         hourly = Decimal("80000") / Decimal("167")
         expected_holiday = (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
         assert p.holiday_amount == expected_holiday
+
+    def test_calendar_holiday_on_schedule_workday_is_salary(self):
+        """1 мая (праздник, пятница = рабочий день графика 5/2) → по окладу, не ×1.5."""
+        schedule = make_schedule(8)
+        emp = make_employee(schedule=schedule)
+        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
+
+        assert p.holiday_hours == Decimal("0")
+        assert p.holiday_amount == Decimal("0")
+        assert p.overtime_hours == Decimal("0")
+        # часы зачтены в оклад пропорционально норме
+        expected_base = (Decimal("80000") * Decimal("8") / Decimal("167")).quantize(Decimal("1"))
+        assert p.base_amount == expected_base
 
     def test_short_day_has_no_holiday_extra(self):
         """May 8 is a short day (not holiday) → no holiday_amount"""
@@ -359,7 +392,11 @@ class TestHolidayHours:
 
 
 class TestWeekendPay:
-    """Правка 3.9-3: оплата выходных/праздничных per-employee."""
+    """Правка 3.9-3: оплата выхода вне графика per-employee.
+
+    С task_schedule_based_pay триггер — выходной по ГРАФИКУ сотрудника
+    (17 мая 2026 — воскресенье), а не праздник по календарю.
+    """
 
     def _holiday_emp(self, pay_type="coefficient", coeff=None, fixed=None):
         schedule = make_schedule(8)
@@ -371,7 +408,7 @@ class TestWeekendPay:
 
     def test_coefficient_1_5(self):
         emp = self._holiday_emp("coefficient", coeff=Decimal("1.5"))
-        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+        entries = [make_entry(work_date=date(2026, 5, 17), hours=Decimal("8"))]
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
         hourly = Decimal("80000") / Decimal("167")
         expected = (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
@@ -379,27 +416,129 @@ class TestWeekendPay:
 
     def test_coefficient_zero_not_paid(self):
         emp = self._holiday_emp("coefficient", coeff=Decimal("0"))
-        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+        entries = [make_entry(work_date=date(2026, 5, 17), hours=Decimal("8"))]
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
         # часы видны, но доплаты нет
         assert p.holiday_hours == Decimal("8")
         assert p.holiday_amount == Decimal("0")
 
     def test_fixed_rate_740(self):
-        """Фикс-ставка 740 ₽/ч, 8ч в выходной → 5920 ₽."""
+        """Фикс-ставка 740 ₽/ч, 8ч в свой выходной по графику → 5920 ₽."""
         emp = self._holiday_emp("fixed_rate", fixed=Decimal("740"))
-        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+        entries = [make_entry(work_date=date(2026, 5, 17), hours=Decimal("8"))]
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
         assert p.holiday_amount == Decimal("5920")
 
     def test_default_coefficient_when_unset(self):
         """Поля не заданы (None) → коэффициент по умолчанию 1.5."""
         emp = make_employee(schedule=make_schedule(8))  # без weekend_* атрибутов = None
-        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+        entries = [make_entry(work_date=date(2026, 5, 17), hours=Decimal("8"))]
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
         hourly = Decimal("80000") / Decimal("167")
         expected = (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
         assert p.holiday_amount == expected
+
+
+class TestScheduleBasedPay:
+    """
+    task_schedule_based_pay: точка отсчёта оплаты — ГРАФИК сотрудника.
+    Календарь с настоящими выходными (MAY_REAL): 1 мая — праздник-пятница,
+    2 мая — суббота, норма 8ч-графика = 160.
+    """
+
+    def _emp(self, pay_type="coefficient", coeff=None, fixed=None):
+        emp = make_employee(schedule=make_schedule(8))
+        emp.weekend_pay_type = pay_type
+        emp.weekend_coefficient = coeff
+        emp.weekend_fixed_rate = fixed
+        return emp
+
+    def test_holiday_on_workday_paid_as_salary(self):
+        """AC1: 5/2 работал в праздник, попавший на будний день → оклад, не ×1.5."""
+        emp = self._emp()
+        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
+
+        assert p.norm_hours == Decimal("160")
+        assert p.holiday_hours == Decimal("0")
+        assert p.holiday_amount == Decimal("0")
+        assert p.base_amount == (
+            Decimal("80000") * Decimal("8") / Decimal("160")
+        ).quantize(Decimal("1"))
+
+    def test_saturday_is_off_schedule(self):
+        """AC2: 5/2 вышел в субботу (свой выходной) → часы ×1.5."""
+        emp = self._emp()
+        entries = [make_entry(work_date=date(2026, 5, 2), hours=Decimal("8"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
+
+        assert p.holiday_hours == Decimal("8")
+        assert p.base_amount == Decimal("0")
+        hourly = Decimal("80000") / Decimal("160")
+        assert p.holiday_amount == (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
+
+    def test_fixed_rate_on_own_day_off(self):
+        """AC5: электрик с фикс-ставкой 740 ₽/ч вышел в воскресенье → 8 × 740."""
+        emp = self._emp("fixed_rate", fixed=Decimal("740"))
+        entries = [make_entry(work_date=date(2026, 5, 3), hours=Decimal("8"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
+
+        assert p.holiday_hours == Decimal("8")
+        assert p.holiday_amount == Decimal("5920")
+
+    def test_overtime_on_schedule_workday_stays_overtime(self):
+        """AC6: 10ч в рабочий день графика → 8ч в оклад, 2ч переработки."""
+        emp = self._emp()
+        entries = [make_entry(work_date=date(2026, 5, 5), hours=Decimal("10"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
+
+        assert p.overtime_hours == Decimal("2")
+        assert p.holiday_hours == Decimal("0")
+        hourly = Decimal("80000") / Decimal("160")
+        assert p.overtime_amount == (Decimal("2") * hourly * Decimal("1.5")).quantize(Decimal("1"))
+
+    def test_overtime_on_holiday_workday(self):
+        """Праздник в рабочий день графика: 12ч → 8ч оклад + 4ч переработки."""
+        emp = self._emp()
+        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("12"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
+
+        assert p.holiday_hours == Decimal("0")
+        assert p.overtime_hours == Decimal("4")
+
+    def test_six_day_schedule_works_saturday_by_salary(self):
+        """График 6/1: суббота — рабочий день графика → оклад, не ×1.5."""
+        emp = self._emp()
+        emp.schedule = Schedule(name="6/1", hours_per_shift=8, schedule_type="standard")
+        entries = [make_entry(work_date=date(2026, 5, 2), hours=Decimal("8"))]
+
+        p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
+
+        assert p.holiday_hours == Decimal("0")
+        assert p.base_amount > Decimal("0")
+
+    def test_off_schedule_hours_not_in_base(self):
+        """Полная норма + выход в воскресенье: оклад 100% + отдельная оплата."""
+        emp = self._emp()
+        workdays = [d for d in range(1, 32) if d not in (1, 2, 3, 9, 10, 16, 17, 23, 24, 30, 31)]
+        entries = [make_entry(work_date=date(2026, 5, d)) for d in workdays]
+        assert sum(e.hours for e in entries) == Decimal("160")
+        entries.append(make_entry(work_date=date(2026, 5, 10), hours=Decimal("8")))
+
+        p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
+
+        assert p.base_amount == Decimal("80000")
+        assert p.overtime_hours == Decimal("0")
+        assert p.holiday_hours == Decimal("8")
+        hourly = Decimal("80000") / Decimal("160")
+        expected = (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
+        assert p.holiday_amount == expected
+        assert p.total_amount == Decimal("80000") + expected
 
 
 class TestNotCalculable:
@@ -476,14 +615,14 @@ class TestCompanyBreakdown:
         assert p.breakdown_by_company == []
 
     def test_holiday_distributed_by_company_holiday_hours(self):
-        """All holiday hours in company A → company A gets all holiday_amount"""
+        """Все часы вне графика в компании A → ей и вся оплата вне графика."""
         schedule = make_schedule(8)
         emp = make_employee(schedule=schedule)
-        # May 1 is holiday, work 8h for company A on May 1
-        # Also work 8h for company B on May 2 (non-holiday)
+        # 17 мая — воскресенье (выходной по графику 5/2): 8ч на компанию A;
+        # 2 мая — рабочий день графика: 8ч на компанию B.
         entries = [
-            make_entry(company_id=1, work_date=date(2026, 5, 1), hours=Decimal("8")),  # holiday
-            make_entry(company_id=2, work_date=date(2026, 5, 2), hours=Decimal("8")),  # workday
+            make_entry(company_id=1, work_date=date(2026, 5, 17), hours=Decimal("8")),
+            make_entry(company_id=2, work_date=date(2026, 5, 2), hours=Decimal("8")),
         ]
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
         assert p.holiday_hours == Decimal("8")
@@ -521,15 +660,18 @@ class TestCompanyBreakdown:
             # вместе с 6h по c1 это 10h за день → 2h переработки
             make_entry(company_id=2, work_date=date(2026, 5, 2), hours=Decimal("4")),
             make_entry(company_id=1, work_date=date(2026, 5, 5), hours=Decimal("5")),
-            make_entry(company_id=1, work_date=date(2026, 5, 1), hours=Decimal("5")),  # праздник
-            make_entry(company_id=2, work_date=date(2026, 5, 1), hours=Decimal("3")),  # праздник
-            make_entry(company_id=3, work_date=date(2026, 5, 3), hours=Decimal("7")),  # выходной
+            # 1 мая — праздник, но пятница = рабочий день графика → идёт в оклад
+            make_entry(company_id=1, work_date=date(2026, 5, 1), hours=Decimal("5")),
+            make_entry(company_id=2, work_date=date(2026, 5, 1), hours=Decimal("3")),
+            # 3 мая — воскресенье, выходной по графику → «вне графика»
+            make_entry(company_id=3, work_date=date(2026, 5, 3), hours=Decimal("7")),
         ]
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
 
-        # по дням: 2 мая 6+4=10ч при дневной норме 8 → 2ч переработки
+        # по дням: 2 мая 6+4=10ч при дневной норме 8 → 2ч переработки;
+        # 1 мая 5+3=8ч ровно по норме смены → переработки нет
         assert p.overtime_hours == Decimal("2")
-        assert p.holiday_hours == Decimal("15")
+        assert p.holiday_hours == Decimal("7")
         bd = p.breakdown_by_company
         assert len(bd) == 3
         assert sum(b.base_amount for b in bd) == p.base_amount
@@ -542,14 +684,15 @@ class TestCompanyBreakdown:
             assert b.holiday_amount >= Decimal("0")
 
     def test_breakdown_hours_sum_to_totals(self):
-        """Часы переработки/праздничные по компаниям сходятся с итоговыми часами."""
+        """Часы переработки/вне графика по компаниям сходятся с итоговыми часами."""
         schedule = make_schedule(8)
         emp = make_employee(schedule=schedule)
         entries = [
             make_entry(company_id=1, work_date=date(2026, 5, 2), hours=Decimal("6")),
             make_entry(company_id=2, work_date=date(2026, 5, 2), hours=Decimal("4")),  # 10h → 2h overtime
-            make_entry(company_id=1, work_date=date(2026, 5, 1), hours=Decimal("5")),  # праздник
-            make_entry(company_id=2, work_date=date(2026, 5, 1), hours=Decimal("3")),  # праздник
+            # 3 мая — воскресенье: часы вне графика, привязаны к своим компаниям
+            make_entry(company_id=1, work_date=date(2026, 5, 3), hours=Decimal("5")),
+            make_entry(company_id=2, work_date=date(2026, 5, 3), hours=Decimal("3")),
         ]
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
         bd = p.breakdown_by_company
@@ -557,7 +700,7 @@ class TestCompanyBreakdown:
         assert sum(b.holiday_hours for b in bd) == p.holiday_hours
         # часы компаний сходятся с total_hours
         assert sum(b.hours for b in bd) == p.total_hours
-        # праздничные часы привязаны к компании где они отработаны
+        # часы вне графика привязаны к компании, где они отработаны
         bd_a = next(b for b in bd if b.company_id == 1)
         bd_b = next(b for b in bd if b.company_id == 2)
         assert bd_a.holiday_hours == Decimal("5")
@@ -903,11 +1046,11 @@ class TestPayrollCalculationsIntegration:
         assert bd["company_id"] == company.id
         assert bd["company_code"] == "PC"
 
-    def test_holiday_24h_edge_case(self):
-        """Holiday with 24 hours → correct calculation without overflow"""
+    def test_off_schedule_24h_edge_case(self):
+        """24 часа в выходной по графику → расчёт без переполнения"""
         schedule = make_schedule(8)
         emp = make_employee(schedule=schedule)
-        entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("24"))]
+        entries = [make_entry(work_date=date(2026, 5, 17), hours=Decimal("24"))]
 
         p = calculate_employee_payroll(emp, entries, MAY_WITH_HOLIDAY, 2026, 5)
 

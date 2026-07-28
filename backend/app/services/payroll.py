@@ -14,6 +14,7 @@ from app.services.calendar import (
     norm_hours_for_period,
     workdays_in_month,
 )
+from app.services.work_schedule import is_off_schedule_day
 
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
@@ -62,10 +63,14 @@ def _distribute_whole_rubles(
 
 def _weekend_pay(employee: Employee, holiday_hours: Decimal, hourly_rate: Decimal) -> Decimal:
     """
-    Оплата праздничных/выходных часов по настройкам конкретного сотрудника
-    (правка 3.9-3). По умолчанию — коэффициент 1.5.
-      - coefficient: holiday_hours × hourly_rate × коэффициент (0 = не оплачивается)
-      - fixed_rate:  holiday_hours × фикс_ставка (не зависит от оклада)
+    Оплата часов ВНЕ ГРАФИКА (выход в свой выходной по графику) по настройкам
+    конкретного сотрудника (правка 3.9-3). По умолчанию — коэффициент 1.5.
+      - coefficient: часы × hourly_rate × коэффициент (0 = не оплачивается)
+      - fixed_rate:  часы × фикс_ставка (не зависит от оклада)
+
+    Триггер изменился (task_schedule_based_pay): раньше сюда попадали часы в
+    праздничные/выходные дни ПРОИЗВОДСТВЕННОГО КАЛЕНДАРЯ, теперь — часы в дни,
+    не являющиеся рабочими по ГРАФИКУ сотрудника. Сам механизм оплаты тот же.
     """
     if holiday_hours <= _ZERO:
         return _ZERO
@@ -90,37 +95,45 @@ def _overtime_coeff(employee: Employee) -> Decimal:
 
 
 def daily_norm_hours(
-    calendar_data: dict, work_date: date, hours_per_shift: int | Decimal
+    schedule, work_date: date, calendar_data: dict | None
 ) -> Decimal:
     """
-    Дневная норма сотрудника на конкретную дату:
-      - обычный рабочий день → длительность смены;
-      - сокращённый (предпраздничный) → смена − 1;
-      - выходной/праздник → 0 (эти часы — отдельная категория «праздничные»).
+    Дневная норма сотрудника на конкретную дату — от ГРАФИКА
+    (task_schedule_based_pay):
+      - рабочий день по графику → длительность смены;
+      - сокращённый (предпраздничный) рабочий день → смена − 1;
+      - выходной по графику → 0 (эти часы — отдельная категория «вне графика»).
+
+    Календарный праздник, попавший на рабочий день графика, нормы не обнуляет:
+    отработанные часы идут по окладу, превышение смены — в переработку.
     """
-    if is_holiday(calendar_data, work_date.month, work_date.day):
+    if schedule is None:
         return _ZERO
-    shift = Decimal(str(hours_per_shift))
-    if is_short_day(calendar_data, work_date.month, work_date.day):
+    if is_off_schedule_day(schedule, work_date, calendar_data):
+        return _ZERO
+    shift = Decimal(str(schedule.hours_per_shift))
+    if calendar_data is not None and is_short_day(
+        calendar_data, work_date.month, work_date.day
+    ):
         shift -= _ONE
     return max(_ZERO, shift)
 
 
 def daily_overtime_hours(
-    calendar_data: dict,
+    schedule,
     hours_by_date: dict[date, Decimal],
-    hours_per_shift: int | Decimal,
+    calendar_data: dict | None,
 ) -> Decimal:
     """
     Переработка ПО ДНЯМ: для каждого дня max(0, факт − дневная норма), сумма за месяц.
     Часы всех компаний в дне уже должны быть просуммированы в hours_by_date.
     Недоработка одного дня НЕ компенсирует переработку другого.
-    Праздничные/выходные дни сюда не попадают — там дневная норма 0 и часы
-    учитываются отдельной категорией (см. вызывающий код).
+    Дни вне графика сюда не попадают — там дневная норма 0 и часы учитываются
+    отдельной категорией «вне графика» (см. вызывающий код).
     """
     overtime = _ZERO
     for work_date, hours in hours_by_date.items():
-        norm = daily_norm_hours(calendar_data, work_date, hours_per_shift)
+        norm = daily_norm_hours(schedule, work_date, calendar_data)
         if norm > _ZERO and hours > norm:
             overtime += hours - norm
     return overtime
@@ -148,6 +161,9 @@ class CompanyBreakdown:
     hours: Decimal
     percent: Decimal
     overtime_hours: Decimal
+    # holiday_* — исторические имена; семантика с task_schedule_based_pay:
+    # часы/деньги ВНЕ ГРАФИКА (выход в выходной по графику сотрудника),
+    # а не «праздники по производственному календарю».
     holiday_hours: Decimal
     base_amount: Decimal
     overtime_amount: Decimal
@@ -166,6 +182,9 @@ class EmployeePayroll:
     norm_hours: Decimal | None
     delta_hours: Decimal | None
     overtime_hours: Decimal
+    # holiday_hours / holiday_amount — часы и оплата ВНЕ ГРАФИКА сотрудника
+    # (task_schedule_based_pay). Имена полей оставлены прежними ради
+    # совместимости API/UI, семантика — «выход в свой выходной по графику».
     holiday_hours: Decimal
 
     norm_days: int | None
@@ -255,15 +274,23 @@ def calculate_employee_payroll(
         0, sick_limit - max(0, sick_days_used_before) - len(sick_paid_dates)
     )
 
-    # Aggregate hours by company and by date; detect holiday hours per company.
+    schedule = employee.schedule
+
+    # Aggregate hours by company and by date; часы ВНЕ ГРАФИКА — по компаниям.
+    # Вне графика (task_schedule_based_pay) = день не является рабочим по
+    # ГРАФИКУ сотрудника (не по производственному календарю): выход в свой
+    # законный выходной. Праздник, попавший на рабочий день графика, — обычный
+    # рабочий день, его часы идут по окладу.
     company_hours: dict[int, Decimal] = {}
     company_holiday_hours: dict[int, Decimal] = {}
     hours_by_date: dict[date, Decimal] = {}
-    # Будние (непраздничные) часы по дням — сумма по ВСЕМ компаниям в этот день.
+    # Часы рабочих дней графика по дням — сумма по ВСЕМ компаниям в этот день.
     # База для по-дневного расчёта переработки.
     regular_hours_by_date: dict[date, Decimal] = {}
     total_hours = _ZERO
     total_holiday_hours = _ZERO
+    # Тип дня по графику считаем один раз на дату (в дне может быть N компаний).
+    off_schedule_by_date: dict[date, bool] = {}
 
     for entry in entries:
         cid = entry.company_id
@@ -275,9 +302,12 @@ def calculate_employee_payroll(
         company_hours[cid] += h
         hours_by_date[entry.work_date] = hours_by_date.get(entry.work_date, _ZERO) + h
 
-        if calendar_data is not None and is_holiday(
-            calendar_data, entry.work_date.month, entry.work_date.day
-        ):
+        if entry.work_date not in off_schedule_by_date:
+            off_schedule_by_date[entry.work_date] = is_off_schedule_day(
+                schedule, entry.work_date, calendar_data
+            )
+
+        if off_schedule_by_date[entry.work_date]:
             company_holiday_hours[cid] += h
             total_holiday_hours += h
         else:
@@ -294,7 +324,6 @@ def calculate_employee_payroll(
     fact_days = len(hours_by_date)
 
     # Determine calculability and norm
-    schedule = employee.schedule
     schedule_name = schedule.name if schedule else None
     is_calculable = True
     reason: str | None = None
@@ -325,9 +354,10 @@ def calculate_employee_payroll(
     # варианта 3.11b п.0): для каждого дня max(0, факт_дня − дневная норма смены),
     # суммируем за месяц. Часы всех компаний в дне складываются, недоработка одного
     # дня не гасит переработку другого.
-    # Праздничные/выходные часы — отдельная категория (правка 3.9-3): в переработку
-    # и базу оклада не входят, оплачиваются по правилам выходных. Поэтому база
-    # переработки — это будние (непраздничные) часы.
+    # Часы вне графика — отдельная категория (правка 3.9-3, триггер изменён в
+    # task_schedule_based_pay): в переработку и базу оклада не входят,
+    # оплачиваются по правилам выхода в выходной. Поэтому база переработки —
+    # часы рабочих дней графика.
     regular_hours = total_hours - total_holiday_hours
     delta_hours: Decimal | None = None
     overtime_hours = _ZERO
@@ -335,9 +365,9 @@ def calculate_employee_payroll(
     if norm_hours is not None and calendar_data is not None and schedule is not None:
         delta_hours = total_hours - norm_hours
         overtime_hours = daily_overtime_hours(
-            calendar_data, regular_hours_by_date, schedule.hours_per_shift
+            schedule, regular_hours_by_date, calendar_data
         )
-        # Зачётные будние часы = Σ min(факт_дня, дневная норма) ≤ месячная норма.
+        # Зачётные часы графика = Σ min(факт_дня, дневная норма) ≤ месячная норма.
         regular_credited_hours = regular_hours - overtime_hours
 
     # Financial amounts
@@ -351,13 +381,13 @@ def calculate_employee_payroll(
 
     if is_calculable and rate is not None and norm_hours is not None and norm_hours > _ZERO:
         hourly_rate = rate / norm_hours
-        # Оклад ПРОПОРЦИОНАЛЬНО отработанному: зачётные будние часы / норма.
+        # Оклад ПРОПОРЦИОНАЛЬНО отработанному: зачётные часы графика / норма.
         # Дни отсутствия часов не дают, поэтому оклад за них не начисляется —
         # они оплачиваются отдельно (отпускные/больничные) и сумма не задваивается.
         base_amount = rate * min(_ONE, regular_credited_hours / norm_hours)
         # Переработка: (оклад/норма) × часы × коэффициент сотрудника (0/1/1.5).
         overtime_amount = overtime_hours * hourly_rate * _overtime_coeff(employee)
-        # Праздничные/выходные — по персональным настройкам сотрудника (правка 3.9-3).
+        # Часы вне графика — по персональным настройкам сотрудника (правка 3.9-3).
         holiday_amount = _weekend_pay(employee, total_holiday_hours, hourly_rate)
         # Отпуск и больничный — отдельные начисления по «дни × 8».
         vacation_amount = absence_pay(

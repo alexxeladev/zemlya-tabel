@@ -652,7 +652,7 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Праздн,Отпуск,Больн,Премия,KPI,
+  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Отпуск,Больн,Премия,KPI,
   // Итого₽,Удержано,К выплате
   const totalCols = 3 + numDays + (canSeeMoney ? 14 : 1);
 
@@ -1165,7 +1165,7 @@ export function TimesheetPage() {
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
                     style={{ minWidth: 80, zIndex: 20 }}
                   >
-                    Праздн.
+                    Вне граф.
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"

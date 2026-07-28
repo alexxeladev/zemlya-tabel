@@ -6,7 +6,7 @@
 //
 // Структура строки:
 //   ФИО | Отдел | График  (merge через rowspan на все строки сотрудника)
-//   Компания | дни 1..N | Итого Ч компании | [Оклад | Сверхур.Ч | Праздн.Ч | Сверхур.₽ | Праздн.₽]
+//   Компания | дни 1..N | Итого Ч компании | [Оклад | Сверхур.Ч | Вне граф.Ч | Сверхур.₽ | Вне граф.₽]
 //   Итого Ч | [Итого ₽ | Δ] | Норма  (merge через rowspan)
 //
 // Каждая строка компании редактируется как одна ячейка в день (часы по этой
@@ -220,7 +220,7 @@ export function TimesheetCompanyView(props: Props) {
   };
 
   // Кол-во денежных колонок по компании и emp-level (для colSpan строки ИТОГО)
-  const companyMoneyCols = canSeeMoney ? 5 : 0; // Оклад, Сверхур.Ч, Праздн.Ч, Сверхур.₽, Праздн.₽
+  const companyMoneyCols = canSeeMoney ? 5 : 0; // Оклад, Сверхур.Ч, Вне граф.Ч, Сверхур.₽, Вне граф.₽
   const empMoneyCols = canSeeMoney ? 2 : 0; // Итого ₽, Δ
   const normCols = canSeeMoney ? 1 : 0; // Норма
   // ФИО,Отдел,График(3) + Компания(1) + дни + ИтогоЧ компании(1) + companyMoney + ИтогоЧ emp(1) + empMoney + Норма
@@ -521,9 +521,9 @@ export function TimesheetCompanyView(props: Props) {
             <>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600" style={{ minWidth: 80, zIndex: 20 }}>Оклад</th>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }}>Свер.Ч</th>
-              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }}>Празд.Ч</th>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }}>Вне граф.Ч</th>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600" style={{ minWidth: 70, zIndex: 20 }}>Свер.₽</th>
-              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600" style={{ minWidth: 70, zIndex: 20 }}>Празд.₽</th>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600" style={{ minWidth: 70, zIndex: 20 }}>Вне граф.₽</th>
             </>
           )}
           <th className="sticky top-0 bg-gray-100 border border-gray-200 px-2 py-2 text-center font-semibold text-gray-700" style={{ minWidth: 70, zIndex: 20 }}>
