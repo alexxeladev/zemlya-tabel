@@ -10,11 +10,16 @@ from app.models.timesheet_entries import TimesheetEntry
 from app.services.absences import sick_limit_days, split_sick_dates_by_limit
 from app.services.calendar import (
     is_holiday,
-    is_short_day,
-    norm_hours_for_period,
     workdays_in_month,
 )
-from app.services.work_schedule import is_off_schedule_day
+from app.services.work_schedule import (
+    is_cyclic_schedule,
+    is_off_schedule_day,
+    norm_days_for_schedule,
+    norm_hours_for_schedule,
+    schedule_issue,
+    shift_hours_for_date,
+)
 
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
@@ -101,7 +106,8 @@ def daily_norm_hours(
     Дневная норма сотрудника на конкретную дату — от ГРАФИКА
     (task_schedule_based_pay):
       - рабочий день по графику → длительность смены;
-      - сокращённый (предпраздничный) рабочий день → смена − 1;
+      - сокращённый (предпраздничный) рабочий день → смена − 1 (только у
+        weekday-графиков: у сменщика смена 12 ч независимо от календаря);
       - выходной по графику → 0 (эти часы — отдельная категория «вне графика»).
 
     Календарный праздник, попавший на рабочий день графика, нормы не обнуляет:
@@ -111,12 +117,7 @@ def daily_norm_hours(
         return _ZERO
     if is_off_schedule_day(schedule, work_date, calendar_data):
         return _ZERO
-    shift = Decimal(str(schedule.hours_per_shift))
-    if calendar_data is not None and is_short_day(
-        calendar_data, work_date.month, work_date.day
-    ):
-        shift -= _ONE
-    return max(_ZERO, shift)
+    return shift_hours_for_date(schedule, work_date, calendar_data)
 
 
 def daily_overtime_hours(
@@ -316,32 +317,43 @@ def calculate_employee_payroll(
             )
 
     # Норма/факт дней (правка 3.9-4) — справочные, в деньгах не участвуют.
-    # Норма дней = рабочих дней по календарю (сокращённые считаются как полный день).
+    # Норма дней = плановых рабочих дней (смен) ПО ГРАФИКУ сотрудника; без
+    # графика — рабочих дней по производственному календарю.
     # Факт дней = дней, в которых есть хотя бы один час работы (по всем компаниям).
-    norm_days: int | None = (
-        workdays_in_month(calendar_data, year, month) if calendar_data is not None else None
-    )
+    # Сменному календарь не нужен; weekday-графику без календаря норму дней
+    # не показываем — она была бы завышена на праздники.
+    norm_days: int | None = None
+    if calendar_data is not None or is_cyclic_schedule(schedule):
+        norm_days = norm_days_for_schedule(schedule, year, month, calendar_data)
+    if norm_days is None and calendar_data is not None:
+        norm_days = workdays_in_month(calendar_data, year, month)
     fact_days = len(hours_by_date)
 
-    # Determine calculability and norm
+    # Determine calculability and norm.
+    # Норма — по ГРАФИКУ (task_shift_schedules): weekday-график считает её по
+    # производственному календарю с учётом своих дней недели, cyclic — по циклу
+    # от стартовой даты (календарь не влияет, поэтому сменнику он не нужен).
     schedule_name = schedule.name if schedule else None
     is_calculable = True
     reason: str | None = None
     norm_hours: Decimal | None = None
 
-    if schedule is None:
+    issue = schedule_issue(schedule)
+    if issue is not None:
         is_calculable = False
-        reason = "Не задан график"
-    elif schedule.schedule_type == "shift":
-        is_calculable = False
-        reason = "Сменный график не поддерживается"
-    elif calendar_data is None:
+        reason = issue
+    elif calendar_data is None and not is_cyclic_schedule(schedule):
+        # Норма weekday-графика без календаря завышена (праздники не вычтены) —
+        # деньги по ней считать нельзя. Сменному календарь не нужен: цикл сам
+        # задаёт рабочие дни.
         is_calculable = False
         reason = "Производственный календарь не загружен"
     else:
-        norm_val = norm_hours_for_period(calendar_data, year, month, schedule.hours_per_shift)
-        norm_hours = Decimal(str(norm_val))
-        if norm_hours == _ZERO:
+        norm_hours = norm_hours_for_schedule(schedule, year, month, calendar_data)
+        if norm_hours is None:
+            is_calculable = False
+            reason = "Норма не определена"
+        elif norm_hours == _ZERO:
             is_calculable = False
             reason = "Норма не определена (0 рабочих дней)"
 
@@ -362,7 +374,7 @@ def calculate_employee_payroll(
     delta_hours: Decimal | None = None
     overtime_hours = _ZERO
     regular_credited_hours = regular_hours
-    if norm_hours is not None and calendar_data is not None and schedule is not None:
+    if norm_hours is not None and schedule is not None:
         delta_hours = total_hours - norm_hours
         overtime_hours = daily_overtime_hours(
             schedule, regular_hours_by_date, calendar_data

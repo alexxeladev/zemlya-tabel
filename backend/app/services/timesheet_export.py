@@ -16,7 +16,13 @@ from app.models.production_calendars import ProductionCalendar
 from app.services.absences import absence_code, get_month_absences
 from app.services.calendar import get_month_data, parse_days_string
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
-from app.services.work_schedule import is_off_schedule_day
+from app.services.work_schedule import (
+    is_off_schedule_day,
+    norm_days_for_schedule,
+    norm_hours_for_schedule,
+    schedule_issue,
+    shift_hours_for_date,
+)
 
 _ORG_NAME = "ДЕВЕЛОПМЕНТ ГРУППА «ЗЕМЛЯ МО»"
 
@@ -293,6 +299,7 @@ def generate_t13_excel(
             non_working, short_days, weekends,
             absence_index, absence_days_by_emp.get(emp.id, {}),
             off_schedule_days,
+            year, month, calendar_data,
         )
 
     # ── Легенда кодов отсутствий + подвал с подписями ────────────────────────
@@ -483,14 +490,15 @@ def _write_employee_rows(
     absence_index: dict[tuple[int, int], str] | None = None,
     absence_days: dict[str, int] | None = None,
     off_schedule_days: set[int] | None = None,
+    year: int | None = None,
+    month: int | None = None,
+    calendar_data: dict | None = None,
 ) -> int:
     non_working = non_working or set()
     short_days = short_days or set()
     weekends = weekends or set()
     absence_index = absence_index or {}
     absence_days = absence_days or {}
-    # Календарные нерабочие дни — для справочных норм (дни/часы месяца).
-    off_days = non_working | weekends
     # Дни ВНЕ ГРАФИКА сотрудника (task_schedule_based_pay) — только они дают
     # часы «вне графика»; календарный праздник в рабочий день графика — обычный
     # рабочий день (часы по окладу, превышение смены — переработка).
@@ -508,16 +516,24 @@ def _write_employee_rows(
 
     # ── Employee-level колонки (merge по всем строкам сотрудника) ─────────────
     schedule = emp.schedule
-    is_standard = schedule is not None and schedule.schedule_type != "shift"
+    # Норма — по ГРАФИКУ сотрудника (task_shift_schedules): у weekday-графика
+    # по производственному календарю и его дням недели, у сменного — по циклу.
+    # Тот же источник, что и в payroll: цифры в Excel и на экране обязаны совпасть.
+    schedule_ok = schedule is not None and schedule_issue(schedule) is None
     norm_days = (
-        sum(1 for d in range(1, total_days + 1) if d not in off_days)
-        if is_standard else None
+        norm_days_for_schedule(schedule, year, month, calendar_data)
+        if schedule_ok and year is not None and month is not None
+        else None
     )
     fact_days = sum(
         1 for d in range(1, total_days + 1)
         if any(h > 0 for h in entries_index.get((emp.id, d), {}).values())
     )
-    norm_hours = _employee_norm_hours(emp, total_days, short_days, off_days)
+    norm_hours = (
+        float(norm_hours_for_schedule(schedule, year, month, calendar_data) or 0)
+        if schedule_ok and year is not None and month is not None
+        else 0.0
+    )
 
     def _emp_cell(col: int, value, *, bold=False, left=False):
         if n > 1:
@@ -603,15 +619,16 @@ def _write_employee_rows(
     # дня — смена − 1. Часы вне графика — отдельная категория, в переработку
     # не входят (task_schedule_based_pay).
     overtime = 0.0
-    if is_standard:
-        shift = schedule.hours_per_shift
+    if schedule_ok and year is not None and month is not None:
         for d in range(1, total_days + 1):
             if d in off_schedule_days:
                 continue
             day_hours = sum(
                 h for h in entries_index.get((emp.id, d), {}).values() if h > 0
             )
-            day_norm = max(0, (shift - 1) if d in short_days else shift)
+            day_norm = float(
+                shift_hours_for_date(schedule, date(year, month, d), calendar_data)
+            )
             if day_norm > 0 and day_hours > day_norm:
                 overtime += day_hours - day_norm
     # Часы в табеле целые, поэтому переработка тоже целая — _distribute_int ждёт int.
@@ -666,23 +683,6 @@ def _write_employee_rows(
                     c.fill = fill
 
     return end_row + 1
-
-
-def _employee_norm_hours(
-    emp: Employee, total_days: int, short_days: set[int], off_days: set[int]
-) -> float:
-    """Месячная норма часов: рабочих дней × hours_per_shift − сокращённые дни.
-    Только для standard-графиков; иначе 0."""
-    schedule = emp.schedule
-    if schedule is None or schedule.schedule_type == "shift":
-        return 0.0
-    norm = schedule.hours_per_shift
-    total = 0.0
-    for d in range(1, total_days + 1):
-        if d in off_days:
-            continue
-        total += (norm - 1) if d in short_days else norm
-    return total
 
 
 # ── Footer ────────────────────────────────────────────────────────────────────

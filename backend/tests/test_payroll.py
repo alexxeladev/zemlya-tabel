@@ -562,11 +562,15 @@ class TestNotCalculable:
         assert "график" in (p.reason_if_not_calculable or "").lower()
         assert p.norm_hours is None
 
-    def test_shift_schedule(self):
+    def test_shift_schedule_without_cycle_anchor(self):
+        """
+        task_shift_schedules: сменный график считается, но только с анкером
+        цикла — без стартовой даты фазу определить нельзя (см. test_shift_schedules).
+        """
         emp = make_employee(schedule=make_schedule(12, "shift"))
         p = calculate_employee_payroll(emp, [make_entry()], MAY_BASIC, 2026, 5)
         assert p.is_calculable is False
-        assert "смен" in (p.reason_if_not_calculable or "").lower()
+        assert "цикл" in (p.reason_if_not_calculable or "").lower()
 
     def test_no_calendar(self):
         emp = make_employee(schedule=make_schedule())
