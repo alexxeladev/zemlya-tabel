@@ -211,8 +211,12 @@ def build_autofill_preview(
     """
     from app.models.production_calendars import ProductionCalendar
     from app.schemas.timesheet import AutofillPreview, AutofillSkippedEmployee, TimesheetCellInput
-    from app.services.calendar import is_workday, is_short_day
     from app.services.timesheet_periods import get_or_create_period, can_edit_cells
+    from app.services.work_schedule import (
+        planned_work_dates,
+        schedule_issue,
+        shift_hours_for_date,
+    )
 
     cal = db.query(ProductionCalendar).filter_by(year=year).first()
     if cal is None:
@@ -276,11 +280,13 @@ def build_autofill_preview(
             ))
             continue
 
-        if schedule.schedule_type == "shift":
+        # Сменный график без анкера/паттерна цикла посчитать нельзя.
+        issue = schedule_issue(schedule)
+        if issue is not None:
             employees_skipped.append(AutofillSkippedEmployee(
                 employee_id=emp.id,
                 employee_name=emp.full_name,
-                reason="Графики со сменной логикой пока не поддерживаются",
+                reason=issue,
             ))
             continue
 
@@ -293,14 +299,12 @@ def build_autofill_preview(
             continue
 
         employees_processed += 1
-        hours_per_shift = schedule.hours_per_shift
 
-        for day in range(1, days_in_month + 1):
-            work_date = date(year, month, day)
-            if not is_workday(calendar_data, year, month, day):
-                continue
-
-            hours = hours_per_shift - 1 if is_short_day(calendar_data, month, day) else hours_per_shift
+        # Плановые дни графика (task_shift_schedules): weekday — рабочие дни
+        # недели графика по производственному календарю, cyclic — смены по
+        # циклу от стартовой даты (календарь на цикл не влияет).
+        for work_date in planned_work_dates(schedule, year, month, calendar_data):
+            hours = int(shift_hours_for_date(schedule, work_date, calendar_data))
             key = (emp.id, work_date, emp.default_company_id)
             if key in existing_keys:
                 cells_skipped += 1

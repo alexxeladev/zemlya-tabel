@@ -188,12 +188,40 @@ def seed_test_data() -> None:
 
         # --- Графики ---
         sch52 = get_or_create(Schedule, {"name": "5/2"},
-                            {"hours_per_shift": 8, "schedule_type": "standard",
+                            {"hours_per_shift": 8, "schedule_type": "weekday",
+                             "work_weekdays": [0, 1, 2, 3, 4],
                              "description": "Пятидневка по производственному календарю",
                              "is_active": True}, "schedules")
         get_or_create(Schedule, {"name": "6/1"},
-                            {"hours_per_shift": 8, "schedule_type": "standard",
-                             "description": "Шестидневка", "is_active": True}, "schedules")
+                            {"hours_per_shift": 9, "schedule_type": "weekday",
+                             "work_weekdays": [0, 1, 2, 3, 4, 5],
+                             "description": "Шестидневка Пн–Сб", "is_active": True}, "schedules")
+        # Сменные графики: смена 1 и смена 2 — один цикл, разные анкеры (противофаза).
+        # Анкеры подобраны под фазы из 1С на июнь 2026.
+        sch22 = get_or_create(Schedule, {"name": "2/2 смена 1"},
+                            {"hours_per_shift": 12, "schedule_type": "cyclic",
+                             "cycle_start_date": datetime.date(2026, 5, 31),
+                             "cycle_work_days": 2, "cycle_off_days": 2,
+                             "description": "Сутки через двое, смена 1",
+                             "is_active": True}, "schedules")
+        get_or_create(Schedule, {"name": "2/2 смена 2"},
+                            {"hours_per_shift": 12, "schedule_type": "cyclic",
+                             "cycle_start_date": datetime.date(2026, 6, 2),
+                             "cycle_work_days": 2, "cycle_off_days": 2,
+                             "description": "Сутки через двое, смена 2",
+                             "is_active": True}, "schedules")
+        get_or_create(Schedule, {"name": "3/3 смена 1"},
+                            {"hours_per_shift": 12, "schedule_type": "cyclic",
+                             "cycle_start_date": datetime.date(2026, 6, 4),
+                             "cycle_work_days": 3, "cycle_off_days": 3,
+                             "description": "Три через три, смена 1",
+                             "is_active": True}, "schedules")
+        get_or_create(Schedule, {"name": "3/3 смена 2"},
+                            {"hours_per_shift": 12, "schedule_type": "cyclic",
+                             "cycle_start_date": datetime.date(2026, 6, 7),
+                             "cycle_work_days": 3, "cycle_off_days": 3,
+                             "description": "Три через три, смена 2",
+                             "is_active": True}, "schedules")
 
         # --- Производственный календарь на текущий год (если доступен remote) ---
         from app.models.production_calendars import ProductionCalendar
@@ -242,6 +270,9 @@ def seed_test_data() -> None:
              coef, D("1.5"), None, None,
              None, None),
             ("Бесграфика Неясный", "T-009", ito, None, zmo, D("50000"),
+             coef, D("1.5"), None, None,
+             None, None),
+            ("Сменщик Первый", "T-010", ito, sch22, zmo, D("60000"),
              coef, D("1.5"), None, None,
              None, None),
         ]

@@ -54,7 +54,10 @@ def schedule_standard(db_session: Session) -> Schedule:
 
 @pytest.fixture
 def schedule_shift(db_session: Session) -> Schedule:
-    s = Schedule(name="2/2", hours_per_shift=12, schedule_type="shift", is_active=True)
+    s = Schedule(
+        name="2/2", hours_per_shift=12, schedule_type="cyclic", is_active=True,
+        cycle_start_date=date(2026, 5, 1), cycle_work_days=2, cycle_off_days=2,
+    )
     db_session.add(s)
     db_session.commit()
     db_session.refresh(s)
@@ -393,10 +396,15 @@ def test_autofill_skip_employee_no_schedule(
     assert emp_no_sched.id in skipped_ids
 
 
-def test_autofill_skip_shift_schedule(
+def test_autofill_skip_shift_schedule_without_anchor(
     client: TestClient, admin_emp: Employee, calendar_2026: ProductionCalendar,
     dept: Department, company_a: Company, schedule_shift: Schedule, db_session: Session
 ):
+    """
+    task_shift_schedules: сменные графики автозаполняются, но только с анкером
+    цикла. Без стартовой даты фазу определить нельзя → сотрудник пропускается.
+    """
+    schedule_shift.cycle_start_date = None
     emp_shift = Employee(
         full_name="Shift Emp",
         is_active=True, department_id=dept.id,
@@ -415,7 +423,7 @@ def test_autofill_skip_shift_schedule(
     skipped = resp.json()["employees_skipped"]
     shift_skipped = [s for s in skipped if s["employee_id"] == emp_shift.id]
     assert len(shift_skipped) == 1
-    assert "сменной логикой" in shift_skipped[0]["reason"]
+    assert "дата начала цикла" in shift_skipped[0]["reason"]
 
 
 def test_autofill_no_calendar_returns_422(
