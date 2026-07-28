@@ -1,38 +1,65 @@
 """
-Рабочий день по ГРАФИКУ сотрудника (task_schedule_based_pay).
+График сотрудника — единственный источник правды о том, какие дни рабочие,
+сколько часов длится смена и какая у сотрудника месячная норма
+(task_schedule_based_pay + task_shift_schedules).
 
-Точка отсчёта для оплаты — график сотрудника, а не производственный календарь:
-  - работа в рабочий день ГРАФИКА (в том числе в календарный праздник) → оклад;
-  - выход в свой выходной ПО ГРАФИКУ → отдельная категория «вне графика»
-    (коэффициент / фикс-ставка per-employee).
+Два вида графиков (`Schedule.schedule_type`):
 
-Здесь только определение «рабочий/выходной по графику». Деньги считает
-`app.services.payroll`, месячная норма часов — по-прежнему календарная
-(`app.services.calendar`), она этим модулем не затрагивается.
+  - **weekday** («по дням недели», legacy-значение `standard`): 5/2, 6/1,
+    вс–чт, вт–сб. Рабочие дни определяются днём недели (`work_weekdays`);
+    производственный календарь убирает праздники и добавляет переносы
+    («рабочая суббота»).
+  - **cyclic** («скользящий цикл», legacy-значение `shift`): 2/2, 3/3.
+    Рабочие дни определяются циклом от стартовой даты `cycle_start_date`
+    (`cycle_work_days` смен подряд + `cycle_off_days` выходных подряд).
+    Производственный календарь на цикл НЕ влияет — смена в праздник это
+    обычная смена. «Смена 1» и «Смена 2» — два графика с разными стартовыми
+    датами (сдвиг фазы).
 
-Виды графиков:
-  - **weekday** (`schedule_type != "shift"`: 5/2, 6/1, …) — рабочие дни недели.
-    Явного поля с днями недели в модели Schedule нет, поэтому набор выводится
-    из имени «N/M» (N рабочих дней подряд с понедельника, только если N+M=7);
-    имя не разобрали → Пн–Пт. Плюс переносы: день, объявленный календарём
-    рабочим («рабочая суббота»), считается рабочим днём графика.
-  - **cyclic** (`schedule_type == "shift"`: 2/2, 3/3) — цикл от стартовой даты,
-    календарь не влияет. Модель Schedule пока не хранит дату старта цикла
-    (задача сменных графиков не сделана), поэтому без якоря функция возвращает
-    None = «определить нельзя». Payroll для сменных графиков всё равно
-    возвращает is_calculable=False, так что в деньги None не попадает.
+Ключевое различие двух понятий «рабочий день»:
+
+  - `is_schedule_work_day` — **оплата**. Праздник, попавший на рабочий день
+    недели, остаётся рабочим днём графика (часы по окладу, а не ×1,5);
+    выход в свой выходной по графику → категория «вне графика».
+  - `is_planned_work_day` — **план**: норма часов, автозаполнение, превью.
+    Здесь праздник производственного календаря рабочим днём НЕ является.
+
+Деньги считает `app.services.payroll`, он берёт норму отсюда.
 """
 from __future__ import annotations
 
+import calendar as _cal
 import re
 from datetime import date
+from decimal import Decimal
 
-from app.services.calendar import is_workday
+from app.services.calendar import is_short_day, is_workday
+
+# ── Типы графиков ─────────────────────────────────────────────────────────────
+SCHEDULE_TYPE_WEEKDAY = "weekday"
+SCHEDULE_TYPE_CYCLIC = "cyclic"
+SCHEDULE_TYPES = (SCHEDULE_TYPE_WEEKDAY, SCHEDULE_TYPE_CYCLIC)
+
+# Значения до task_shift_schedules — принимаются на входе и нормализуются.
+_LEGACY_TYPES = {"standard": SCHEDULE_TYPE_WEEKDAY, "shift": SCHEDULE_TYPE_CYCLIC}
 
 # Пн–Пт: набор по умолчанию, если из графика ничего не выводится.
 DEFAULT_WORK_WEEKDAYS = frozenset({0, 1, 2, 3, 4})
 
+_ZERO = Decimal("0")
+_ONE = Decimal("1")
+
 _PATTERN_RE = re.compile(r"(\d+)\s*[/\\]\s*(\d+)")
+
+
+def normalize_schedule_type(value: str | None) -> str:
+    """`standard`/`weekday` → weekday, `shift`/`cyclic` → cyclic, иначе weekday."""
+    if not value:
+        return SCHEDULE_TYPE_WEEKDAY
+    value = str(value).strip().lower()
+    if value in SCHEDULE_TYPES:
+        return value
+    return _LEGACY_TYPES.get(value, SCHEDULE_TYPE_WEEKDAY)
 
 
 def parse_pattern(name: str | None) -> tuple[int, int] | None:
@@ -49,20 +76,26 @@ def parse_pattern(name: str | None) -> tuple[int, int] | None:
 
 
 def is_cyclic_schedule(schedule) -> bool:
-    """Сменный (цикличный) график — 2/2, 3/3 и т.п."""
-    return getattr(schedule, "schedule_type", "standard") == "shift"
+    """Сменный (скользящий) график — 2/2, 3/3 и т.п."""
+    if schedule is None:
+        return False
+    return normalize_schedule_type(getattr(schedule, "schedule_type", None)) == (
+        SCHEDULE_TYPE_CYCLIC
+    )
 
 
 def work_weekdays(schedule) -> frozenset[int]:
     """
     Рабочие дни недели weekday-графика (0=Пн … 6=Вс).
 
-    Порядок источников: явное поле `work_weekdays` (появится в задаче графиков) →
-    имя вида «N/M» при N+M=7 (N дней подряд с понедельника) → Пн–Пт.
+    Порядок источников: явное поле `work_weekdays` → имя вида «N/M» при N+M=7
+    (N дней подряд с понедельника: 5/2 → Пн–Пт, 6/1 → Пн–Сб) → Пн–Пт.
     """
     explicit = getattr(schedule, "work_weekdays", None)
     if explicit:
-        return frozenset(int(x) for x in explicit)
+        days = frozenset(int(x) for x in explicit if 0 <= int(x) <= 6)
+        if days:
+            return days
 
     pattern = parse_pattern(getattr(schedule, "name", None))
     if pattern is not None:
@@ -72,10 +105,42 @@ def work_weekdays(schedule) -> frozenset[int]:
     return DEFAULT_WORK_WEEKDAYS
 
 
+def cycle_pattern(schedule) -> tuple[int, int] | None:
+    """
+    Паттерн цикла сменного графика: (смен подряд, выходных подряд).
+
+    Источники: явные поля `cycle_work_days`/`cycle_off_days` → имя «N/M».
+    """
+    work = getattr(schedule, "cycle_work_days", None)
+    rest = getattr(schedule, "cycle_off_days", None)
+    if work is not None and rest is not None and int(work) > 0 and int(rest) >= 0:
+        return int(work), int(rest)
+    return parse_pattern(getattr(schedule, "name", None))
+
+
 def cycle_start_date(schedule) -> date | None:
-    """Дата начала цикла сменного графика. Поля в модели пока нет → None."""
+    """Дата начала цикла сменного графика (анкер фазы)."""
     return getattr(schedule, "cycle_start_date", None)
 
+
+def schedule_issue(schedule) -> str | None:
+    """
+    Почему по графику нельзя посчитать план/деньги. None — всё в порядке.
+    Используют payroll (`reason_if_not_calculable`) и автозаполнение.
+    """
+    if schedule is None:
+        return "Не задан график"
+    if not is_cyclic_schedule(schedule):
+        return None
+    if cycle_start_date(schedule) is None:
+        return "Не задана дата начала цикла сменного графика"
+    pattern = cycle_pattern(schedule)
+    if pattern is None or pattern[0] + pattern[1] <= 0:
+        return "Не задан паттерн сменного графика"
+    return None
+
+
+# ── Рабочий день по графику (оплата) ──────────────────────────────────────────
 
 def is_schedule_work_day(
     schedule,
@@ -84,13 +149,12 @@ def is_schedule_work_day(
 ) -> bool | None:
     """
     True — день рабочий по графику сотрудника, False — выходной по графику,
-    None — определить нельзя (нет графика / сменный график без даты старта цикла).
+    None — определить нельзя (нет графика / сменный график без анкера цикла).
 
     weekday-график: рабочий, если день недели входит в рабочие дни графика ИЛИ
     производственный календарь объявил день рабочим (перенос выходного —
     «рабочая суббота»). Календарный праздник, попавший на рабочий день недели,
-    остаётся рабочим днём графика — это и есть суть задачи: такие часы идут
-    по окладу, а не ×1,5.
+    остаётся рабочим днём графика — такие часы идут по окладу, а не ×1,5.
 
     cyclic-график: рабочий, если по циклу от стартовой даты это смена;
     календарь не учитывается (у сменщика свои выходные).
@@ -99,7 +163,7 @@ def is_schedule_work_day(
         return None
 
     if is_cyclic_schedule(schedule):
-        pattern = parse_pattern(getattr(schedule, "name", None))
+        pattern = cycle_pattern(schedule)
         start = cycle_start_date(schedule)
         if pattern is None or start is None:
             return None
@@ -130,3 +194,133 @@ def is_off_schedule_day(
     остаются обычными, лишней доплаты не возникает.
     """
     return is_schedule_work_day(schedule, work_date, calendar_data) is False
+
+
+# ── Плановый рабочий день (норма, автозаполнение, превью) ─────────────────────
+
+def is_planned_work_day(
+    schedule,
+    work_date: date,
+    calendar_data: dict | None = None,
+) -> bool:
+    """
+    День входит в ПЛАН сотрудника: месячную норму, автозаполнение, превью.
+
+    В отличие от `is_schedule_work_day` праздник производственного календаря
+    плановым рабочим днём НЕ является (в него не автозаполняем и в норму не
+    считаем), хотя фактический выход в него оплачивается по окладу.
+
+    cyclic: строго по циклу, календарь не влияет.
+
+    weekday:
+      - день недели графика → рабочий, кроме объявленных календарём нерабочими
+        будних дней (праздники и переносы: 12 июня, 4 ноября, новогодние);
+        обычная суббота/воскресенье календаря рабочим дням графика не мешает —
+        у 6/1 суббота рабочая, у «вс–чт» воскресенье рабочее;
+      - день не из графика → рабочий только если календарь объявил рабочим
+        выходной день недели (перенос, «рабочая суббота»).
+    """
+    if schedule is None:
+        return False
+
+    if is_cyclic_schedule(schedule):
+        return is_schedule_work_day(schedule, work_date, calendar_data) is True
+
+    weekday = work_date.weekday()
+    in_schedule = weekday in work_weekdays(schedule)
+
+    if calendar_data is None:
+        return in_schedule
+
+    calendar_workday = is_workday(
+        calendar_data, work_date.year, work_date.month, work_date.day
+    )
+    if in_schedule:
+        # Нерабочий будний день календаря — это праздник или перенос: отдыхают все.
+        # Нерабочая суббота/воскресенье — обычные выходные «пятидневки», для
+        # 6/1 или «вс–чт» это их штатные рабочие дни.
+        return calendar_workday or weekday >= 5
+    # Не рабочий день недели графика: считаем только перенос на выходной.
+    return calendar_workday and weekday >= 5
+
+
+def planned_work_dates(
+    schedule,
+    year: int,
+    month: int,
+    calendar_data: dict | None = None,
+) -> list[date]:
+    """Плановые рабочие дни месяца по графику (для нормы, автозаполнения, превью)."""
+    if schedule is None:
+        return []
+    days_in_month = _cal.monthrange(year, month)[1]
+    all_dates = (date(year, month, day) for day in range(1, days_in_month + 1))
+    return [d for d in all_dates if is_planned_work_day(schedule, d, calendar_data)]
+
+
+def shift_hours_for_date(
+    schedule,
+    work_date: date,
+    calendar_data: dict | None = None,
+) -> Decimal:
+    """
+    Длительность смены в конкретный день: `hours_per_shift`, у предпраздничного
+    (сокращённого) дня на час меньше.
+
+    Сокращение — только для weekday-графиков: у сменщика смена 12 часов
+    независимо от производственного календаря.
+    """
+    if schedule is None:
+        return _ZERO
+    hours = Decimal(str(schedule.hours_per_shift))
+    if (
+        not is_cyclic_schedule(schedule)
+        and calendar_data is not None
+        and is_short_day(calendar_data, work_date.month, work_date.day)
+    ):
+        hours -= _ONE
+    return max(_ZERO, hours)
+
+
+def norm_days_for_schedule(
+    schedule,
+    year: int,
+    month: int,
+    calendar_data: dict | None = None,
+) -> int | None:
+    """Плановых рабочих дней (смен) в месяце по графику. None — график не задан."""
+    if schedule is None or schedule_issue(schedule) is not None:
+        return None
+    return len(planned_work_dates(schedule, year, month, calendar_data))
+
+
+def norm_hours_for_schedule(
+    schedule,
+    year: int,
+    month: int,
+    calendar_data: dict | None = None,
+) -> Decimal | None:
+    """
+    Месячная норма часов ПО ГРАФИКУ (task_shift_schedules).
+
+      - weekday: Σ по плановым дням (смена, у сокращённого дня смена − 1).
+        Для 5/2 совпадает с прежней календарной формулой
+        `workdays × hours_per_shift − short_days`.
+      - cyclic: смены месяца по циклу × часы смены; производственный календарь
+        не участвует (2/2 по 12 ч в июне 2026 → 15 × 12 = 180).
+
+    Без календаря weekday-график считается по «голым» дням недели (праздники
+    не вычтены) — этого достаточно для превью и справочных колонок Excel, но
+    payroll в таком случае деньги считать отказывается: норма была бы завышена.
+
+    None — норму определить нельзя (нет графика, сменный без анкера цикла).
+    """
+    if schedule is None or schedule_issue(schedule) is not None:
+        return None
+    return sum(
+        (
+            shift_hours_for_date(schedule, d, calendar_data)
+            for d in planned_work_dates(schedule, year, month, calendar_data)
+        ),
+        _ZERO,
+    )
