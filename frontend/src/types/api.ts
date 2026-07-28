@@ -350,12 +350,42 @@ export interface Company {
   is_active: boolean
 }
 
+export type ScheduleType = 'weekday' | 'cyclic'
+
 export interface Schedule {
   id: number
   name: string
   hours_per_shift: number
+  /** weekday — по дням недели (5/2, 6/1, вс–чт); cyclic — скользящий цикл (2/2, 3/3) */
+  schedule_type: ScheduleType
+  /** weekday: рабочие дни недели, 0=Пн … 6=Вс. null → выводятся из имени «N/M» */
+  work_weekdays: number[] | null
+  /** cyclic: анкер фазы цикла */
+  cycle_start_date: string | null
+  cycle_work_days: number | null
+  cycle_off_days: number | null
   description: string | null
   is_active: boolean
+}
+
+export interface SchedulePreviewDay {
+  day: number
+  work_date: string
+  weekday: number
+  is_work_day: boolean
+  hours: number
+  is_holiday: boolean
+  is_short_day: boolean
+}
+
+export interface SchedulePreview {
+  year: number
+  month: number
+  days: SchedulePreviewDay[]
+  work_days: number
+  norm_hours: number
+  has_calendar: boolean
+  issue: string | null
 }
 
 export interface Employee {
