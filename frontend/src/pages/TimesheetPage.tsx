@@ -136,7 +136,9 @@ export type EmployeePayroll = {
   loan_planned_deduction?: string;
   loan_is_manual?: boolean;
   total_deductions?: string;
-  net_payout?: string;
+  net_payout?: string;         // округлено вниз до 100 ₽
+  net_payout_exact?: string;
+  rounding_tail?: string;
   breakdown_by_company: CompanyBreakdown[];
   is_calculable: boolean;
   reason_if_not_calculable: string | null;
@@ -156,6 +158,8 @@ type PayrollSummary = {
   total_kpi?: string;
   total_deductions?: string;
   total_net_payout?: string;
+  total_net_payout_exact?: string;
+  total_rounding_tail?: string;
 };
 
 export type Period = {
@@ -908,7 +912,14 @@ export function TimesheetPage() {
                 <span className="text-blue-500 font-sans">✎</span>
               </button>
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-right font-mono font-bold text-emerald-700 bg-emerald-50/40">
+            <td
+              className="border border-gray-200 px-2 py-2 text-right font-mono font-bold text-emerald-700 bg-emerald-50/40"
+              title={
+                num(pay?.rounding_tail) > 0
+                  ? `Округлено вниз до 100 ₽: точно ${fmtMoney(pay?.net_payout_exact ?? null)}, округление −${fmtMoney(pay?.rounding_tail ?? null)}`
+                  : undefined
+              }
+            >
               {pay?.is_calculable ? fmtMoney(pay?.net_payout ?? null) : '—'}
             </td>
           </>

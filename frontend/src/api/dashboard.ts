@@ -24,6 +24,8 @@ export interface PayrollTotals {
   overtime: string
   off_schedule: string
   holiday: string
+  // Σ хвостов округления «к выплате» вниз до 100 ₽ за период
+  rounding_effect: string
   non_calculable_employees: number
 }
 

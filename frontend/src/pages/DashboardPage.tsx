@@ -33,11 +33,14 @@ function num(v: string | null | undefined): number {
 
 // ── Мелкие компоненты ─────────────────────────────────────────────────────────
 
-function KpiCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function KpiCard({ label, value, accent, hint }: {
+  label: string; value: string; accent?: string; hint?: string
+}) {
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
       <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">{label}</div>
       <div className={`mt-1 text-2xl font-bold ${accent ?? 'text-gray-900'}`}>{value}</div>
+      {hint && <div className="mt-1 text-[11px] leading-tight text-gray-400">{hint}</div>}
     </div>
   )
 }
@@ -229,12 +232,18 @@ function PayrollBlock({ data }: { data: DashboardData }) {
 
   return (
     <Section title="ФОТ (брутто к начислению)">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
         <KpiCard label="Всего начислено" value={formatMoney(p.total, { showZero: true })} accent="text-blue-700" />
         <KpiCard label="Оклады" value={formatMoney(p.base, { showZero: true })} />
         <KpiCard label="Переработка" value={formatMoney(p.overtime, { showZero: true })} />
         <KpiCard label="Вне графика" value={formatMoney(p.off_schedule ?? '0', { showZero: true })} />
         <KpiCard label="Праздничные" value={formatMoney(p.holiday, { showZero: true })} />
+        <KpiCard
+          label="Эффект округления"
+          value={formatMoney(p.rounding_effect ?? '0', { showZero: true })}
+          accent="text-amber-700"
+          hint="сумма округлений «К выплате» вниз до 100 ₽"
+        />
       </div>
 
       {p.non_calculable_employees > 0 && (

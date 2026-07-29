@@ -68,7 +68,10 @@ export interface EmployeePayroll {
   loan_planned_deduction: string
   loan_is_manual: boolean
   total_deductions: string
+  // net_payout округлён вниз до 100 ₽; exact/tail — справочно
   net_payout: string
+  net_payout_exact: string
+  rounding_tail: string
   breakdown_by_company: CompanyBreakdown[]
   is_calculable: boolean
   reason_if_not_calculable: string | null
@@ -91,6 +94,8 @@ export interface PayrollSummary {
   total_kpi: string
   total_deductions: string
   total_net_payout: string
+  total_net_payout_exact: string
+  total_rounding_tail: string
 }
 
 // ── Payroll statement (задача 3.11b) ──
@@ -166,7 +171,9 @@ export interface StatementRow {
   sick_limit_remaining: number
   accrued_total: string
   deductions: string
-  net_payout: string
+  net_payout: string        // округлено вниз до 100 ₽
+  net_payout_exact: string
+  rounding_tail: string
   is_overridden: boolean
   is_auto_distributed: boolean
   distribution_source: DistributionSource
@@ -191,6 +198,8 @@ export interface PayrollStatement {
   total_accrued: string
   total_deductions: string
   total_net_payout: string
+  total_net_payout_exact: string
+  total_rounding_tail: string
   distribution_totals: Record<number, string>
 }
 

@@ -401,7 +401,16 @@ export function PayrollPage() {
                     <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.kpi_amount)}</td>
                     <td className="px-2 py-1.5 text-center font-bold text-blue-700">{formatMoney(row.accrued_total, { showZero: true })}</td>
                     <td className="px-2 py-1.5 text-center text-rose-600">{formatMoney(row.deductions)}</td>
-                    <td className="px-2 py-1.5 text-center font-bold text-emerald-700">{formatMoney(row.net_payout, { showZero: true })}</td>
+                    <td
+                      className="px-2 py-1.5 text-center font-bold text-emerald-700"
+                      title={
+                        num(row.rounding_tail) > 0
+                          ? `Округлено вниз до 100 ₽: точно ${formatMoney(row.net_payout_exact, { showZero: true })}, округление −${formatMoney(row.rounding_tail)}`
+                          : undefined
+                      }
+                    >
+                      {formatMoney(row.net_payout, { showZero: true })}
+                    </td>
                     {companies.map((c) => {
                       const pct = e[c.id] ?? ''
                       const autoEntry = auto ? autoByCompany[c.id] : undefined
