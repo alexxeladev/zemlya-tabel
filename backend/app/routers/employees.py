@@ -3,7 +3,7 @@ import string
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -30,10 +30,13 @@ from app.services.company_shares import (
     load_department_shares,
     validate_shares,
 )
+from app.services.employee_import import generate_import_template
 
 router = APIRouter()
 
 _admin_only = require_role("admin")
+
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _to_dict(emp: Employee) -> dict:
@@ -418,6 +421,22 @@ def _shares_response(db: Session, emp: Employee) -> EmployeeSharesRead:
             for cid, pct in sorted(dept_shares.items())
         ],
         inherits_department=percent_sum <= 0 and bool(dept_shares),
+    )
+
+
+# ── Импорт сотрудников из Excel (task_employee_import) ─────────────────────────
+
+@router.get("/import/template")
+def download_import_template(
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Шаблон .xlsx для заполнения: колонки, строка-пример и лист «Справочники»."""
+    content = generate_import_template(db)
+    return Response(
+        content=content,
+        media_type=_XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": 'attachment; filename="shablon_sotrudnikov.xlsx"'},
     )
 
 
