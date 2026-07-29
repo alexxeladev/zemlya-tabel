@@ -8,7 +8,6 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
-from app.models.companies import Company
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
 
@@ -151,7 +150,11 @@ def _upsert_cell_no_commit(
 
 def _check_period_lock(db: Session, employee_id: int, work_date: date) -> None:
     """Raises PeriodLockedException if the period for this employee+date is not draft."""
-    from app.services.timesheet_periods import PeriodLockedException, get_or_create_period, can_edit_cells
+    from app.services.timesheet_periods import (
+        PeriodLockedException,
+        can_edit_cells,
+        get_or_create_period,
+    )
 
     emp = db.get(Employee, employee_id)
     if emp is None:
@@ -211,7 +214,7 @@ def build_autofill_preview(
     """
     from app.models.production_calendars import ProductionCalendar
     from app.schemas.timesheet import AutofillPreview, AutofillSkippedEmployee, TimesheetCellInput
-    from app.services.timesheet_periods import get_or_create_period, can_edit_cells
+    from app.services.timesheet_periods import can_edit_cells, get_or_create_period
     from app.services.work_schedule import (
         planned_work_dates,
         schedule_issue,

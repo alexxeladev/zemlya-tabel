@@ -7,6 +7,7 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from app.core.security import hash_password
+from app.models.audit_log import AuditLog
 from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
@@ -312,3 +313,107 @@ def test_preview_does_not_create_employees(client, db_session, admin_token, refs
     before = db_session.query(Employee).count()
     upload(client, admin_token, make_file([ROW_OK]))
     assert db_session.query(Employee).count() == before
+
+
+# ── Подтверждённый импорт ─────────────────────────────────────────────────────
+
+def test_confirmed_import_creates_employee(client, db_session, admin_token, refs):
+    data = upload(client, admin_token, make_file([ROW_OK]), confirm=True).json()
+
+    assert data["confirmed"] is True
+    assert (data["created_count"], data["skipped_count"]) == (1, 0)
+    assert data["rows"][0]["created"] is True
+
+    emp = db_session.query(Employee).filter(Employee.full_name == "Сидоров Сидор").one()
+    assert emp.tab_number == "100"
+    assert emp.position == "Слесарь"
+    assert emp.default_company_id == refs["company"].id
+    assert emp.department_id == refs["dept"].id
+    assert emp.schedule_id == refs["weekday"].id
+    assert emp.pay_type == "salary"
+    assert emp.rate == Decimal("50000")
+    assert emp.shift_rate is None
+    assert emp.weekend_pay_type == "coefficient"
+    assert emp.weekend_coefficient == Decimal("1.5")
+    assert emp.hire_date == datetime.date(2026, 3, 1)
+    assert emp.is_active is True
+    # Дефолты карточки, которых нет в шаблоне
+    assert emp.holiday_coefficient == Decimal("1.5")
+    assert emp.overtime_coefficient == Decimal("1.5")
+
+
+def test_confirmed_import_does_not_create_access(client, db_session, admin_token, refs):
+    """Доступы не импортируются: ни email, ни роли, ни пароля."""
+    upload(client, admin_token, make_file([ROW_OK]), confirm=True)
+    emp = db_session.query(Employee).filter(Employee.full_name == "Сидоров Сидор").one()
+    assert emp.email is None
+    assert emp.role is None
+    assert emp.hashed_password is None
+    assert emp.is_system_admin is False
+
+
+def test_confirmed_import_per_shift(client, db_session, admin_token, refs):
+    content = make_file([
+        ["S-1", "Сменщик", "ZMO", "", "Оператор", "2/2 смена 1",
+         "посменная", "", "2 500", "фикс", "740", ""],
+    ])
+    assert upload(client, admin_token, content, confirm=True).json()["created_count"] == 1
+
+    emp = db_session.query(Employee).filter(Employee.full_name == "Сменщик").one()
+    assert emp.pay_type == "per_shift"
+    assert emp.shift_rate == Decimal("2500")
+    assert emp.rate is None
+    assert emp.weekend_pay_type == "fixed_rate"
+    assert emp.weekend_fixed_rate == Decimal("740")
+    assert emp.department_id is None      # пусто → без отдела
+    assert emp.schedule_id == refs["cyclic"].id
+
+
+def test_confirmed_import_partial(client, db_session, admin_token, refs):
+    """5 строк: 3 валидных, 1 без компании, 1 дубль таб.№ → создано 3, пропущено 2."""
+    db_session.add(Employee(full_name="Старый", tab_number="777", is_active=True))
+    db_session.commit()
+
+    content = make_file([
+        ["101", "Первый Валидный", "ZMO", "ИТО", "Инженер", "5\\2", "окладная", "50 000", "",
+         "коэффициент", "1,5", "01.03.2026"],
+        ["102", "Второй Валидный", 'ООО "Комфорт"', "", "", "", "", "60000", "", "", "", ""],
+        ["103", "Третий Валидный", "Земля МО", "ИТО", "Оператор", "2/2 смена 1", "посменная",
+         "", "2500", "фикс", "740", ""],
+        ["104", "Без Компании", "", "ИТО", "", "", "", "50000", "", "", "", ""],
+        ["777", "Дубль Табельного", "ZMO", "", "", "", "", "50000", "", "", "", ""],
+    ])
+
+    preview = upload(client, admin_token, content).json()
+    assert (preview["valid_count"], preview["error_count"]) == (3, 2)
+
+    data = upload(client, admin_token, content, confirm=True).json()
+    assert (data["created_count"], data["skipped_count"]) == (3, 2)
+
+    names = {e.full_name for e in db_session.query(Employee).all()}
+    assert {"Первый Валидный", "Второй Валидный", "Третий Валидный"} <= names
+    assert "Без Компании" not in names
+    assert "Дубль Табельного" not in names
+
+
+def test_confirmed_import_writes_audit_log(client, db_session, admin_token, refs):
+    upload(client, admin_token, make_file([ROW_OK]), confirm=True)
+
+    actions = [
+        a.action for a in db_session.query(AuditLog).filter(AuditLog.entity_type == "employee")
+    ]
+    assert "create" in actions
+    summary = db_session.query(AuditLog).filter(
+        AuditLog.action == "employees_imported"
+    ).one()
+    assert summary.after == {"created": 1, "skipped": 0, "total": 1}
+
+
+def test_repeated_confirmed_import_is_blocked_by_tab_number(client, db_session, admin_token, refs):
+    """Второй заход тем же файлом ничего не задваивает — таб.№ уже занят."""
+    upload(client, admin_token, make_file([ROW_OK]), confirm=True)
+    data = upload(client, admin_token, make_file([ROW_OK]), confirm=True).json()
+
+    assert (data["created_count"], data["skipped_count"]) == (0, 1)
+    assert "уже существует" in data["rows"][0]["errors"][0]
+    assert db_session.query(Employee).filter(Employee.tab_number == "100").count() == 1

@@ -27,11 +27,14 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_action
 from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.schedules import Schedule
+from app.schemas.employee import EmployeeCreate
 from app.schemas.employee_import import EmployeeImportResult, ImportRowRead
+from app.services.employees import build_employee
 
 # Строка-пример помечается этим текстом в первой колонке; парсер такие строки
 # пропускает (пользователь может её и удалить — тогда данные идут со 2-й строки).
@@ -561,3 +564,66 @@ def parse_import_file(db: Session, content: bytes) -> EmployeeImportResult:
         error_count=len(rows) - valid_count,
         rows=rows,
     )
+
+
+def import_valid_rows(
+    db: Session, actor: Employee, result: EmployeeImportResult
+) -> EmployeeImportResult:
+    """Создать сотрудников по валидным строкам превью. Ошибочные пропускаются.
+
+    Карточка собирается тем же `build_employee`, что и обычное создание, доступы
+    (email/роль/пароль) не импортируются. Всё в одной транзакции: при сбое не
+    останется половины сотрудников.
+    """
+    created = 0
+    for row in result.rows:
+        if not row.is_valid:
+            continue
+
+        payload = EmployeeCreate(
+            tab_number=row.tab_number,
+            full_name=row.full_name,
+            position=row.position,
+            department_id=row.department_id,
+            schedule_id=row.schedule_id,
+            default_company_id=row.company_id,
+            pay_type=row.pay_type,
+            rate=row.rate,
+            shift_rate=row.shift_rate,
+            weekend_pay_type=row.weekend_pay_type,
+            weekend_coefficient=row.weekend_coefficient,
+            weekend_fixed_rate=row.weekend_fixed_rate,
+            hire_date=row.hire_date,
+        )
+        emp = build_employee(payload)
+        db.add(emp)
+        db.flush()
+
+        log_action(
+            db, actor, "employee", emp.id, "create",
+            after={
+                "source": "excel_import",
+                "tab_number": emp.tab_number,
+                "full_name": emp.full_name,
+                "default_company_id": emp.default_company_id,
+                "department_id": emp.department_id,
+                "schedule_id": emp.schedule_id,
+                "pay_type": emp.pay_type,
+                "rate": str(emp.rate) if emp.rate is not None else None,
+                "shift_rate": str(emp.shift_rate) if emp.shift_rate is not None else None,
+            },
+        )
+        row.created = True
+        row.employee_id = emp.id
+        created += 1
+
+    log_action(
+        db, actor, "employee", None, "employees_imported",
+        after={"created": created, "skipped": result.error_count, "total": result.total},
+    )
+    db.commit()
+
+    result.confirmed = True
+    result.created_count = created
+    result.skipped_count = result.error_count
+    return result

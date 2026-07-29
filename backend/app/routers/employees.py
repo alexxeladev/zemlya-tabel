@@ -34,8 +34,10 @@ from app.services.company_shares import (
 from app.services.employee_import import (
     ImportFileError,
     generate_import_template,
+    import_valid_rows,
     parse_import_file,
 )
+from app.services.employees import build_employee
 
 router = APIRouter()
 
@@ -141,46 +143,7 @@ def create_employee(
     db: Session = Depends(get_db),
     actor: Employee = Depends(_admin_only),
 ):
-    emp = Employee(
-        tab_number=payload.tab_number,
-        full_name=payload.full_name,
-        position=payload.position,
-        department_id=payload.department_id,
-        schedule_id=payload.schedule_id,
-        default_company_id=payload.default_company_id,
-        pay_type=payload.pay_type,
-        # Оклад и ставка за смену взаимоисключающие — чужое поле не сохраняем,
-        # иначе в карточке останется мусор от прошлого типа оплаты.
-        rate=payload.rate if payload.pay_type != "per_shift" else None,
-        shift_rate=payload.shift_rate if payload.pay_type == "per_shift" else None,
-        weekend_pay_type=payload.weekend_pay_type,
-        # default 1.5 для coefficient, чтобы не хранить NULL при старом поведении
-        weekend_coefficient=(
-            payload.weekend_coefficient
-            if payload.weekend_coefficient is not None or payload.weekend_pay_type != "coefficient"
-            else Decimal("1.5")
-        ),
-        weekend_fixed_rate=payload.weekend_fixed_rate,
-        holiday_pay_type=payload.holiday_pay_type,
-        # default 1.5 для coefficient — как у выходных, точная ставка в карточке
-        holiday_coefficient=(
-            payload.holiday_coefficient
-            if payload.holiday_coefficient is not None or payload.holiday_pay_type != "coefficient"
-            else Decimal("1.5")
-        ),
-        holiday_fixed_rate=payload.holiday_fixed_rate,
-        overtime_coefficient=(
-            payload.overtime_coefficient
-            if payload.overtime_coefficient is not None
-            else Decimal("1.5")
-        ),
-        loan_amount=payload.loan_amount,
-        loan_term_months=payload.loan_term_months,
-        loan_start_date=payload.loan_start_date,
-        is_active=payload.is_active,
-        hire_date=payload.hire_date,
-        dismissal_date=payload.dismissal_date,
-    )
+    emp = build_employee(payload)
 
     if payload.access:
         if db.query(Employee).filter(Employee.email == payload.access.email).first():
@@ -448,21 +411,28 @@ def download_import_template(
 @router.post("/import", response_model=EmployeeImportResult)
 def import_employees(
     file: UploadFile = File(...),
+    confirm: bool = Query(default=False),
     db: Session = Depends(get_db),
     actor: Employee = Depends(_admin_only),
 ):
-    """Разобрать заполненный файл и вернуть превью со статусами строк.
+    """Разобрать заполненный файл: превью со статусами строк, а по `confirm=true`
+    — создать сотрудников по валидным строкам (ошибочные пропускаются).
 
-    Ничего не создаёт: пользователь сначала смотрит, что распозналось и где
-    ошибки, и только потом подтверждает импорт.
+    Один эндпоинт на оба шага: подтверждение приходит тем же файлом, поэтому
+    на сервере нечему протухнуть — разбор и валидация повторяются перед записью,
+    а не берутся на веру из превью.
     """
     content = file.file.read()
     try:
-        return parse_import_file(db, content)
+        result = parse_import_file(db, content)
     except ImportFileError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+
+    if confirm:
+        result = import_valid_rows(db, actor, result)
+    return result
 
 
 @router.get("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
