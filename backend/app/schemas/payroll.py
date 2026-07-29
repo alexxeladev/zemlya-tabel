@@ -91,7 +91,10 @@ class EmployeePayrollRead(BaseModel):
     loan_planned_deduction: Decimal = Decimal("0")
     loan_is_manual: bool = False
     total_deductions: Decimal = Decimal("0")
+    # net_payout округлён вниз до 100 ₽ (task_payout_rounding), exact/tail — справочно
     net_payout: Decimal = Decimal("0")
+    net_payout_exact: Decimal = Decimal("0")
+    rounding_tail: Decimal = Decimal("0")
 
     breakdown_by_company: list[CompanyBreakdownRead]
     is_calculable: bool
@@ -114,4 +117,7 @@ class PayrollSummaryRead(BaseModel):
     total_premium: Decimal = Decimal("0")
     total_kpi: Decimal = Decimal("0")
     total_deductions: Decimal = Decimal("0")
+    # Сумма ОКРУГЛЁННЫХ выплат (не округление суммы) + справочные точная и хвосты
     total_net_payout: Decimal = Decimal("0")
+    total_net_payout_exact: Decimal = Decimal("0")
+    total_rounding_tail: Decimal = Decimal("0")

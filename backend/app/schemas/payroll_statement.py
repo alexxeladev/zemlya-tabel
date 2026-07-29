@@ -94,7 +94,9 @@ class StatementRow(BaseModel):
     # Итого начислено = оклад + переработка + отпускные + больничные + премии + KPI
     accrued_total: Decimal
     deductions: Decimal           # Аванс/Удержано (займ + аванс)
-    net_payout: Decimal           # К выплате
+    net_payout: Decimal           # К выплате — округлено вниз до 100 ₽
+    net_payout_exact: Decimal = Decimal("0")  # до округления (справочно)
+    rounding_tail: Decimal = Decimal("0")     # хвост = точное − округлённое
 
     is_overridden: bool           # проценты распределения переопределены на месяц
     is_auto_distributed: bool     # распределено авто по фактическим часам (ручной % не задан)
@@ -123,6 +125,8 @@ class PayrollStatementRead(BaseModel):
     total_kpi: Decimal
     total_accrued: Decimal
     total_deductions: Decimal
-    total_net_payout: Decimal
+    total_net_payout: Decimal  # Σ округлённых выплат (не округление суммы)
+    total_net_payout_exact: Decimal = Decimal("0")
+    total_rounding_tail: Decimal = Decimal("0")
     # Итог распределения по каждой компании: {company_id: amount}
     distribution_totals: dict[int, Decimal]

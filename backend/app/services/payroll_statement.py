@@ -174,6 +174,8 @@ def build_payroll_summary(
             loan_is_manual=loan_state.is_manual if loan_state else False,
             total_deductions=payout.total_deductions,
             net_payout=payout.net_payout,
+            net_payout_exact=payout.net_payout_exact,
+            rounding_tail=payout.rounding_tail,
             breakdown_by_company=breakdown,
             is_calculable=p.is_calculable,
             reason_if_not_calculable=p.reason_if_not_calculable,
@@ -195,7 +197,10 @@ def build_payroll_summary(
         total_premium=sum((p.premium_amount for p in payroll_items), _ZERO),
         total_kpi=sum((p.kpi_amount for p in payroll_items), _ZERO),
         total_deductions=sum((p.total_deductions for p in payroll_items), _ZERO),
+        # Итог — сумма УЖЕ округлённых выплат, а не округление суммы.
         total_net_payout=sum((p.net_payout for p in payroll_items), _ZERO),
+        total_net_payout_exact=sum((p.net_payout_exact for p in payroll_items), _ZERO),
+        total_rounding_tail=sum((p.rounding_tail for p in payroll_items), _ZERO),
     )
 
 
@@ -392,6 +397,8 @@ def build_payroll_statement(
             accrued_total=accrued,
             deductions=p.total_deductions,
             net_payout=p.net_payout,
+            net_payout_exact=p.net_payout_exact,
+            rounding_tail=p.rounding_tail,
             is_overridden=is_overridden,
             is_auto_distributed=is_auto,
             distribution_source=source,
@@ -416,5 +423,7 @@ def build_payroll_statement(
         total_accrued=sum((r.accrued_total for r in rows), _ZERO),
         total_deductions=sum((r.deductions for r in rows), _ZERO),
         total_net_payout=sum((r.net_payout for r in rows), _ZERO),
+        total_net_payout_exact=sum((r.net_payout_exact for r in rows), _ZERO),
+        total_rounding_tail=sum((r.rounding_tail for r in rows), _ZERO),
         distribution_totals=distribution_totals,
     )

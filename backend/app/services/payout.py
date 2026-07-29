@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import ROUND_HALF_EVEN, Decimal
+from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,9 @@ from app.models.loan_deductions import LoanDeduction
 
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
+
+# Шаг округления «к выплате» вниз (руководство: платим кратно 100 ₽)
+PAYOUT_ROUNDING_STEP = Decimal("100")
 
 
 def _round(value: Decimal) -> Decimal:
@@ -115,7 +118,22 @@ class PayoutResult:
     advance_deduction: Decimal
     loan_deduction: Decimal
     total_deductions: Decimal
-    net_payout: Decimal
+    net_payout: Decimal        # округлено вниз до 100 ₽ — это и есть выплата
+    net_payout_exact: Decimal  # точная сумма до округления (справочно)
+    rounding_tail: Decimal     # хвост = точное − округлённое, всегда ≥ 0
+
+
+def floor_to_payout_step(value: Decimal) -> Decimal:
+    """Округление «к выплате» ВНИЗ до 100 ₽: 110407 → 110400, 26826 → 26800.
+
+    Отрицательная сумма (удержания больше начисленного) не округляется:
+    floor утянул бы её ещё дальше в минус, а хвост обязан быть ≥ 0.
+    """
+    if value <= _ZERO:
+        return value
+    return (value / PAYOUT_ROUNDING_STEP).to_integral_value(
+        rounding=ROUND_FLOOR
+    ) * PAYOUT_ROUNDING_STEP
 
 
 def compute_payout(
@@ -128,20 +146,27 @@ def compute_payout(
     """
     К выплате = начислено (оклад+переработка+праздничные) + премии + KPI − удержано,
     где удержано = доля займа + аванс. Все слагаемые — целые рубли.
+
+    Финальная сумма округляется ВНИЗ до 100 ₽ (промежуточные — точные).
+    Хвост (точное − округлённое) остаётся справочно: он суммируется в
+    показатель «Эффект округления» на дашборде и никуда не переносится.
     """
     premium_amount = _round(premium_amount)
     kpi_amount = _round(kpi_amount)
     advance_deduction = _round(advance_deduction)
     loan_deduction = _round(loan_deduction)
     total_deductions = advance_deduction + loan_deduction
-    net = accrued_total + premium_amount + kpi_amount - total_deductions
+    net_exact = accrued_total + premium_amount + kpi_amount - total_deductions
+    net_rounded = floor_to_payout_step(net_exact)
     return PayoutResult(
         premium_amount=premium_amount,
         kpi_amount=kpi_amount,
         advance_deduction=advance_deduction,
         loan_deduction=loan_deduction,
         total_deductions=total_deductions,
-        net_payout=net,
+        net_payout=net_rounded,
+        net_payout_exact=net_exact,
+        rounding_tail=net_exact - net_rounded,
     )
 
 
