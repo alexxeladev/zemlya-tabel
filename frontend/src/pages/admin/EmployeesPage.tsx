@@ -23,6 +23,7 @@ import { Confirm } from '../../components/Confirm'
 import { Button } from '../../components/Button'
 import { Select } from '../../components/Select'
 import { SharesEditor } from '../../components/SharesEditor'
+import { EmployeeImportModal } from './EmployeeImportModal'
 import { ApiError } from '../../api/client'
 import { copyText } from '../../utils/clipboard'
 
@@ -106,6 +107,7 @@ export function EmployeesPage() {
 
   const [editTarget, setEditTarget] = useState<Employee | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [dismissTarget, setDismissTarget] = useState<Employee | null>(null)
   const [dismissDate, setDismissDate] = useState('')
   const [resetTarget, setResetTarget] = useState<Employee | null>(null)
@@ -303,7 +305,12 @@ export function EmployeesPage() {
     <div>
       <PageHeader
         title="Сотрудники"
-        action={canAdmin() ? <Button onClick={openCreate}>Добавить сотрудника</Button> : undefined}
+        action={canAdmin() ? (
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setShowImport(true)}>Импорт из Excel</Button>
+            <Button onClick={openCreate}>Добавить сотрудника</Button>
+          </div>
+        ) : undefined}
       />
 
       {noDepMsg && (
@@ -407,6 +414,13 @@ export function EmployeesPage() {
           ))}
         </tbody>
       </Table>
+
+      {/* Импорт из Excel (task_employee_import) */}
+      <EmployeeImportModal
+        isOpen={showImport}
+        onClose={() => setShowImport(false)}
+        onImported={refetch}
+      />
 
       {/* Create / Edit modal */}
       <Modal

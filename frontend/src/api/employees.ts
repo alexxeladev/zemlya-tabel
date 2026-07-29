@@ -1,4 +1,6 @@
-import type { CompanyShare, Employee, EmployeeShares, PayType, UserRole, WeekendPayType } from '../types/api'
+import type {
+  CompanyShare, Employee, EmployeeImportResult, EmployeeShares, PayType, UserRole, WeekendPayType,
+} from '../types/api'
 import { apiClient } from './client'
 
 export interface EmployeeListParams {
@@ -85,6 +87,23 @@ export const dismissEmployee = (id: number, dismissal_date: string) =>
 
 export const rehireEmployee = (id: number) =>
   apiClient.post<Employee>(`/api/employees/${id}/rehire`).then((r) => r.data)
+
+// ── Импорт из Excel (task_employee_import) ──
+
+export const downloadImportTemplate = () =>
+  apiClient
+    .get<Blob>('/api/employees/import/template', { responseType: 'blob' })
+    .then((r) => r.data)
+
+/** confirm=false — превью со статусами строк; confirm=true — создать валидные.
+ *  Подтверждение шлёт тот же файл: сервер валидирует его заново, а не верит превью. */
+export const importEmployees = (file: File, confirm = false) => {
+  const form = new FormData()
+  form.append('file', file)
+  return apiClient
+    .post<EmployeeImportResult>('/api/employees/import', form, { params: { confirm } })
+    .then((r) => r.data)
+}
 
 // ── Распределение по компаниям по умолчанию (задача 3.11b) ──
 export const getCompanyShares = (id: number) =>

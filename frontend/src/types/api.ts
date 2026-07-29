@@ -456,3 +456,44 @@ export interface Employee {
   schedule: Schedule | null
   default_company: Company | null
 }
+
+// ── Импорт сотрудников из Excel (task_employee_import) ──
+
+/** Строка файла после разбора: что распозналось и что с ней не так. */
+export interface EmployeeImportRow {
+  row_number: number
+  is_valid: boolean
+  errors: string[]
+  /** Значения как в файле — показываем «как ввели», рядом с распознанным */
+  raw: Record<string, string>
+  tab_number: string | null
+  full_name: string | null
+  position: string | null
+  company_id: number | null
+  company_name: string | null
+  department_id: number | null
+  department_name: string | null
+  schedule_id: number | null
+  schedule_name: string | null
+  pay_type: PayType
+  rate: string | null
+  shift_rate: string | null
+  weekend_pay_type: WeekendPayType
+  weekend_coefficient: string | null
+  weekend_fixed_rate: string | null
+  hire_date: string | null
+  /** Заполняется только после подтверждённого импорта */
+  created: boolean
+  employee_id: number | null
+}
+
+export interface EmployeeImportResult {
+  /** false — превью (в БД ничего не создано), true — импорт выполнен */
+  confirmed: boolean
+  total: number
+  valid_count: number
+  error_count: number
+  created_count: number
+  skipped_count: number
+  rows: EmployeeImportRow[]
+}
