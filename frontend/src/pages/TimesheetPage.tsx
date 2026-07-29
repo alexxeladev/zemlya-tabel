@@ -300,6 +300,8 @@ export function TimesheetPage() {
     const d = parseInt(searchParams.get('department_id') ?? '', 10);
     return Number.isFinite(d) ? d : null;
   });
+  // Поиск по ФИО — фильтрует строки поверх фильтра отдела, на бэк не ходит.
+  const [search, setSearch] = useState('');
 
   const [data, setData] = useState<MonthResponse | null>(null);
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
@@ -405,11 +407,24 @@ export function TimesheetPage() {
     [visibleEmployees]
   );
 
+  // ── Поиск по ФИО ──
+  // Чистая навигация поверх уже загруженных данных: фильтруются только СТРОКИ.
+  // Итоги (ИТОГО, по компаниям, dayTotals) намеренно продолжают считаться по
+  // всем видимым сотрудникам — иначе поиск молча менял бы суммы месяца.
+  // Что итоги шире выборки, видно по счётчику «найдено N из M» в шапке.
+  const searchNeedle = search.trim().toLocaleLowerCase('ru');
+  const shownEmployees = useMemo(() => {
+    if (!searchNeedle) return visibleEmployees;
+    return visibleEmployees.filter((e) =>
+      e.full_name.toLocaleLowerCase('ru').includes(searchNeedle)
+    );
+  }, [visibleEmployees, searchNeedle]);
+
   // ── Группировка по отделам (Bug 5): только при «Все отделы» для admin/accountant ──
   const grouped = canSelectDept && departmentFilter === null;
   const groups = useMemo(() => {
     const byDept = new Map<number | null, Employee[]>();
-    for (const e of visibleEmployees) {
+    for (const e of shownEmployees) {
       const k = e.department_id ?? null;
       if (!byDept.has(k)) byDept.set(k, []);
       byDept.get(k)!.push(e);
@@ -428,7 +443,7 @@ export function TimesheetPage() {
       employees: emps,
       period: data?.periods.find((p) => p.department_id === deptId) ?? null,
     }));
-  }, [visibleEmployees, data]);
+  }, [shownEmployees, data]);
 
   // ── Видны ли все периоды в draft? Для autofill / submit ──
   const allEditable = useMemo(() => {
@@ -960,6 +975,35 @@ export function TimesheetPage() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Поиск по ФИО"
+              className="border border-gray-300 rounded pl-2 pr-7 py-1 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                title="Сбросить поиск"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 leading-none"
+              >
+                ×
+              </button>
+            )}
+          </div>
+          {searchNeedle && (
+            <span
+              className="text-xs text-gray-500"
+              title="Поиск фильтрует только строки. Итоги остаются по всем сотрудникам месяца."
+            >
+              найдено {shownEmployees.length} из {visibleEmployees.length}
+              <span className="text-gray-400"> · итоги по всем</span>
+            </span>
+          )}
+
           {canSelectDept && departments.length > 0 && (
             <select
               className="border border-gray-300 rounded px-2 py-1 text-sm"
@@ -1078,7 +1122,7 @@ export function TimesheetPage() {
             month={month}
             numDays={numDays}
             dayTypes={dayTypes}
-            visibleEmployees={visibleEmployees}
+            visibleEmployees={shownEmployees}
             grouped={grouped}
             groups={groups}
             payrollByEmp={payrollByEmp}
@@ -1250,13 +1294,13 @@ export function TimesheetPage() {
 
           {/* ===== ТЕЛО ===== */}
           <tbody>
-            {visibleEmployees.length === 0 && (
+            {shownEmployees.length === 0 && (
               <tr>
                 <td
                   colSpan={3 + numDays + (canSeeMoney ? 8 : 1)}
                   className="text-center text-gray-500 py-10"
                 >
-                  Нет сотрудников
+                  {searchNeedle ? 'Никто не найден по этому запросу' : 'Нет сотрудников'}
                 </td>
               </tr>
             )}
@@ -1268,7 +1312,7 @@ export function TimesheetPage() {
                     {g.employees.map((emp) => renderEmployeeRow(emp))}
                   </Fragment>
                 ))
-              : visibleEmployees.map((emp) => renderEmployeeRow(emp))}
+              : shownEmployees.map((emp) => renderEmployeeRow(emp))}
 
             {/* ===== ИТОГО строка ===== */}
             {visibleEmployees.length > 0 && (
