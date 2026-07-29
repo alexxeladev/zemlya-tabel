@@ -28,7 +28,6 @@ _ZERO = Decimal("0")
 _ONE = Decimal("1")
 _HALF = Decimal("0.5")
 _ONE_HALF = Decimal("1.5")
-_TWO = Decimal("2")
 _HUNDRED = Decimal("100")
 _PERCENT_Q = Decimal("0.1")
 
@@ -113,15 +112,14 @@ def _off_schedule_pay(employee: Employee, hours: Decimal, hourly_rate: Decimal) 
 def _holiday_pay(employee: Employee, hours: Decimal, hourly_rate: Decimal) -> Decimal:
     """
     Оплата ПРАЗДНИЧНЫХ часов — работа в нерабочий праздничный день календаря.
-    Настройка отдельная от выходных, дефолт коэффициента 2.0 (ТК требует за
-    праздник не менее двойной оплаты).
+    Настройка отдельная от выходных (задаётся в карточке), дефолт — 1.5.
     """
     return _extra_hours_pay(
         hours, hourly_rate,
         getattr(employee, "holiday_pay_type", None),
         getattr(employee, "holiday_coefficient", None),
         getattr(employee, "holiday_fixed_rate", None),
-        _TWO,
+        _ONE_HALF,
     )
 
 

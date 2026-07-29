@@ -148,11 +148,11 @@ def create_employee(
         ),
         weekend_fixed_rate=payload.weekend_fixed_rate,
         holiday_pay_type=payload.holiday_pay_type,
-        # default 2.0 для coefficient — ТК: за праздник не менее двойного
+        # default 1.5 для coefficient — как у выходных, точная ставка в карточке
         holiday_coefficient=(
             payload.holiday_coefficient
             if payload.holiday_coefficient is not None or payload.holiday_pay_type != "coefficient"
-            else Decimal("2")
+            else Decimal("1.5")
         ),
         holiday_fixed_rate=payload.holiday_fixed_rate,
         overtime_coefficient=(

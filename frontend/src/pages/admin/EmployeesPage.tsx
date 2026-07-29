@@ -134,7 +134,7 @@ export function EmployeesPage() {
       department_id: isManager() ? (user?.department_id ?? undefined) : undefined,
       schedule_id: undefined, default_company_id: undefined,
       rate: '', weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
-      holiday_pay_type: 'coefficient', holiday_coefficient: '2', holiday_fixed_rate: '',
+      holiday_pay_type: 'coefficient', holiday_coefficient: '1.5', holiday_fixed_rate: '',
       overtime_coefficient: '1.5',
       loan_amount: '', loan_term_months: '', loan_start_date: '',
       is_active: true, hire_date: '', dismissal_date: '',
@@ -578,12 +578,10 @@ export function EmployeesPage() {
                   <label className="text-sm font-medium text-gray-700">Коэффициент оплаты праздничных</label>
                   <input
                     {...form.register('holiday_coefficient')}
-                    placeholder="2"
+                    placeholder="1.5"
                     className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
-                  <p className="text-xs text-gray-400">
-                    По умолчанию 2 — ТК требует за нерабочий праздничный день не менее двойной оплаты
-                  </p>
+                  <p className="text-xs text-gray-400">1.5 = полуторный, 2 = двойной, 0 = не оплачивается дополнительно</p>
                 </div>
               )}
             </div>

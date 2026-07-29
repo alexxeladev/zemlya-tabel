@@ -472,7 +472,7 @@ class TestScheduleBasedPay:
         assert p.off_schedule_hours == Decimal("0")
         assert p.base_amount == Decimal("0")
         hourly = Decimal("80000") / Decimal("160")
-        assert p.holiday_amount == (Decimal("8") * hourly * Decimal("2")).quantize(Decimal("1"))
+        assert p.holiday_amount == (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
 
     def test_saturday_is_off_schedule(self):
         """AC2: 5/2 вышел в субботу (свой выходной) → часы ×1.5."""
@@ -1090,20 +1090,21 @@ class TestHolidayPay:
         emp.holiday_fixed_rate = fixed
         return emp
 
-    def test_default_coefficient_is_two(self):
-        """Поля не заданы → дефолт ×2 (ТК: не менее двойного размера)."""
+    def test_default_coefficient_is_one_and_half(self):
+        """Поля не заданы → дефолт ×1.5, как у выходных."""
         emp = make_employee(schedule=make_schedule(8))
         entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
         p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
         hourly = Decimal("80000") / Decimal("160")
-        assert p.holiday_amount == (Decimal("8") * hourly * Decimal("2")).quantize(Decimal("1"))
+        assert p.holiday_amount == (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
 
     def test_custom_coefficient(self):
-        emp = self._emp("coefficient", coeff=Decimal("1.5"))
+        """Ставка задаётся в карточке — ставим двойной вручную."""
+        emp = self._emp("coefficient", coeff=Decimal("2"))
         entries = [make_entry(work_date=date(2026, 5, 1), hours=Decimal("8"))]
         p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
         hourly = Decimal("80000") / Decimal("160")
-        assert p.holiday_amount == (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
+        assert p.holiday_amount == (Decimal("8") * hourly * Decimal("2")).quantize(Decimal("1"))
 
     def test_zero_coefficient_shows_hours_without_pay(self):
         emp = self._emp("coefficient", coeff=Decimal("0"))
@@ -1151,7 +1152,7 @@ class TestHolidayPay:
         p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
 
         hourly = Decimal("80000") / Decimal("160")
-        expected = (Decimal("8") * hourly * Decimal("2")).quantize(Decimal("1"))
+        expected = (Decimal("8") * hourly * Decimal("1.5")).quantize(Decimal("1"))
         assert p.base_amount == Decimal("80000")
         assert p.holiday_hours == Decimal("8")
         assert p.holiday_amount == expected

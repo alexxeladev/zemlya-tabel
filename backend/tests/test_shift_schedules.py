@@ -308,8 +308,8 @@ class TestShiftPayroll:
         p = calculate_employee_payroll(_employee(s), entries, CAL_JUNE, YEAR, MONTH)
         assert p.holiday_hours == 12
         assert p.off_schedule_hours == 0
-        # 12 ч × (60000/180) × 2 = 8000
-        assert p.holiday_amount == Decimal("8000")
+        # 12 ч × (60000/180) × 1.5 = 6000
+        assert p.holiday_amount == Decimal("6000")
 
     def test_cyclic_calculable_without_calendar(self):
         """Сменщику производственный календарь не нужен — цикл самодостаточен."""
