@@ -22,14 +22,16 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session
 
 from app.models.companies import Company
 from app.models.departments import Department
+from app.models.employees import Employee
 from app.models.schedules import Schedule
+from app.schemas.employee_import import EmployeeImportResult, ImportRowRead
 
 # Строка-пример помечается этим текстом в первой колонке; парсер такие строки
 # пропускает (пользователь может её и удалить — тогда данные идут со 2-й строки).
@@ -303,3 +305,259 @@ def parse_weekend_pay_type(value: object) -> str | None:
     if number is None:
         return "coefficient"
     return "fixed_rate" if number >= 10 else "coefficient"
+
+
+# ── Разбор и валидация файла ──────────────────────────────────────────────────
+
+# Верхняя граница на размер файла: 300+ строк — рабочий случай, десятки тысяч —
+# почти наверняка не тот файл.
+MAX_IMPORT_ROWS = 5000
+
+_SHEET_NAME = "Сотрудники"
+
+
+class ImportFileError(Exception):
+    """Файл целиком непригоден (не .xlsx, нет строк, слишком большой)."""
+
+
+@dataclass(frozen=True)
+class _Refs:
+    """Справочники, разложенные по ключам сопоставления (собираются один раз)."""
+
+    companies: dict[str, Company]
+    departments: dict[str, Department]
+    schedules: dict[str, Schedule]
+
+
+def _plain_keys(value: object) -> list[str]:
+    """Ключи без разбора правовой формы: как есть и без кавычек."""
+    base = match_key(value)
+    if not base:
+        return []
+    unquoted = base
+    for ch in _QUOTE_CHARS:
+        unquoted = unquoted.replace(ch, " ")
+    unquoted = re.sub(r"\s+", " ", unquoted).strip()
+    return [base] if unquoted == base else [base, unquoted]
+
+
+def _load_refs(db: Session) -> _Refs:
+    companies: dict[str, Company] = {}
+    for company in db.query(Company).filter(Company.is_active.is_(True)).all():
+        for key in [*company_keys(company.name), *_plain_keys(company.code)]:
+            companies.setdefault(key, company)
+
+    departments: dict[str, Department] = {}
+    for dept in db.query(Department).filter(Department.is_active.is_(True)).all():
+        for key in [*_plain_keys(dept.name), *_plain_keys(dept.code)]:
+            departments.setdefault(key, dept)
+
+    schedules: dict[str, Schedule] = {}
+    for schedule in db.query(Schedule).filter(Schedule.is_active.is_(True)).all():
+        key = normalize_schedule_key(schedule.name)
+        if key:
+            schedules.setdefault(key, schedule)
+
+    return _Refs(companies=companies, departments=departments, schedules=schedules)
+
+
+def _is_example_row(raw: dict[str, str]) -> bool:
+    """Строка-пример из шаблона — не данные, её не импортируем."""
+    if match_key(raw.get("tab_number")).startswith("пример"):
+        return True
+    marker = match_key(EXAMPLE_MARKER)
+    return any(match_key(value) == marker for value in raw.values())
+
+
+def _parse_row(
+    row_number: int,
+    raw: dict[str, str],
+    refs: _Refs,
+    taken_tab_numbers: set[str],
+) -> ImportRowRead:
+    """Одна строка файла → распознанные значения + список ошибок."""
+    errors: list[str] = []
+
+    tab_number = raw["tab_number"] or None
+    full_name = raw["full_name"] or None
+    position = raw["position"] or None
+
+    if not full_name:
+        errors.append("ФИО обязательно")
+
+    if tab_number and match_key(tab_number) in taken_tab_numbers:
+        errors.append(f"Таб.№ «{tab_number}» уже существует")
+
+    # Компания — обязательна и должна быть в справочнике
+    company = None
+    if not raw["company"]:
+        errors.append("Компания обязательна")
+    else:
+        company = _lookup(refs.companies, company_keys(raw["company"]))
+        if company is None:
+            errors.append(f"Компания «{raw['company']}» не найдена")
+
+    # Отдел — необязателен, но если указан, должен существовать
+    department = None
+    if raw["department"]:
+        department = _lookup(refs.departments, _plain_keys(raw["department"]))
+        if department is None:
+            errors.append(f"Отдел «{raw['department']}» не найден")
+
+    # График — необязателен, но если указан, должен существовать
+    schedule = None
+    if raw["schedule"]:
+        schedule = _lookup(refs.schedules, [normalize_schedule_key(raw["schedule"])])
+        if schedule is None:
+            errors.append(f"График «{raw['schedule']}» не найден")
+
+    pay_type = parse_pay_type(raw["pay_type"])
+    if pay_type is None:
+        errors.append(f"Неизвестный тип оплаты «{raw['pay_type']}»")
+        pay_type = "salary"
+
+    rate, rate_ok = _decimal_or_error(raw["rate"], "Оклад", errors)
+    shift_rate, shift_rate_ok = _decimal_or_error(raw["shift_rate"], "Ставка за смену", errors)
+
+    # Оклад и ставка за смену взаимоисключающие — чужое поле не переносим.
+    # «не число» уже отмечено выше, второй ошибкой про «не указан» не сорим.
+    if pay_type == "per_shift":
+        rate = None
+        if shift_rate is None:
+            if shift_rate_ok:
+                errors.append("Не указана ставка за смену")
+        elif shift_rate <= 0:
+            errors.append("Ставка за смену должна быть больше 0")
+    else:
+        shift_rate = None
+        if rate is None:
+            if rate_ok:
+                errors.append("Не указан оклад")
+        elif rate <= 0:
+            errors.append("Оклад должен быть больше 0")
+
+    weekend_pay_type = parse_weekend_pay_type(raw["weekend_pay_type"])
+    if weekend_pay_type is None:
+        errors.append(f"Неизвестный вид оплаты выходных «{raw['weekend_pay_type']}»")
+        weekend_pay_type = "coefficient"
+
+    weekend_value, _ = _decimal_or_error(
+        raw["weekend_value"], "Коэффициент / ставка выходных", errors
+    )
+    weekend_coefficient = None
+    weekend_fixed_rate = None
+    if weekend_pay_type == "fixed_rate":
+        weekend_fixed_rate = weekend_value
+        if weekend_value is None:
+            errors.append("Не указана фиксированная ставка за выходные")
+    else:
+        # Пусто → дефолт 1.5, как в карточке сотрудника
+        weekend_coefficient = weekend_value if weekend_value is not None else Decimal("1.5")
+
+    hire_date = None
+    if raw["hire_date"]:
+        try:
+            hire_date = parse_date(raw["hire_date"])
+        except ValueError:
+            errors.append(f"Дата приёма «{raw['hire_date']}» не распознана")
+
+    return ImportRowRead(
+        row_number=row_number,
+        is_valid=not errors,
+        errors=errors,
+        raw=raw,
+        tab_number=tab_number,
+        full_name=full_name,
+        position=position,
+        company_id=company.id if company else None,
+        company_name=company.name if company else None,
+        department_id=department.id if department else None,
+        department_name=department.name if department else None,
+        schedule_id=schedule.id if schedule else None,
+        schedule_name=schedule.name if schedule else None,
+        pay_type=pay_type,
+        rate=rate,
+        shift_rate=shift_rate,
+        weekend_pay_type=weekend_pay_type,
+        weekend_coefficient=weekend_coefficient,
+        weekend_fixed_rate=weekend_fixed_rate,
+        hire_date=hire_date,
+    )
+
+
+def _lookup(index: dict[str, object], keys: list[str]):
+    for key in keys:
+        found = index.get(key)
+        if found is not None:
+            return found
+    return None
+
+
+def _decimal_or_error(text: str, label: str, errors: list[str]) -> tuple[Decimal | None, bool]:
+    """Число из ячейки. Второй элемент — «разобралось» (пустая ячейка тоже ок)."""
+    if not text:
+        return None, True
+    try:
+        return parse_decimal(text), True
+    except ValueError:
+        errors.append(f"{label} не число: «{text}»")
+        return None, False
+
+
+def parse_import_file(db: Session, content: bytes) -> EmployeeImportResult:
+    """Разобрать и провалидировать файл. В БД ничего не пишет — это превью."""
+    try:
+        wb = load_workbook(BytesIO(content), data_only=True, read_only=True)
+    except Exception as exc:  # noqa: BLE001 — openpyxl бросает разное на битых файлах
+        raise ImportFileError(
+            "Не удалось прочитать файл. Нужен .xlsx (шаблон можно скачать кнопкой рядом)."
+        ) from exc
+
+    try:
+        ws = wb[_SHEET_NAME] if _SHEET_NAME in wb.sheetnames else wb.worksheets[0]
+
+        # Таб.№, которые уже заняты: в БД + встреченные выше по файлу
+        taken_tab_numbers = {
+            match_key(value)
+            for (value,) in db.query(Employee.tab_number).filter(
+                Employee.tab_number.isnot(None)
+            )
+            if match_key(value)
+        }
+
+        refs = _load_refs(db)
+        rows: list[ImportRowRead] = []
+
+        for excel_row, values in enumerate(
+            ws.iter_rows(min_row=2, max_col=len(COLUMNS), values_only=True), start=2
+        ):
+            raw = {col.key: cell_text(value) for col, value in zip(COLUMNS, values)}
+            if not any(raw.values()):
+                continue
+            if _is_example_row(raw):
+                continue
+            if len(rows) >= MAX_IMPORT_ROWS:
+                raise ImportFileError(
+                    f"В файле больше {MAX_IMPORT_ROWS} строк — похоже, это не список сотрудников."
+                )
+
+            row = _parse_row(excel_row, raw, refs, taken_tab_numbers)
+            # Таб.№ занимает только валидная строка: ошибочная не импортируется,
+            # значит номер остаётся свободным для следующих.
+            if row.is_valid and row.tab_number:
+                taken_tab_numbers.add(match_key(row.tab_number))
+            rows.append(row)
+    finally:
+        wb.close()
+
+    if not rows:
+        raise ImportFileError("В файле нет строк с данными (заполните шаблон с 3-й строки).")
+
+    valid_count = sum(1 for row in rows if row.is_valid)
+    return EmployeeImportResult(
+        confirmed=False,
+        total=len(rows),
+        valid_count=valid_count,
+        error_count=len(rows) - valid_count,
+        rows=rows,
+    )

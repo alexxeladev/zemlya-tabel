@@ -3,7 +3,7 @@ import string
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -20,6 +20,7 @@ from app.schemas.employee import (
     EmployeeRead,
     EmployeeUpdate,
 )
+from app.schemas.employee_import import EmployeeImportResult
 from app.schemas.payroll_statement import (
     CompanyShareInput,
     EmployeeSharesRead,
@@ -30,7 +31,11 @@ from app.services.company_shares import (
     load_department_shares,
     validate_shares,
 )
-from app.services.employee_import import generate_import_template
+from app.services.employee_import import (
+    ImportFileError,
+    generate_import_template,
+    parse_import_file,
+)
 
 router = APIRouter()
 
@@ -438,6 +443,26 @@ def download_import_template(
         media_type=_XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": 'attachment; filename="shablon_sotrudnikov.xlsx"'},
     )
+
+
+@router.post("/import", response_model=EmployeeImportResult)
+def import_employees(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Разобрать заполненный файл и вернуть превью со статусами строк.
+
+    Ничего не создаёт: пользователь сначала смотрит, что распозналось и где
+    ошибки, и только потом подтверждает импорт.
+    """
+    content = file.file.read()
+    try:
+        return parse_import_file(db, content)
+    except ImportFileError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
 
 @router.get("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
