@@ -707,7 +707,9 @@ export function TimesheetPage() {
             <td
               key={d}
               className={`border border-gray-200 align-top p-1 ${bgClass}`}
-              style={{ minWidth: 60 }}
+              // Ширина под чип целиком (код + часы + крестик) — иначе колонки
+              // дней разъезжаются по содержимому и «квадратики» выходят разными.
+              style={{ minWidth: 84 }}
             >
               <div className="flex flex-col gap-1">
                 {/* День с кодом отсутствия: часов в нём нет по определению */}
@@ -733,12 +735,14 @@ export function TimesheetPage() {
                       />
                     ))}
                     {periodEditable && (
-                      <div className="flex items-center gap-1">
+                      // Та же высота, что у чипов, и та же колонка справа —
+                      // пикер кода встаёт ровно под крестиками.
+                      <div className="flex items-center gap-1 h-[22px]">
                         <button
                           type="button"
                           onClick={() => addSlot(emp.id, d)}
                           className={
-                            'flex-1 text-[10px] border border-dashed rounded px-1 py-0.5 ' +
+                            'flex-1 min-w-0 h-full text-[10px] leading-none border border-dashed rounded ' +
                             (isOff
                               ? 'text-gray-300 border-gray-200 hover:text-amber-600 hover:border-amber-300'
                               : 'text-gray-400 border-gray-300 hover:text-blue-600 hover:border-blue-300')
@@ -1628,6 +1632,41 @@ export function PeriodBadge({
 }
 
 // ──────────────────────────────────────────────────────────────
+// Общий каркас чипа в ячейке дня
+//
+// Слот компании и код отсутствия обязаны выглядеть одинаковой «плиткой»:
+// одна высота, одни паддинги, крестик всегда прижат к правому краю в колонке
+// фиксированной ширины. Поэтому размеры живут здесь, а не в каждом чипе.
+// ──────────────────────────────────────────────────────────────
+const CHIP_FRAME =
+  'flex items-center gap-1 h-[22px] px-1.5 rounded text-[11px] font-mono w-full';
+// Ширина колонки крестика. Место резервируется всегда — иначе чип без права
+// на удаление (закрытый период) окажется уже соседнего.
+const CHIP_CLOSE_W = 'w-3 shrink-0';
+
+function ChipClose({
+  onClick,
+  title,
+  disabled,
+}: {
+  onClick: () => void;
+  title: string;
+  disabled: boolean;
+}) {
+  if (disabled) return <span className={CHIP_CLOSE_W} aria-hidden />;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`${CHIP_CLOSE_W} text-center leading-none font-sans opacity-40 hover:opacity-100`}
+      title={title}
+    >
+      ×
+    </button>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────
 // SlotChip — один слот компании в ячейке дня
 // ──────────────────────────────────────────────────────────────
 function SlotChip({
@@ -1667,7 +1706,7 @@ function SlotChip({
 
   return (
     <div
-      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono"
+      className={CHIP_FRAME}
       style={{
         background: col.bg,
         color: col.color,
@@ -1675,12 +1714,16 @@ function SlotChip({
         opacity: disabled ? 0.6 : 1,
       }}
     >
+      {/* appearance-none убирает системную стрелку: она съедала половину поля
+          и обрезала код компании («kse» → «ks»). */}
       <select
         value={slot.company_id}
         onChange={(e) => onCompanyChange(parseInt(e.target.value, 10))}
         disabled={disabled}
-        className="bg-transparent border-0 outline-none cursor-pointer pr-0 text-[11px] font-semibold"
-        style={{ color: col.color, width: 36 }}
+        title="Компания"
+        // min-w — чтобы код не схлопнулся, даже если колонка дня узкая.
+        className="appearance-none bg-transparent border-0 outline-none cursor-pointer p-0 h-full flex-1 min-w-[26px] text-[11px] font-semibold"
+        style={{ color: col.color }}
       >
         {companies.map((c) => (
           <option key={c.id} value={c.id}>
@@ -1700,19 +1743,12 @@ function SlotChip({
         min={0}
         max={24}
         step={1}
-        className="bg-transparent border-0 outline-none text-center w-9 text-[11px] font-mono"
+        title="Часы"
+        // Спиннеры number-инпута тут не нужны — они распирают чип.
+        className="bg-transparent border-0 outline-none p-0 h-full text-right w-5 shrink-0 text-[11px] font-mono tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         style={{ color: col.color }}
       />
-      {!disabled && (
-        <button
-          type="button"
-          onClick={onDelete}
-          className="opacity-40 hover:opacity-100 leading-none"
-          title="Удалить"
-        >
-          ×
-        </button>
-      )}
+      <ChipClose onClick={onDelete} title="Удалить" disabled={disabled} />
     </div>
   );
 }
@@ -1738,7 +1774,7 @@ function AbsenceChip({
 
   return (
     <div
-      className="flex items-center justify-center gap-1 px-1.5 py-1 rounded text-[11px] font-mono font-bold"
+      className={`${CHIP_FRAME} font-bold`}
       style={{
         background: bg,
         color,
@@ -1751,20 +1787,13 @@ function AbsenceChip({
           : meta?.label ?? absence.code
       }
     >
-      <span>
+      {/* Код центрируется в оставшемся месте, крестик — в той же колонке
+          справа, что и у слота компании. */}
+      <span className="flex-1 min-w-0 text-center">
         {absence.code}
         {over && <span className="font-sans">*</span>}
       </span>
-      {!disabled && (
-        <button
-          type="button"
-          onClick={onClear}
-          className="opacity-40 hover:opacity-100 leading-none font-sans"
-          title="Убрать отметку"
-        >
-          ×
-        </button>
-      )}
+      <ChipClose onClick={onClear} title="Убрать отметку" disabled={disabled} />
     </div>
   );
 }
@@ -1780,8 +1809,7 @@ function AbsencePicker({ onPick }: { onPick: (kind: AbsenceKind) => void }) {
         const v = e.target.value as AbsenceKind;
         if (v) onPick(v);
       }}
-      className="text-[10px] text-gray-400 border border-dashed border-gray-300 rounded px-0.5 py-0.5 bg-transparent hover:text-blue-600 hover:border-blue-300 cursor-pointer"
-      style={{ width: 26 }}
+      className="appearance-none shrink-0 w-5 h-full text-center text-[10px] leading-none text-gray-400 border border-dashed border-gray-300 rounded px-0 bg-transparent hover:text-blue-600 hover:border-blue-300 cursor-pointer"
       title="Поставить код отсутствия (часы этого дня будут убраны)"
     >
       <option value="">·</option>
