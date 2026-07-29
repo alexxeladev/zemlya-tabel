@@ -30,6 +30,9 @@ class PayrollTotalsRead(BaseModel):
     overtime: Decimal
     off_schedule: Decimal = Decimal("0")
     holiday: Decimal
+    # Эффект округления «к выплате» вниз до 100 ₽ — сумма хвостов всех
+    # сотрудников за период (осело в пользу компании), task_payout_rounding
+    rounding_effect: Decimal = Decimal("0")
     # Сотрудники, не вошедшие в расчёт (нет оклада/графика/сменный график):
     # ФОТ на дашборде по ним занижен — фронт показывает предупреждение.
     non_calculable_employees: int

@@ -30,6 +30,7 @@ from app.schemas.dashboard import (
 )
 from app.services.absences import get_month_absences, sick_days_used_before_month
 from app.services.payroll import EmployeePayroll, calculate_employee_payroll
+from app.services.payroll_statement import build_payroll_summary
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 
 _ZERO = Decimal("0")
@@ -155,15 +156,30 @@ def _hours_by_department(db: Session, results: _MonthResults) -> list[Department
 
 # ── Блок 2: ФОТ ───────────────────────────────────────────────────────────────
 
-def _payroll_totals(results: _MonthResults) -> PayrollTotalsRead:
+def _payroll_totals(results: _MonthResults, rounding_effect: Decimal) -> PayrollTotalsRead:
     return PayrollTotalsRead(
         total=sum((p.total_amount for _, p in results), _ZERO),
         base=sum((p.base_amount for _, p in results), _ZERO),
         overtime=sum((p.overtime_amount for _, p in results), _ZERO),
         off_schedule=sum((p.off_schedule_amount for _, p in results), _ZERO),
         holiday=sum((p.holiday_amount for _, p in results), _ZERO),
+        rounding_effect=rounding_effect,
         non_calculable_employees=sum(1 for _, p in results if not p.is_calculable),
     )
+
+
+def _rounding_effect(db: Session, actor: Employee, year: int, month: int) -> Decimal:
+    """Σ хвостов округления «к выплате» вниз до 100 ₽ за месяц.
+
+    Считается через `build_payroll_summary` — тот же путь, что у табеля и
+    ведомости (премии/KPI/удержания в ФОТ дашборда не входят, поэтому «к
+    выплате» из результатов _month_payrolls не получить).
+    Видимость по ролям — через `visible_employees_for_actor` (manager видит
+    только свой отдел).
+    """
+    employees = visible_employees_for_actor(db, actor, None, year=year, month=month)
+    entries = get_month_entries(db, employees, year, month)
+    return build_payroll_summary(db, employees, entries, year, month).total_rounding_tail
 
 
 def _payroll_by_department(db: Session, results: _MonthResults) -> list[DepartmentPayrollRead]:
@@ -333,7 +349,11 @@ def build_dashboard(db: Session, actor: Employee, year: int, month: int) -> Dash
         role=actor.role,
         hours=_hours_summary(current),
         hours_by_department=[] if is_employee else _hours_by_department(db, current),
-        payroll=_payroll_totals(current) if include_money else None,
+        payroll=(
+            _payroll_totals(current, _rounding_effect(db, actor, year, month))
+            if include_money
+            else None
+        ),
         payroll_by_department=(
             _payroll_by_department(db, current) if include_money else []
         ),
