@@ -53,6 +53,9 @@ const schema = z.object({
   weekend_pay_type: z.enum(['coefficient', 'fixed_rate']).default('coefficient'),
   weekend_coefficient: z.string().optional(),
   weekend_fixed_rate: z.string().optional(),
+  holiday_pay_type: z.enum(['coefficient', 'fixed_rate']).default('coefficient'),
+  holiday_coefficient: z.string().optional(),
+  holiday_fixed_rate: z.string().optional(),
   overtime_coefficient: z.string().optional(),
   loan_amount: z.string().optional(),
   loan_term_months: z.string().optional(),
@@ -110,6 +113,7 @@ export function EmployeesPage() {
   const form = useForm<FormInput, unknown, FormData>({ resolver: zodResolver(schema) })
   const hasAccess = form.watch('has_access')
   const weekendType = form.watch('weekend_pay_type')
+  const holidayType = form.watch('holiday_pay_type')
 
   const deptOptions = [
     { value: 0, label: '— без отдела —' },
@@ -130,6 +134,7 @@ export function EmployeesPage() {
       department_id: isManager() ? (user?.department_id ?? undefined) : undefined,
       schedule_id: undefined, default_company_id: undefined,
       rate: '', weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
+      holiday_pay_type: 'coefficient', holiday_coefficient: '2', holiday_fixed_rate: '',
       overtime_coefficient: '1.5',
       loan_amount: '', loan_term_months: '', loan_start_date: '',
       is_active: true, hire_date: '', dismissal_date: '',
@@ -151,6 +156,9 @@ export function EmployeesPage() {
       weekend_pay_type: e.weekend_pay_type ?? 'coefficient',
       weekend_coefficient: e.weekend_coefficient ?? '',
       weekend_fixed_rate: e.weekend_fixed_rate ?? '',
+      holiday_pay_type: e.holiday_pay_type ?? 'coefficient',
+      holiday_coefficient: e.holiday_coefficient ?? '',
+      holiday_fixed_rate: e.holiday_fixed_rate ?? '',
       overtime_coefficient: e.overtime_coefficient ?? '1.5',
       loan_amount: e.loan_amount ?? '',
       loan_term_months: e.loan_term_months != null ? String(e.loan_term_months) : '',
@@ -185,6 +193,9 @@ export function EmployeesPage() {
         weekend_pay_type: data.weekend_pay_type,
         weekend_coefficient: data.weekend_pay_type === 'coefficient' ? (data.weekend_coefficient || null) : null,
         weekend_fixed_rate: data.weekend_pay_type === 'fixed_rate' ? (data.weekend_fixed_rate || null) : null,
+        holiday_pay_type: data.holiday_pay_type,
+        holiday_coefficient: data.holiday_pay_type === 'coefficient' ? (data.holiday_coefficient || null) : null,
+        holiday_fixed_rate: data.holiday_pay_type === 'fixed_rate' ? (data.holiday_fixed_rate || null) : null,
         overtime_coefficient: data.overtime_coefficient || null,
         loan_amount: data.loan_amount || null,
         loan_term_months: data.loan_term_months ? Number(data.loan_term_months) : null,
@@ -498,9 +509,9 @@ export function EmployeesPage() {
             </div>
           </div>
 
-          {/* Section 3b — Weekend / holiday pay (правка 3.9-3) */}
+          {/* Section 3b — оплата выхода в свой выходной по графику */}
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Оплата выходных и праздничных</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Оплата работы вне графика</p>
             <div className="flex flex-col gap-3">
               <div className="flex flex-col gap-2">
                 <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
@@ -530,6 +541,49 @@ export function EmployeesPage() {
                     className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   <p className="text-xs text-gray-400">1.5 = полуторный, 2 = двойной, 0 = не оплачивается дополнительно</p>
+                </div>
+              )}
+              <p className="text-xs text-gray-400">
+                Выход в свой законный выходной по графику. Работа в праздник считается
+                отдельно — настройка ниже.
+              </p>
+            </div>
+          </div>
+
+          {/* Section 3b-1 — оплата работы в нерабочий праздничный день */}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Оплата праздничных</p>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="radio" value="coefficient" {...form.register('holiday_pay_type')} />
+                  По коэффициенту
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="radio" value="fixed_rate" {...form.register('holiday_pay_type')} />
+                  Фиксированная ставка за час
+                </label>
+              </div>
+              {holidayType === 'fixed_rate' ? (
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Ставка за час в праздник (₽)</label>
+                  <input
+                    {...form.register('holiday_fixed_rate')}
+                    placeholder="740"
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Коэффициент оплаты праздничных</label>
+                  <input
+                    {...form.register('holiday_coefficient')}
+                    placeholder="2"
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <p className="text-xs text-gray-400">
+                    По умолчанию 2 — ТК требует за нерабочий праздничный день не менее двойной оплаты
+                  </p>
                 </div>
               )}
             </div>

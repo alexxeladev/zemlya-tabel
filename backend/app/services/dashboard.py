@@ -160,6 +160,7 @@ def _payroll_totals(results: _MonthResults) -> PayrollTotalsRead:
         total=sum((p.total_amount for _, p in results), _ZERO),
         base=sum((p.base_amount for _, p in results), _ZERO),
         overtime=sum((p.overtime_amount for _, p in results), _ZERO),
+        off_schedule=sum((p.off_schedule_amount for _, p in results), _ZERO),
         holiday=sum((p.holiday_amount for _, p in results), _ZERO),
         non_calculable_employees=sum(1 for _, p in results if not p.is_calculable),
     )

@@ -9,6 +9,7 @@ export interface CompanyBreakdown {
   percent: string
   base_amount: string
   overtime_amount: string
+  off_schedule_amount: string
   holiday_amount: string
   total: string
 }
@@ -22,12 +23,16 @@ export interface EmployeePayroll {
   norm_hours: string | null
   delta_hours: string | null
   overtime_hours: string
+  /** выход в свой выходной по графику */
+  off_schedule_hours: string
+  /** работа в нерабочий праздничный день календаря */
   holiday_hours: string
   norm_days: number | null
   fact_days: number
   hourly_rate: string | null
   base_amount: string
   overtime_amount: string
+  off_schedule_amount: string
   holiday_amount: string
   total_amount: string
   // Отсутствия: дни по видам и оплата ОТ/Б
@@ -47,6 +52,9 @@ export interface EmployeePayroll {
   weekend_pay_type: WeekendPayType | null
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
+  holiday_pay_type: WeekendPayType | null
+  holiday_coefficient: string | null
+  holiday_fixed_rate: string | null
   premium_amount: string
   kpi_amount: string
   advance_deduction: string
@@ -69,6 +77,7 @@ export interface PayrollSummary {
   total_hours: string
   total_base_amount: string
   total_overtime_amount: string
+  total_off_schedule_amount: string
   total_holiday_amount: string
   total_vacation_amount: string
   total_sick_amount: string
@@ -400,6 +409,9 @@ export interface Employee {
   weekend_pay_type: WeekendPayType
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
+  holiday_pay_type: WeekendPayType
+  holiday_coefficient: string | null
+  holiday_fixed_rate: string | null
   overtime_coefficient: string | null
   loan_amount: string | null
   loan_term_months: number | null

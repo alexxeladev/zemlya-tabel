@@ -13,9 +13,11 @@ class CompanyBreakdownRead(BaseModel):
     hours: Decimal
     percent: Decimal
     overtime_hours: Decimal
+    off_schedule_hours: Decimal
     holiday_hours: Decimal
     base_amount: Decimal
     overtime_amount: Decimal
+    off_schedule_amount: Decimal
     holiday_amount: Decimal
     total: Decimal
 
@@ -30,6 +32,9 @@ class EmployeePayrollRead(BaseModel):
     norm_hours: Decimal | None
     delta_hours: Decimal | None
     overtime_hours: Decimal
+    # off_schedule_* — выход в свой выходной по графику;
+    # holiday_*      — работа в нерабочий праздничный день календаря.
+    off_schedule_hours: Decimal
     holiday_hours: Decimal
     norm_days: int | None
     fact_days: int
@@ -37,6 +42,7 @@ class EmployeePayrollRead(BaseModel):
 
     base_amount: Decimal
     overtime_amount: Decimal
+    off_schedule_amount: Decimal
     holiday_amount: Decimal
     total_amount: Decimal
 
@@ -58,10 +64,15 @@ class EmployeePayrollRead(BaseModel):
     sick_unpaid_days: int = 0
     sick_limit_remaining: int = 0
 
-    # Оплата выходных/праздничных (задача 3.11a п.3 — отображение коэффициента)
+    # Оплата часов вне графика (задача 3.11a п.3 — отображение коэффициента)
     weekend_pay_type: Optional[Literal["coefficient", "fixed_rate"]] = None
     weekend_coefficient: Optional[Decimal] = None
     weekend_fixed_rate: Optional[Decimal] = None
+
+    # Оплата праздничных часов — отдельная настройка, дефолт коэффициента 2.0
+    holiday_pay_type: Optional[Literal["coefficient", "fixed_rate"]] = None
+    holiday_coefficient: Optional[Decimal] = None
+    holiday_fixed_rate: Optional[Decimal] = None
 
     # Премии/KPI/удержания и итог «к выплате» (задача 3.11a п.1,2,4)
     premium_amount: Decimal = Decimal("0")
@@ -87,6 +98,7 @@ class PayrollSummaryRead(BaseModel):
     total_hours: Decimal
     total_base_amount: Decimal
     total_overtime_amount: Decimal
+    total_off_schedule_amount: Decimal = Decimal("0")
     total_holiday_amount: Decimal
     total_vacation_amount: Decimal = Decimal("0")
     total_sick_amount: Decimal = Decimal("0")

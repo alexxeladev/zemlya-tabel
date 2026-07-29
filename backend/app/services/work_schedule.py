@@ -33,7 +33,7 @@ import re
 from datetime import date
 from decimal import Decimal
 
-from app.services.calendar import is_short_day, is_workday
+from app.services.calendar import is_public_holiday, is_short_day, is_workday
 
 # ── Типы графиков ─────────────────────────────────────────────────────────────
 SCHEDULE_TYPE_WEEKDAY = "weekday"
@@ -242,6 +242,49 @@ def is_planned_work_day(
         return calendar_workday or weekday >= 5
     # Не рабочий день недели графика: считаем только перенос на выходной.
     return calendar_workday and weekday >= 5
+
+
+# ── Категория дня для расчёта ─────────────────────────────────────────────────
+
+DAY_PLANNED = "planned"          # плановый рабочий день → оклад + переработка сверх смены
+DAY_HOLIDAY = "holiday"          # нерабочий праздничный день календаря → праздничные
+DAY_OFF_SCHEDULE = "off_schedule"  # свой выходной по графику → вне графика
+
+
+def day_category(
+    schedule,
+    work_date: date,
+    calendar_data: dict | None = None,
+) -> str:
+    """
+    К какой категории оплаты относятся часы этого дня. Единственный источник
+    правды для payroll, ведомости и Excel — три категории не пересекаются.
+
+      - `planned`      — день входит в план сотрудника: часы до дневной нормы
+                         идут в оклад, превышение смены — в переработку;
+      - `holiday`      — день в план не входит и является нерабочим праздничным
+                         по производственному календарю: ВСЕ часы дня —
+                         праздничные (ТК требует повышенной оплаты);
+      - `off_schedule` — день в план не входит и праздником не является (свой
+                         законный выходной): ВСЕ часы дня — «вне графика».
+
+    Приоритет праздника над выходным намеренный: если сотрудник вышел 12 июня,
+    это работа в праздник, а не «подработка в выходной», независимо от того,
+    выходной это по его графику или нет.
+
+    У сменщика праздник, попавший НА ЕГО СМЕНУ, остаётся `planned` — норма по
+    циклу (180 ч) эту смену уже содержит, вынести её в праздничные значило бы
+    урезать оклад (см. task_schedule_based_pay).
+
+    График не задан → `planned`: противопоставить нечему, часы обычные.
+    """
+    if schedule is None:
+        return DAY_PLANNED
+    if is_planned_work_day(schedule, work_date, calendar_data):
+        return DAY_PLANNED
+    if is_public_holiday(calendar_data, work_date):
+        return DAY_HOLIDAY
+    return DAY_OFF_SCHEDULE
 
 
 def planned_work_dates(

@@ -74,6 +74,28 @@ def is_holiday(calendar_data: dict, month: int, day: int) -> bool:
     return day in non_working
 
 
+def is_public_holiday(calendar_data: dict | None, work_date: date) -> bool:
+    """
+    Нерабочий ПРАЗДНИЧНЫЙ день — в отличие от обычной субботы/воскресенья.
+
+    xmlcalendar праздники отдельно не размечает: 12 июня 2026 стоит в строке
+    месяца обычным числом, а маркер `+` означает перенесённый выходной, а не
+    праздник. Поэтому признак выводим по дню недели: нерабочий БУДНИЙ день —
+    это праздник или перенос (отдыхают все графики), нерабочая суббота или
+    воскресенье — обычный выходной пятидневки.
+
+    Краевой случай: праздник, выпавший на выходные (9 мая 2026 — суббота),
+    праздником здесь не считается, зато считается компенсирующий перенос на
+    будний день (11 мая). Итоговое число оплачиваемых по-праздничному дней
+    сходится, сдвигается только конкретная дата.
+    """
+    if calendar_data is None:
+        return False
+    if work_date.weekday() >= 5:
+        return False
+    return is_holiday(calendar_data, work_date.month, work_date.day)
+
+
 def workdays_in_month(calendar_data: dict, year: int, month: int) -> int:
     """Количество рабочих дней (включая сокращённые)."""
     total = _cal.monthrange(year, month)[1]

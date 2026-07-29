@@ -67,7 +67,7 @@ class StatementRow(BaseModel):
     overtime_hours: Decimal
     overtime_amount: Decimal
 
-    # Начислено оклад (включает оплату праздничных/выходных часов)
+    # Начислено оклад (включает оплату часов вне графика и праздничных)
     base_salary: Decimal
     premium_amount: Decimal       # Премия базовая
     kpi_amount: Decimal           # KPI

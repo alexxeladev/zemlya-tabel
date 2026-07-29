@@ -6,7 +6,8 @@
 //
 // Структура строки:
 //   ФИО | Отдел | График  (merge через rowspan на все строки сотрудника)
-//   Компания | дни 1..N | Итого Ч компании | [Оклад | Сверхур.Ч | Вне граф.Ч | Сверхур.₽ | Вне граф.₽]
+//   Компания | дни 1..N | Итого Ч компании |
+//   [Оклад | Сверхур.Ч | Вне граф.Ч | Празд.Ч | Сверхур.₽ | Вне граф.₽ | Празд.₽]
 //   Итого Ч | [Итого ₽ | Δ] | Норма  (merge через rowspan)
 //
 // Каждая строка компании редактируется как одна ячейка в день (часы по этой
@@ -220,7 +221,7 @@ export function TimesheetCompanyView(props: Props) {
   };
 
   // Кол-во денежных колонок по компании и emp-level (для colSpan строки ИТОГО)
-  const companyMoneyCols = canSeeMoney ? 5 : 0; // Оклад, Сверхур.Ч, Вне граф.Ч, Сверхур.₽, Вне граф.₽
+  const companyMoneyCols = canSeeMoney ? 7 : 0; // Оклад, Сверхур.Ч, Вне граф.Ч, Празд.Ч, Сверхур.₽, Вне граф.₽, Празд.₽
   const empMoneyCols = canSeeMoney ? 2 : 0; // Итого ₽, Δ
   const normCols = canSeeMoney ? 1 : 0; // Норма
   // ФИО,Отдел,График(3) + Компания(1) + дни + ИтогоЧ компании(1) + companyMoney + ИтогоЧ emp(1) + empMoney + Норма
@@ -412,10 +413,16 @@ export function TimesheetCompanyView(props: Props) {
                     {bd ? fmtHours(num(bd.overtime_hours)) || '—' : '—'}
                   </td>
                   <td className="border border-gray-200 px-2 py-1 text-center font-mono text-xs text-gray-600">
+                    {bd ? fmtHours(num(bd.off_schedule_hours)) || '—' : '—'}
+                  </td>
+                  <td className="border border-gray-200 px-2 py-1 text-center font-mono text-xs text-gray-600">
                     {bd ? fmtHours(num(bd.holiday_hours)) || '—' : '—'}
                   </td>
                   <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
                     {fmtMoney(bd?.overtime_amount)}
+                  </td>
+                  <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
+                    {fmtMoney(bd?.off_schedule_amount)}
                   </td>
                   <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
                     {fmtMoney(bd?.holiday_amount)}
@@ -522,8 +529,10 @@ export function TimesheetCompanyView(props: Props) {
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600" style={{ minWidth: 80, zIndex: 20 }}>Оклад</th>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }}>Свер.Ч</th>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }}>Вне граф.Ч</th>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }}>Празд.Ч</th>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600" style={{ minWidth: 70, zIndex: 20 }}>Свер.₽</th>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600" style={{ minWidth: 70, zIndex: 20 }}>Вне граф.₽</th>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600" style={{ minWidth: 70, zIndex: 20 }}>Празд.₽</th>
             </>
           )}
           <th className="sticky top-0 bg-gray-100 border border-gray-200 px-2 py-2 text-center font-semibold text-gray-700" style={{ minWidth: 70, zIndex: 20 }}>
@@ -580,16 +589,16 @@ export function TimesheetCompanyView(props: Props) {
             {canSeeMoney && data.payroll ? (
               <>
                 <td className="border border-gray-300 px-2 py-2 text-right font-mono">{fmtMoney(data.payroll.total_base_amount)}</td>
-                <td className="border border-gray-300 px-2 py-2"></td>
-                <td className="border border-gray-300 px-2 py-2"></td>
+                <td className="border border-gray-300 px-2 py-2" colSpan={3}></td>
                 <td className="border border-gray-300 px-2 py-2 text-right font-mono">{fmtMoney(data.payroll.total_overtime_amount)}</td>
+                <td className="border border-gray-300 px-2 py-2 text-right font-mono">{fmtMoney(data.payroll.total_off_schedule_amount ?? null)}</td>
                 <td className="border border-gray-300 px-2 py-2 text-right font-mono">{fmtMoney(data.payroll.total_holiday_amount)}</td>
                 <td className="border border-gray-300 px-2 py-2"></td>
                 <td className="border border-gray-300 px-2 py-2 text-right font-mono font-bold text-blue-700 bg-blue-100">{fmtMoney(data.payroll.grand_total)}</td>
                 <td className="border border-gray-300 px-2 py-2" colSpan={2}></td>
               </>
             ) : canSeeMoney ? (
-              [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => <td key={i} className="border border-gray-300 px-2 py-2" />)
+              Array.from({ length: 11 }, (_, i) => <td key={i} className="border border-gray-300 px-2 py-2" />)
             ) : null}
           </tr>
         )}

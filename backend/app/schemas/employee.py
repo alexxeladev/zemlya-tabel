@@ -40,6 +40,10 @@ class EmployeeBase(BaseModel):
     weekend_pay_type: WeekendPayType = "coefficient"
     weekend_coefficient: Optional[Decimal] = None
     weekend_fixed_rate: Optional[Decimal] = None
+    # Праздничные — отдельная от выходных настройка (дефолт коэффициента 2.0)
+    holiday_pay_type: WeekendPayType = "coefficient"
+    holiday_coefficient: Optional[Decimal] = None
+    holiday_fixed_rate: Optional[Decimal] = None
     overtime_coefficient: Optional[Decimal] = None
     loan_amount: Optional[Decimal] = None
     loan_term_months: Optional[int] = None
@@ -91,6 +95,9 @@ class EmployeeUpdate(BaseModel):
     weekend_pay_type: Optional[WeekendPayType] = None
     weekend_coefficient: Optional[Decimal] = None
     weekend_fixed_rate: Optional[Decimal] = None
+    holiday_pay_type: Optional[WeekendPayType] = None
+    holiday_coefficient: Optional[Decimal] = None
+    holiday_fixed_rate: Optional[Decimal] = None
     overtime_coefficient: Optional[Decimal] = None
     loan_amount: Optional[Decimal] = None
     loan_term_months: Optional[int] = None

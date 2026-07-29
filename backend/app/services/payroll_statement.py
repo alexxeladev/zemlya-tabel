@@ -114,9 +114,11 @@ def build_payroll_summary(
                 hours=bd.hours,
                 percent=bd.percent,
                 overtime_hours=bd.overtime_hours,
+                off_schedule_hours=bd.off_schedule_hours,
                 holiday_hours=bd.holiday_hours,
                 base_amount=bd.base_amount,
                 overtime_amount=bd.overtime_amount,
+                off_schedule_amount=bd.off_schedule_amount,
                 holiday_amount=bd.holiday_amount,
                 total=bd.total,
             )
@@ -131,12 +133,14 @@ def build_payroll_summary(
             norm_hours=p.norm_hours,
             delta_hours=p.delta_hours,
             overtime_hours=p.overtime_hours,
+            off_schedule_hours=p.off_schedule_hours,
             holiday_hours=p.holiday_hours,
             norm_days=p.norm_days,
             fact_days=p.fact_days,
             hourly_rate=p.hourly_rate,
             base_amount=p.base_amount,
             overtime_amount=p.overtime_amount,
+            off_schedule_amount=p.off_schedule_amount,
             holiday_amount=p.holiday_amount,
             total_amount=p.total_amount,
             vacation_days=p.vacation_days,
@@ -154,6 +158,9 @@ def build_payroll_summary(
             weekend_pay_type=emp.weekend_pay_type,
             weekend_coefficient=emp.weekend_coefficient,
             weekend_fixed_rate=emp.weekend_fixed_rate,
+            holiday_pay_type=emp.holiday_pay_type,
+            holiday_coefficient=emp.holiday_coefficient,
+            holiday_fixed_rate=emp.holiday_fixed_rate,
             premium_amount=payout.premium_amount,
             kpi_amount=payout.kpi_amount,
             advance_deduction=payout.advance_deduction,
@@ -176,6 +183,7 @@ def build_payroll_summary(
         total_hours=sum((p.total_hours for p in payroll_items), _ZERO),
         total_base_amount=sum((p.base_amount for p in payroll_items), _ZERO),
         total_overtime_amount=sum((p.overtime_amount for p in payroll_items), _ZERO),
+        total_off_schedule_amount=sum((p.off_schedule_amount for p in payroll_items), _ZERO),
         total_holiday_amount=sum((p.holiday_amount for p in payroll_items), _ZERO),
         total_vacation_amount=sum((p.vacation_amount for p in payroll_items), _ZERO),
         total_sick_amount=sum((p.sick_amount for p in payroll_items), _ZERO),
@@ -298,7 +306,10 @@ def build_payroll_statement(
 
     for p in summary.employees:
         emp = emp_by_id.get(p.employee_id)
-        base_salary = p.base_amount + p.holiday_amount
+        # «Начислено оклад» ведомости — оклад плюс обе повышенные категории
+        # (вне графика и праздничные): отдельных колонок под них в форме
+        # финдира нет, а в базу распределения по юрлицам они входить обязаны.
+        base_salary = p.base_amount + p.off_schedule_amount + p.holiday_amount
         # Отпускные/больничные — часть «Итого начислено» и, значит, базы
         # распределения по юрлицам (само отсутствие к юрлицу не привязано).
         accrued = (

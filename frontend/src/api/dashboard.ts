@@ -22,6 +22,7 @@ export interface PayrollTotals {
   total: string
   base: string
   overtime: string
+  off_schedule: string
   holiday: string
   non_calculable_employees: number
 }

@@ -24,6 +24,9 @@ export const createEmployee = (data: {
   weekend_pay_type?: WeekendPayType
   weekend_coefficient?: string | null
   weekend_fixed_rate?: string | null
+  holiday_pay_type?: WeekendPayType
+  holiday_coefficient?: string | null
+  holiday_fixed_rate?: string | null
   overtime_coefficient?: string | null
   loan_amount?: string | null
   loan_term_months?: number | null
@@ -45,6 +48,9 @@ export const updateEmployee = (id: number, data: Partial<{
   weekend_pay_type: WeekendPayType
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
+  holiday_pay_type: WeekendPayType
+  holiday_coefficient: string | null
+  holiday_fixed_rate: string | null
   overtime_coefficient: string | null
   loan_amount: string | null
   loan_term_months: number | null

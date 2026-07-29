@@ -49,6 +49,9 @@ def _to_dict(emp: Employee) -> dict:
         "weekend_pay_type": emp.weekend_pay_type,
         "weekend_coefficient": str(emp.weekend_coefficient) if emp.weekend_coefficient is not None else None,
         "weekend_fixed_rate": str(emp.weekend_fixed_rate) if emp.weekend_fixed_rate is not None else None,
+        "holiday_pay_type": emp.holiday_pay_type,
+        "holiday_coefficient": str(emp.holiday_coefficient) if emp.holiday_coefficient is not None else None,
+        "holiday_fixed_rate": str(emp.holiday_fixed_rate) if emp.holiday_fixed_rate is not None else None,
         "overtime_coefficient": str(emp.overtime_coefficient) if emp.overtime_coefficient is not None else None,
         "loan_amount": str(emp.loan_amount) if emp.loan_amount is not None else None,
         "loan_term_months": emp.loan_term_months,
@@ -144,6 +147,14 @@ def create_employee(
             else Decimal("1.5")
         ),
         weekend_fixed_rate=payload.weekend_fixed_rate,
+        holiday_pay_type=payload.holiday_pay_type,
+        # default 2.0 для coefficient — ТК: за праздник не менее двойного
+        holiday_coefficient=(
+            payload.holiday_coefficient
+            if payload.holiday_coefficient is not None or payload.holiday_pay_type != "coefficient"
+            else Decimal("2")
+        ),
+        holiday_fixed_rate=payload.holiday_fixed_rate,
         overtime_coefficient=(
             payload.overtime_coefficient
             if payload.overtime_coefficient is not None

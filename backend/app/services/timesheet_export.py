@@ -17,7 +17,9 @@ from app.services.absences import absence_code, get_month_absences
 from app.services.calendar import get_month_data, parse_days_string
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 from app.services.work_schedule import (
-    is_off_schedule_day,
+    DAY_HOLIDAY,
+    DAY_OFF_SCHEDULE,
+    day_category,
     norm_days_for_schedule,
     norm_hours_for_schedule,
     schedule_issue,
@@ -82,9 +84,9 @@ def _set_cell(ws, row: int, col: int, value=None, *, bold=False, center=False,
 # сводные колонки:
 #   Кол-во дней отпуска → Кол-во дней больничного → Норма дней → Факт дней →
 #   НОРМА ч/мес → ФАКТ ч/мес → Итого Ч компании → Сверхур. Ч → Вне граф. Ч →
-#   Итого Ч сотруд.
+#   Празд. Ч → Итого Ч сотруд.
 #
-# Компания, дни, Итого Ч компании, Сверхур. Ч, Вне граф. Ч — per-row (на каждую
+# Компания, дни, Итого Ч компании, Сверхур. Ч, Вне граф. Ч, Празд. Ч — per-row (на каждую
 # компанию сотрудника). Остальное — employee-level (merge по строкам компаний).
 _COL_NUM = 1
 _COL_TAB = 2
@@ -142,14 +144,19 @@ def _ot_hours_col(total_days: int) -> int:
     return _FIXED_COLS + total_days + 8
 
 
-def _hol_hours_col(total_days: int) -> int:
-    """Вне граф. Ч по компании (per-row) — часы вне графика сотрудника."""
+def _off_hours_col(total_days: int) -> int:
+    """Вне граф. Ч по компании (per-row) — выход в свой выходной по графику."""
     return _FIXED_COLS + total_days + 9
+
+
+def _hol_hours_col(total_days: int) -> int:
+    """Празд. Ч по компании (per-row) — работа в праздничный день календаря."""
+    return _FIXED_COLS + total_days + 10
 
 
 def _grand_total_col(total_days: int) -> int:
     """Общий Итого Ч сотрудника (merge по строкам компаний)."""
-    return _FIXED_COLS + total_days + 10
+    return _FIXED_COLS + total_days + 11
 
 
 def _last_col(total_days: int) -> int:
@@ -269,7 +276,8 @@ def generate_t13_excel(
     for col_fn, width in (
         (_vac_col, 8), (_sick_col, 8), (_norm_days_col, 7), (_fact_days_col, 7),
         (_norm_col, 9), (_fact_hours_col, 9), (_total_col, 8),
-        (_ot_hours_col, 8), (_hol_hours_col, 8), (_grand_total_col, 9),
+        (_ot_hours_col, 8), (_off_hours_col, 8), (_hol_hours_col, 8),
+        (_grand_total_col, 9),
     ):
         ws.column_dimensions[get_column_letter(col_fn(total_days))].width = width
 
@@ -287,18 +295,21 @@ def generate_t13_excel(
             continue
         company_ids = emp_companies[emp.id]
         seq += 1
-        # Дни вне ГРАФИКА сотрудника (task_schedule_based_pay) — считаем один раз
-        # на сотрудника: у каждого свой график, поэтому набор персональный.
-        off_schedule_days = {
-            d for d in range(1, total_days + 1)
-            if is_off_schedule_day(emp.schedule, date(year, month, d), calendar_data)
+        # Категория каждого дня по графику сотрудника — считаем один раз на
+        # сотрудника (у каждого свой график) через тот же day_category, что и
+        # payroll: цифры в файле и на экране обязаны совпадать.
+        day_cats = {
+            d: day_category(emp.schedule, date(year, month, d), calendar_data)
+            for d in range(1, total_days + 1)
         }
+        off_schedule_days = {d for d, c in day_cats.items() if c == DAY_OFF_SCHEDULE}
+        holiday_days = {d for d, c in day_cats.items() if c == DAY_HOLIDAY}
         cur_row = _write_employee_rows(
             ws, cur_row, seq, emp, company_ids, companies_by_id,
             entries_index, total_days,
             non_working, short_days, weekends,
             absence_index, absence_days_by_emp.get(emp.id, {}),
-            off_schedule_days,
+            off_schedule_days, holiday_days,
             year, month, calendar_data,
         )
 
@@ -438,7 +449,8 @@ def _write_table_header(
         (_fact_hours_col(total_days), "ФАКТ\nч/мес"),
         (_total_col(total_days), "Итого Ч\nкомпании"),
         (_ot_hours_col(total_days), "Сверхур.\nЧ"),
-        (_hol_hours_col(total_days), "Вне граф.\nЧ"),
+        (_off_hours_col(total_days), "Вне граф.\nЧ"),
+        (_hol_hours_col(total_days), "Празд.\nЧ"),
         (_grand_total_col(total_days), "Итого Ч\nсотруд."),
     ):
         _merged_header(col, label)
@@ -490,6 +502,7 @@ def _write_employee_rows(
     absence_index: dict[tuple[int, int], str] | None = None,
     absence_days: dict[str, int] | None = None,
     off_schedule_days: set[int] | None = None,
+    holiday_days: set[int] | None = None,
     year: int | None = None,
     month: int | None = None,
     calendar_data: dict | None = None,
@@ -503,12 +516,14 @@ def _write_employee_rows(
     # часы «вне графика»; календарный праздник в рабочий день графика — обычный
     # рабочий день (часы по окладу, превышение смены — переработка).
     off_schedule_days = off_schedule_days if off_schedule_days is not None else set()
+    holiday_days = holiday_days if holiday_days is not None else set()
 
     n = len(company_ids)
     end_row = start_row + n - 1
 
     # Помесячные итоги/праздничные часы по компаниям этого сотрудника
     comp_totals: dict[int, float] = {}
+    comp_off_schedule: dict[int, float] = {}
     comp_holiday: dict[int, float] = {}
 
     def _fmt(v: float):
@@ -580,6 +595,7 @@ def _write_employee_rows(
         c.border = _thin_border()
 
         total_hours = 0.0
+        off_schedule_hours = 0.0
         holiday_hours = 0.0
 
         for d in range(1, total_days + 1):
@@ -600,8 +616,10 @@ def _write_employee_rows(
             elif hours is not None and hours > 0:
                 c.value = int(hours) if hours == int(hours) else hours
                 total_hours += hours
-                if d in off_schedule_days:
+                if d in holiday_days:
                     holiday_hours += hours
+                elif d in off_schedule_days:
+                    off_schedule_hours += hours
 
         # Итого Ч компании (per-row)
         c = ws.cell(row=row, column=_total_col(total_days))
@@ -611,17 +629,18 @@ def _write_employee_rows(
         c.border = _thin_border()
 
         comp_totals[comp_id] = total_hours
+        comp_off_schedule[comp_id] = off_schedule_hours
         comp_holiday[comp_id] = holiday_hours
 
     # ── Переработка (employee-level): ПО ДНЯМ (task_overtime_daily) ────────────
     # Для каждого рабочего дня ГРАФИКА max(0, факт_дня_по_всем_компаниям −
     # дневная норма), сумма за месяц. Дневная норма = смена, у сокращённого
-    # дня — смена − 1. Часы вне графика — отдельная категория, в переработку
-    # не входят (task_schedule_based_pay).
+    # дня — смена − 1. Часы вне графика и праздничные — отдельные категории,
+    # в переработку не входят.
     overtime = 0.0
     if schedule_ok and year is not None and month is not None:
         for d in range(1, total_days + 1):
-            if d in off_schedule_days:
+            if d in off_schedule_days or d in holiday_days:
                 continue
             day_hours = sum(
                 h for h in entries_index.get((emp.id, d), {}).values() if h > 0
@@ -638,12 +657,19 @@ def _write_employee_rows(
     ot_weights = {cid: comp_totals.get(cid, 0.0) for cid in company_ids}
     comp_overtime = _distribute_int(overtime, ot_weights)
 
-    # ── Per-row: Сверхур. Ч и Вне граф. Ч по компании ────────────────────────
+    # ── Per-row: Сверхур. Ч, Вне граф. Ч и Празд. Ч по компании ─────────────
     for i, comp_id in enumerate(company_ids):
         row = start_row + i
         ot = comp_overtime.get(comp_id, 0)
         c = ws.cell(row=row, column=_ot_hours_col(total_days))
         c.value = ot if ot > 0 else None
+        c.font = _header_font(bold=False)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = _thin_border()
+
+        off = comp_off_schedule.get(comp_id, 0.0)
+        c = ws.cell(row=row, column=_off_hours_col(total_days))
+        c.value = _fmt(off) if off > 0 else None
         c.font = _header_font(bold=False)
         c.alignment = Alignment(horizontal="center", vertical="center")
         c.border = _thin_border()
@@ -674,7 +700,8 @@ def _write_employee_rows(
             _norm_days_col(total_days), _fact_days_col(total_days),
             _norm_col(total_days), _fact_hours_col(total_days),
             _total_col(total_days), _ot_hours_col(total_days),
-            _hol_hours_col(total_days), _grand_total_col(total_days),
+            _off_hours_col(total_days), _hol_hours_col(total_days),
+            _grand_total_col(total_days),
         ]
         for rr in range(start_row, end_row + 1):
             for col in info_cols:

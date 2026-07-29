@@ -248,6 +248,7 @@ class TestShiftPayroll:
         )
         assert p.total_hours == 180
         assert p.overtime_hours == 0
+        assert p.off_schedule_hours == 0
         assert p.holiday_hours == 0
         assert p.base_amount == Decimal("60000")
         assert p.total_amount == Decimal("60000")
@@ -275,20 +276,40 @@ class TestShiftPayroll:
         s = cyclic("2/2 смена 1", date(2026, 5, 31))
         entries = _entries(REF_2_2_SHIFT1 + [2])  # 2 июня — выходной цикла
         p = calculate_employee_payroll(_employee(s), entries, CAL_JUNE, YEAR, MONTH)
-        assert p.holiday_hours == 12
+        assert p.off_schedule_hours == 12
+        assert p.holiday_hours == 0
         assert p.overtime_hours == 0
         assert p.base_amount == Decimal("60000")
         # 12 ч × (60000/180) × 1.5 = 6000
-        assert p.holiday_amount == Decimal("6000")
+        assert p.off_schedule_amount == Decimal("6000")
 
     def test_shift_on_holiday_paid_as_regular(self):
-        """Смена 12 июня (праздник) — обычная смена, доплаты нет."""
+        """
+        Смена 12 июня (праздник) — обычная смена по циклу, доплаты нет:
+        норма сменщика 180 ч эту смену уже содержит, вынести её в праздничные
+        значило бы урезать оклад (см. day_category).
+        """
         s = cyclic("2/2 смена 1", date(2026, 5, 31))
         assert 12 in REF_2_2_SHIFT1
         p = calculate_employee_payroll(
             _employee(s), _entries(REF_2_2_SHIFT1), CAL_JUNE, YEAR, MONTH
         )
         assert p.holiday_hours == 0
+        assert p.off_schedule_hours == 0
+
+    def test_holiday_outside_the_cycle_is_holiday_pay(self):
+        """
+        Праздник, попавший на ВЫХОДНОЙ цикла (смена 2 не работает 12 июня):
+        выход в этот день — праздничные, а не «вне графика».
+        """
+        s = cyclic("2/2 смена 2", date(2026, 6, 2))
+        assert 12 not in REF_2_2_SHIFT2
+        entries = _entries(REF_2_2_SHIFT2 + [12])
+        p = calculate_employee_payroll(_employee(s), entries, CAL_JUNE, YEAR, MONTH)
+        assert p.holiday_hours == 12
+        assert p.off_schedule_hours == 0
+        # 12 ч × (60000/180) × 2 = 8000
+        assert p.holiday_amount == Decimal("8000")
 
     def test_cyclic_calculable_without_calendar(self):
         """Сменщику производственный календарь не нужен — цикл самодостаточен."""

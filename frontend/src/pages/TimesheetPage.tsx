@@ -85,8 +85,10 @@ export type CompanyBreakdown = {
   percent?: string;
   base_amount?: string;
   overtime_amount?: string;
+  off_schedule_amount?: string;
   holiday_amount?: string;
   overtime_hours?: string;
+  off_schedule_hours?: string;
   holiday_hours?: string;
   total: string;
 };
@@ -98,6 +100,9 @@ export type EmployeePayroll = {
   delta_hours: string | null;
   base_amount: string;
   overtime_amount: string;
+  /** выход в свой выходной по графику */
+  off_schedule_amount: string;
+  /** работа в нерабочий праздничный день календаря */
   holiday_amount: string;
   total_amount: string;
   vacation_days?: number;
@@ -115,6 +120,9 @@ export type EmployeePayroll = {
   weekend_pay_type?: 'coefficient' | 'fixed_rate' | null;
   weekend_coefficient?: string | null;
   weekend_fixed_rate?: string | null;
+  holiday_pay_type?: 'coefficient' | 'fixed_rate' | null;
+  holiday_coefficient?: string | null;
+  holiday_fixed_rate?: string | null;
   premium_amount?: string;
   kpi_amount?: string;
   advance_deduction?: string;
@@ -134,6 +142,7 @@ type PayrollSummary = {
   total_hours: string;
   total_base_amount: string;
   total_overtime_amount: string;
+  total_off_schedule_amount?: string;
   total_holiday_amount: string;
   total_vacation_amount?: string;
   total_sick_amount?: string;
@@ -652,9 +661,9 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Отпуск,Больн,Премия,KPI,
+  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Праздн.,Отпуск,Больн,Премия,KPI,
   // Итого₽,Удержано,К выплате
-  const totalCols = 3 + numDays + (canSeeMoney ? 14 : 1);
+  const totalCols = 3 + numDays + (canSeeMoney ? 15 : 1);
 
   const renderEmployeeRow = (emp: Employee) => {
     const pay = payrollByEmp.get(emp.id);
@@ -790,7 +799,16 @@ export function TimesheetPage() {
             <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
               {fmtMoney(pay?.overtime_amount ?? null)}
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
+            <td
+              className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
+              title="Вне графика: выход в свой выходной по графику"
+            >
+              {fmtMoney(pay?.off_schedule_amount ?? null)}
+            </td>
+            <td
+              className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
+              title="Праздничные: работа в нерабочий праздничный день"
+            >
               {fmtMoney(pay?.holiday_amount ?? null)}
             </td>
             {/* Отпускные / больничные — оплата дней отсутствия */}
@@ -1173,6 +1191,13 @@ export function TimesheetPage() {
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
+                    style={{ minWidth: 80, zIndex: 20 }}
+                    title="Праздничные: работа в нерабочий праздничный день календаря"
+                  >
+                    Праздн.
+                  </th>
+                  <th
+                    className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
                     style={{ minWidth: 90, zIndex: 20 }}
                     title="Отпускные: оклад / норма × (дни × 8)"
                   >
@@ -1228,7 +1253,7 @@ export function TimesheetPage() {
             {visibleEmployees.length === 0 && (
               <tr>
                 <td
-                  colSpan={3 + numDays + (canSeeMoney ? 7 : 1)}
+                  colSpan={3 + numDays + (canSeeMoney ? 8 : 1)}
                   className="text-center text-gray-500 py-10"
                 >
                   Нет сотрудников
@@ -1276,6 +1301,9 @@ export function TimesheetPage() {
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
                       {fmtMoney(data.payroll.total_overtime_amount)}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono">
+                      {fmtMoney(data.payroll.total_off_schedule_amount ?? null)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
                       {fmtMoney(data.payroll.total_holiday_amount)}

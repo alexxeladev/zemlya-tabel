@@ -28,6 +28,7 @@ class PayrollTotalsRead(BaseModel):
     total: Decimal
     base: Decimal
     overtime: Decimal
+    off_schedule: Decimal = Decimal("0")
     holiday: Decimal
     # Сотрудники, не вошедшие в расчёт (нет оклада/графика/сменный график):
     # ФОТ на дашборде по ним занижен — фронт показывает предупреждение.

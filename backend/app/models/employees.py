@@ -42,7 +42,8 @@ class Employee(Base):
     # Finance (nullable)
     rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
 
-    # Оплата выходных/праздничных часов (правка 3.9-3) — per-employee.
+    # Оплата часов ВНЕ ГРАФИКА — выход в свой выходной (правка 3.9-3,
+    # триггер уточнён в task_schedule_based_pay). Per-employee.
     # weekend_pay_type: "coefficient" → coefficient × часовая ставка;
     #                   "fixed_rate"  → фиксированная ставка за час.
     weekend_pay_type: Mapped[str] = mapped_column(
@@ -52,6 +53,17 @@ class Employee(Base):
         Numeric(4, 2), default=Decimal("1.5"), server_default="1.5", nullable=True
     )
     weekend_fixed_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+
+    # Оплата ПРАЗДНИЧНЫХ часов — работа в нерабочий праздничный день календаря.
+    # Отдельная от выходных настройка: ТК требует за праздник не менее двойной
+    # оплаты, поэтому дефолт коэффициента 2.0, а не 1.5. Механизм тот же.
+    holiday_pay_type: Mapped[str] = mapped_column(
+        String(20), default="coefficient", server_default="coefficient", nullable=False
+    )
+    holiday_coefficient: Mapped[Decimal | None] = mapped_column(
+        Numeric(4, 2), default=Decimal("2"), server_default="2", nullable=True
+    )
+    holiday_fixed_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
 
     # Коэффициент переработки (задача 3.11b п.0): N из карточки — 0 / 1 / 1.5.
     # Переработка считается ПОМЕСЯЧНО: (оклад/норма) × часы_переработки × коэффициент.

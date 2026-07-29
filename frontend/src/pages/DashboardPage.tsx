@@ -229,11 +229,12 @@ function PayrollBlock({ data }: { data: DashboardData }) {
 
   return (
     <Section title="ФОТ (брутто к начислению)">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <KpiCard label="Всего начислено" value={formatMoney(p.total, { showZero: true })} accent="text-blue-700" />
         <KpiCard label="Оклады" value={formatMoney(p.base, { showZero: true })} />
         <KpiCard label="Переработка" value={formatMoney(p.overtime, { showZero: true })} />
-        <KpiCard label="Вне графика" value={formatMoney(p.holiday, { showZero: true })} />
+        <KpiCard label="Вне графика" value={formatMoney(p.off_schedule ?? '0', { showZero: true })} />
+        <KpiCard label="Праздничные" value={formatMoney(p.holiday, { showZero: true })} />
       </div>
 
       {p.non_calculable_employees > 0 && (
