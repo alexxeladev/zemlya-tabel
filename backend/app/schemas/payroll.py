@@ -25,8 +25,16 @@ class CompanyBreakdownRead(BaseModel):
 class EmployeePayrollRead(BaseModel):
     employee_id: int
     employee_name: str
+    # rate — оклад окладника; у посменного здесь УСЛОВНЫЙ оклад
+    # (ставка × норма смен), от которого считаются отпускные/больничные.
     rate: Decimal | None
     schedule_name: str | None
+
+    # Тип оплаты: "salary" (оклад) или "per_shift" (смены × ставка)
+    pay_type: str = "salary"
+    shift_rate: Decimal | None = None
+    worked_shifts: int = 0
+    norm_shifts: int | None = None
 
     total_hours: Decimal
     norm_hours: Decimal | None

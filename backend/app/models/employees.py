@@ -40,7 +40,18 @@ class Employee(Base):
     default_company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
 
     # Finance (nullable)
+    #
+    # pay_type — способ расчёта БАЗОВОЙ суммы, всё остальное (переработка,
+    # отсутствия, премии, удержания, распределение) работает по общим правилам:
+    #   "salary"    — месячный оклад `rate`, база = оклад × зачётные часы / норма;
+    #   "per_shift" — оклада нет, база = отработанных смен × `shift_rate`.
+    # У посменного оклад пустой, а для отсутствий из ставки и нормы смен
+    # считается «условный оклад» (см. app.services.payroll).
+    pay_type: Mapped[str] = mapped_column(
+        String(20), default="salary", server_default="salary", nullable=False
+    )
     rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    shift_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
 
     # Оплата часов ВНЕ ГРАФИКА — выход в свой выходной (правка 3.9-3,
     # триггер уточнён в task_schedule_based_pay). Per-employee.

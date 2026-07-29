@@ -45,7 +45,9 @@ def _to_dict(emp: Employee) -> dict:
         "department_id": emp.department_id,
         "schedule_id": emp.schedule_id,
         "default_company_id": emp.default_company_id,
+        "pay_type": emp.pay_type,
         "rate": str(emp.rate) if emp.rate is not None else None,
+        "shift_rate": str(emp.shift_rate) if emp.shift_rate is not None else None,
         "weekend_pay_type": emp.weekend_pay_type,
         "weekend_coefficient": str(emp.weekend_coefficient) if emp.weekend_coefficient is not None else None,
         "weekend_fixed_rate": str(emp.weekend_fixed_rate) if emp.weekend_fixed_rate is not None else None,
@@ -138,7 +140,11 @@ def create_employee(
         department_id=payload.department_id,
         schedule_id=payload.schedule_id,
         default_company_id=payload.default_company_id,
-        rate=payload.rate,
+        pay_type=payload.pay_type,
+        # Оклад и ставка за смену взаимоисключающие — чужое поле не сохраняем,
+        # иначе в карточке останется мусор от прошлого типа оплаты.
+        rate=payload.rate if payload.pay_type != "per_shift" else None,
+        shift_rate=payload.shift_rate if payload.pay_type == "per_shift" else None,
         weekend_pay_type=payload.weekend_pay_type,
         # default 1.5 для coefficient, чтобы не хранить NULL при старом поведении
         weekend_coefficient=(
@@ -206,6 +212,12 @@ def update_employee(
     before = _to_dict(emp)
     for field, value in data.items():
         setattr(emp, field, value)
+    # Смена типа оплаты гасит поле чужого типа: у окладника не должно остаться
+    # ставки за смену, у посменного — оклада (иначе расчёт молча возьмёт не то).
+    if emp.pay_type == "per_shift":
+        emp.rate = None
+    else:
+        emp.shift_rate = None
     db.flush()
     log_action(db, actor, "employee", emp.id, "update", before=before, after=_to_dict(emp))
     db.commit()

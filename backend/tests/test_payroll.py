@@ -1175,3 +1175,145 @@ class TestHolidayPay:
         assert sum(b.total for b in p.breakdown_by_company) == (
             p.base_amount + p.overtime_amount + p.off_schedule_amount + p.holiday_amount
         )
+
+
+class TestPerShiftPay:
+    """
+    Посменная оплата (task_search_and_shiftpay): оклада нет, база = число
+    отработанных смен × ставка. Меняется ТОЛЬКО база — переработки и доплат
+    за выход вне графика/в праздник у посменного нет, всё остальное общее.
+
+    MAY_REAL: 1 мая — праздник-пятница, Сб/Вс нерабочие; для 5/2 по 8 ч
+    норма 20 смен / 160 ч.
+    """
+
+    RATE = Decimal("2500")
+    # Плановые рабочие дни мая 2026 для 5/2 в MAY_REAL (20 смен)
+    WORKDAYS = [d for d in range(1, 32) if d not in (1, 2, 3, 9, 10, 16, 17, 23, 24, 30, 31)]
+
+    def _emp(self, shift_rate=RATE):
+        emp = make_employee(rate=None, schedule=make_schedule(8))
+        emp.pay_type = "per_shift"
+        emp.shift_rate = shift_rate
+        return emp
+
+    def _entries(self, days, hours=Decimal("8"), company_id=1):
+        return [
+            make_entry(work_date=date(2026, 5, d), hours=hours, company_id=company_id)
+            for d in days
+        ]
+
+    def test_base_is_shifts_times_rate(self):
+        """AC5: 15 смен × 2500 = 37500."""
+        p = calculate_employee_payroll(
+            self._emp(), self._entries(self.WORKDAYS[:15]), MAY_REAL, 2026, 5
+        )
+        assert p.is_calculable is True
+        assert p.pay_type == "per_shift"
+        assert p.worked_shifts == 15
+        assert p.base_amount == Decimal("37500")
+        assert p.total_amount == Decimal("37500")
+
+    def test_no_salary_needed(self):
+        """Оклад пустой — расчёт не падает и не жалуется на «не задан оклад»."""
+        emp = self._emp()
+        assert emp.rate is None
+        p = calculate_employee_payroll(emp, self._entries(self.WORKDAYS), MAY_REAL, 2026, 5)
+        assert p.is_calculable is True
+        assert p.reason_if_not_calculable is None
+
+    def test_missing_shift_rate_not_calculable(self):
+        p = calculate_employee_payroll(
+            self._emp(shift_rate=None), self._entries(self.WORKDAYS), MAY_REAL, 2026, 5
+        )
+        assert p.is_calculable is False
+        assert "ставка за смену" in (p.reason_if_not_calculable or "")
+
+    def test_extra_shift_off_schedule_is_just_another_shift(self):
+        """AC6: доп. смена в свой выходной = ещё одна ставка, без ×1.5."""
+        base = calculate_employee_payroll(
+            self._emp(), self._entries(self.WORKDAYS), MAY_REAL, 2026, 5
+        )
+        # 2 мая — суббота, выходной по графику 5/2
+        extra = calculate_employee_payroll(
+            self._emp(), self._entries(self.WORKDAYS + [2]), MAY_REAL, 2026, 5
+        )
+        assert extra.worked_shifts == base.worked_shifts + 1
+        assert extra.base_amount == base.base_amount + self.RATE
+        assert extra.off_schedule_hours == Decimal("0")
+        assert extra.off_schedule_amount == Decimal("0")
+        assert extra.total_amount == base.total_amount + self.RATE
+
+    def test_holiday_shift_is_just_another_shift(self):
+        """Смена в праздник тоже стоит ровно ставку — без удвоения."""
+        p = calculate_employee_payroll(
+            self._emp(), self._entries(self.WORKDAYS + [1]), MAY_REAL, 2026, 5
+        )
+        assert p.holiday_hours == Decimal("0")
+        assert p.holiday_amount == Decimal("0")
+        assert p.base_amount == self.RATE * Decimal(len(self.WORKDAYS) + 1)
+
+    def test_no_overtime(self):
+        """Смена длиннее нормы часов переработки не даёт — платим за смену."""
+        p = calculate_employee_payroll(
+            self._emp(), self._entries(self.WORKDAYS[:5], hours=Decimal("12")),
+            MAY_REAL, 2026, 5,
+        )
+        assert p.total_hours == Decimal("60")
+        assert p.overtime_hours == Decimal("0")
+        assert p.overtime_amount == Decimal("0")
+        assert p.base_amount == self.RATE * Decimal(5)
+
+    def test_notional_salary_for_absences(self):
+        """
+        AC7: отпуск считается от условного оклада = ставка × норма смен.
+        Май 2026 для 5/2: норма 20 смен / 160 ч → условный оклад 50000.
+        5 дней отпуска → 50000 / 160 × (5 × 8).
+        """
+        from app.models.employee_absences import EmployeeAbsence
+
+        vacation_days = self.WORKDAYS[:5]
+        absences = [
+            EmployeeAbsence(employee_id=1, work_date=date(2026, 5, d), kind="vacation")
+            for d in vacation_days
+        ]
+        p = calculate_employee_payroll(
+            self._emp(), self._entries(self.WORKDAYS[5:]), MAY_REAL, 2026, 5,
+            absences=absences,
+        )
+        assert p.norm_shifts == 20
+        assert p.rate == Decimal("50000")  # условный оклад = 2500 × 20
+        assert p.vacation_paid_days == 5
+        expected = (
+            Decimal("50000") / Decimal("160") * Decimal("8") * Decimal("5")
+        ).quantize(Decimal("1"))
+        assert p.vacation_amount == expected
+        # База — только за фактически отработанные смены, задвоения нет
+        assert p.base_amount == self.RATE * Decimal(len(self.WORKDAYS) - 5)
+        assert p.total_amount == p.base_amount + expected
+
+    def test_breakdown_distributes_base_by_company(self):
+        """Распределение по компаниям работает как у окладников."""
+        entries = (
+            self._entries(self.WORKDAYS[:10], company_id=1)
+            + self._entries(self.WORKDAYS[10:], company_id=2)
+        )
+        p = calculate_employee_payroll(
+            self._emp(), entries, MAY_REAL, 2026, 5,
+            companies_by_id={1: ("a", "A"), 2: ("b", "B")},
+        )
+        assert sum(b.base_amount for b in p.breakdown_by_company) == p.base_amount
+        assert sum(b.total for b in p.breakdown_by_company) == p.base_amount
+        assert {b.company_id for b in p.breakdown_by_company} == {1, 2}
+
+    def test_salary_employee_unchanged(self):
+        """AC9: окладник считается ровно как раньше — та же полная норма → оклад."""
+        emp = make_employee(schedule=make_schedule(8))  # pay_type по умолчанию
+        p = calculate_employee_payroll(
+            emp, self._entries(self.WORKDAYS), MAY_REAL, 2026, 5
+        )
+        assert p.pay_type == "salary"
+        assert p.shift_rate is None
+        assert p.total_hours == Decimal("160")
+        assert p.base_amount == Decimal("80000")
+        assert p.total_amount == Decimal("80000")

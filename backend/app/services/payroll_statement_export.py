@@ -61,7 +61,7 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
     # Базовые колонки (без распределения)
     base_headers = [
         "№", "Таб.№", "ФИО", "Компания", "Подразделение", "Должность",
-        "Режим работы", "Оклад", "Норма час", "Факт час", "Коэф. пер.",
+        "Режим работы", "Оклад / ставка", "Норма час", "Факт час", "Коэф. пер.",
         "Кол-во пер.", "Сумма пер.", "Начислено оклад", "Премия", "KPI",
         "Премия доп.", "Итого начислено", "Аванс/Удерж.", "К выплате",
     ]
@@ -98,7 +98,9 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
             r.department_name or "",
             r.position or "",
             r.schedule_name or "",
-            _money(r.rate),
+            # У посменного оклада нет — в колонку идёт ставка за смену
+            # (условный оклад в ведомости не показываем, он служебный).
+            _money(r.shift_rate if r.pay_type == "per_shift" else r.rate),
             _money(r.norm_hours),
             _money(r.fact_hours),
             _money(r.overtime_coefficient),
@@ -137,8 +139,13 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
         # Подсветка строки если ручная сумма процентов ≠ 100 (авто-доли не трогаем)
         if r.distribution and not r.is_auto_distributed and r.percent_sum != Decimal("100"):
             c.fill = warn_fill
-        # Примечание — в т.ч. откуда взято распределение (каскад, ч.3)
+        # Примечание — тип оплаты и откуда взято распределение (каскад, ч.3)
         note = r.note or ""
+        if r.pay_type == "per_shift":
+            note = (
+                (note + "; " if note else "")
+                + f"посменно: {r.worked_shifts} смен × ставку"
+            )
         source_label = _SOURCE_LABELS.get(r.distribution_source)
         if source_label and r.distribution:
             note = (note + "; " if note else "") + source_label

@@ -60,7 +60,13 @@ class StatementRow(BaseModel):
     position: str | None
     schedule_name: str | None
 
+    # rate — оклад окладника; у посменного УСЛОВНЫЙ оклад (ставка × норма смен).
+    # Что перед нами, видно по pay_type.
     rate: Decimal | None
+    pay_type: str = "salary"
+    shift_rate: Decimal | None = None
+    worked_shifts: int = 0
+    norm_shifts: int | None = None
     norm_hours: Decimal | None
     fact_hours: Decimal
     overtime_coefficient: Decimal
