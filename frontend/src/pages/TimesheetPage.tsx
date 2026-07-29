@@ -98,6 +98,11 @@ export type EmployeePayroll = {
   total_hours: string;
   norm_hours: string | null;
   delta_hours: string | null;
+  /** salary — оклад; per_shift — смены × ставка */
+  pay_type?: 'salary' | 'per_shift';
+  shift_rate?: string | null;
+  worked_shifts?: number;
+  norm_shifts?: number | null;
   base_amount: string;
   overtime_amount: string;
   /** выход в свой выходной по графику */
@@ -264,6 +269,8 @@ export function sickLimitTitle(pay?: EmployeePayroll | null): string {
 // Коэффициент/режим оплаты выходных сотрудника — для колонки «Коэф.» (п.3)
 export function fmtCoeff(pay?: EmployeePayroll | null): string {
   if (!pay) return '—';
+  // У посменного все смены равнозначны — коэффициент выходных не применяется.
+  if (pay.pay_type === 'per_shift') return '—';
   if (pay.weekend_pay_type === 'fixed_rate') {
     const r = num(pay.weekend_fixed_rate ?? null);
     return r > 0 ? `${new Intl.NumberFormat('ru-RU').format(r)}₽/ч` : '—';
@@ -808,8 +815,20 @@ export function TimesheetPage() {
             <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
               {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
+            <td
+              className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
+              title={
+                pay?.pay_type === 'per_shift'
+                  ? `Посменно: ${pay.worked_shifts ?? 0} смен × ${fmtMoney(pay.shift_rate ?? null)}`
+                  : undefined
+              }
+            >
               {fmtMoney(pay?.base_amount ?? null)}
+              {pay?.pay_type === 'per_shift' && (
+                <div className="text-[10px] font-sans text-gray-400 leading-tight">
+                  {pay.worked_shifts ?? 0} см. × {fmtMoney(pay.shift_rate ?? null)}
+                </div>
+              )}
             </td>
             <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
               {fmtMoney(pay?.overtime_amount ?? null)}
@@ -1220,6 +1239,9 @@ export function TimesheetPage() {
                     style={{ minWidth: 90, zIndex: 20 }}
                   >
                     Оклад
+                    <div className="text-[10px] font-normal text-gray-400 leading-tight">
+                      посменно — смены × ставка
+                    </div>
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"

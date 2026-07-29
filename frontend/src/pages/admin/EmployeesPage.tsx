@@ -49,7 +49,9 @@ const schema = z.object({
   department_id: z.coerce.number().optional(),
   schedule_id: z.coerce.number().optional(),
   default_company_id: z.coerce.number().optional(),
+  pay_type: z.enum(['salary', 'per_shift']).default('salary'),
   rate: z.string().optional(),
+  shift_rate: z.string().optional(),
   weekend_pay_type: z.enum(['coefficient', 'fixed_rate']).default('coefficient'),
   weekend_coefficient: z.string().optional(),
   weekend_fixed_rate: z.string().optional(),
@@ -114,6 +116,7 @@ export function EmployeesPage() {
   const hasAccess = form.watch('has_access')
   const weekendType = form.watch('weekend_pay_type')
   const holidayType = form.watch('holiday_pay_type')
+  const payType = form.watch('pay_type')
 
   const deptOptions = [
     { value: 0, label: '— без отдела —' },
@@ -133,7 +136,8 @@ export function EmployeesPage() {
       tab_number: '', full_name: '', position: '',
       department_id: isManager() ? (user?.department_id ?? undefined) : undefined,
       schedule_id: undefined, default_company_id: undefined,
-      rate: '', weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
+      pay_type: 'salary', rate: '', shift_rate: '',
+      weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
       holiday_pay_type: 'coefficient', holiday_coefficient: '1.5', holiday_fixed_rate: '',
       overtime_coefficient: '1.5',
       loan_amount: '', loan_term_months: '', loan_start_date: '',
@@ -152,7 +156,9 @@ export function EmployeesPage() {
       department_id: e.department_id ?? undefined,
       schedule_id: e.schedule_id ?? undefined,
       default_company_id: e.default_company_id ?? undefined,
+      pay_type: e.pay_type ?? 'salary',
       rate: e.rate ?? '',
+      shift_rate: e.shift_rate ?? '',
       weekend_pay_type: e.weekend_pay_type ?? 'coefficient',
       weekend_coefficient: e.weekend_coefficient ?? '',
       weekend_fixed_rate: e.weekend_fixed_rate ?? '',
@@ -189,7 +195,10 @@ export function EmployeesPage() {
         department_id: data.department_id || null,
         schedule_id: data.schedule_id || null,
         default_company_id: data.default_company_id || null,
-        rate: data.rate || null,
+        pay_type: data.pay_type,
+        // Поле чужого типа оплаты не отправляем — бэк его всё равно обнулит.
+        rate: data.pay_type === 'salary' ? (data.rate || null) : null,
+        shift_rate: data.pay_type === 'per_shift' ? (data.shift_rate || null) : null,
         weekend_pay_type: data.weekend_pay_type,
         weekend_coefficient: data.weekend_pay_type === 'coefficient' ? (data.weekend_coefficient || null) : null,
         weekend_fixed_rate: data.weekend_pay_type === 'fixed_rate' ? (data.weekend_fixed_rate || null) : null,
@@ -468,10 +477,34 @@ export function EmployeesPage() {
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Трудовая занятость</p>
             <div className="flex flex-col gap-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-gray-700">Оклад (₽)</label>
-                <input {...form.register('rate')} placeholder="50000" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <div className="flex flex-col gap-2">
+                <label className="text-sm font-medium text-gray-700">Тип оплаты</label>
+                <div className="flex gap-4 text-sm">
+                  <label className="flex items-center gap-1.5 text-gray-700 cursor-pointer">
+                    <input type="radio" value="salary" {...form.register('pay_type')} />
+                    Окладная
+                  </label>
+                  <label className="flex items-center gap-1.5 text-gray-700 cursor-pointer">
+                    <input type="radio" value="per_shift" {...form.register('pay_type')} />
+                    Посменная
+                  </label>
+                </div>
               </div>
+              {payType === 'per_shift' ? (
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Ставка за смену (₽)</label>
+                  <input {...form.register('shift_rate')} placeholder="2500" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <p className="text-xs text-gray-400">
+                    Оклада нет: платим за каждую отработанную смену, включая выход вне
+                    графика. Переработка и доплата за праздник не начисляются.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Оклад (₽)</label>
+                  <input {...form.register('rate')} placeholder="50000" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              )}
               <div className="flex flex-col gap-1">
                 <label className="text-sm font-medium text-gray-700">Дата приёма</label>
                 <input type="date" {...form.register('hire_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />

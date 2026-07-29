@@ -1,4 +1,4 @@
-import type { CompanyShare, Employee, EmployeeShares, UserRole, WeekendPayType } from '../types/api'
+import type { CompanyShare, Employee, EmployeeShares, PayType, UserRole, WeekendPayType } from '../types/api'
 import { apiClient } from './client'
 
 export interface EmployeeListParams {
@@ -20,7 +20,9 @@ export const createEmployee = (data: {
   department_id?: number | null
   schedule_id?: number | null
   default_company_id?: number | null
+  pay_type?: PayType
   rate?: string | null
+  shift_rate?: string | null
   weekend_pay_type?: WeekendPayType
   weekend_coefficient?: string | null
   weekend_fixed_rate?: string | null
@@ -44,7 +46,9 @@ export const updateEmployee = (id: number, data: Partial<{
   department_id: number | null
   schedule_id: number | null
   default_company_id: number | null
+  pay_type: PayType
   rate: string | null
+  shift_rate: string | null
   weekend_pay_type: WeekendPayType
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null

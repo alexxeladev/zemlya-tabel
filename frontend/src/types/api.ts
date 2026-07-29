@@ -17,8 +17,13 @@ export interface CompanyBreakdown {
 export interface EmployeePayroll {
   employee_id: number
   employee_name: string
+  /** у посменного здесь условный оклад = ставка × норма смен */
   rate: string | null
   schedule_name: string | null
+  pay_type: PayType
+  shift_rate: string | null
+  worked_shifts: number
+  norm_shifts: number | null
   total_hours: string
   norm_hours: string | null
   delta_hours: string | null
@@ -135,7 +140,12 @@ export interface StatementRow {
   department_name: string | null
   position: string | null
   schedule_name: string | null
+  /** у посменного здесь условный оклад = ставка × норма смен */
   rate: string | null
+  pay_type: PayType
+  shift_rate: string | null
+  worked_shifts: number
+  norm_shifts: number | null
   norm_hours: string | null
   fact_hours: string
   overtime_coefficient: string
@@ -359,6 +369,8 @@ export interface Company {
   is_active: boolean
 }
 
+export type PayType = 'salary' | 'per_shift'
+
 export type ScheduleType = 'weekday' | 'cyclic'
 
 export interface Schedule {
@@ -405,7 +417,10 @@ export interface Employee {
   department_id: number | null
   schedule_id: number | null
   default_company_id: number | null
+  /** salary — месячный оклад; per_shift — смены × ставка */
+  pay_type: PayType
   rate: string | null
+  shift_rate: string | null
   weekend_pay_type: WeekendPayType
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null

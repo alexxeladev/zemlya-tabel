@@ -289,7 +289,7 @@ export function PayrollPage() {
                 <th className="px-2 py-2 text-left font-medium">Компания</th>
                 <th className="px-2 py-2 text-left font-medium">Отдел</th>
                 <th className="px-2 py-2 text-left font-medium">Должность</th>
-                <th className="px-2 py-2 text-center font-medium">Оклад</th>
+                <th className="px-2 py-2 text-center font-medium">Оклад / ставка</th>
                 <th className="px-2 py-2 text-center font-medium">Норма</th>
                 <th className="px-2 py-2 text-center font-medium">Факт</th>
                 <th className="px-2 py-2 text-center font-medium" title="Коэффициент переработки">Коэф.</th>
@@ -346,7 +346,23 @@ export function PayrollPage() {
                     <td className="px-2 py-1.5 text-gray-600">{row.main_company_name ?? '—'}</td>
                     <td className="px-2 py-1.5 text-gray-600">{row.department_name ?? '—'}</td>
                     <td className="px-2 py-1.5 text-gray-600">{row.position ?? '—'}</td>
-                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.rate)}</td>
+                    <td
+                      className="px-2 py-1.5 text-center text-gray-700"
+                      title={
+                        row.pay_type === 'per_shift'
+                          ? `Посменно: ${row.worked_shifts} смен × ставку; условный оклад для отсутствий ${formatMoney(row.rate)}`
+                          : undefined
+                      }
+                    >
+                      {row.pay_type === 'per_shift' ? (
+                        <>
+                          {formatMoney(row.shift_rate)}
+                          <div className="text-[10px] text-gray-400 leading-tight">за смену</div>
+                        </>
+                      ) : (
+                        formatMoney(row.rate)
+                      )}
+                    </td>
                     <td className="px-2 py-1.5 text-center text-gray-600">{formatHours(row.norm_hours)}</td>
                     <td className="px-2 py-1.5 text-center text-gray-700">{formatHours(row.fact_hours)}</td>
                     <td className="px-2 py-1.5 text-center text-gray-600">{num(row.overtime_coefficient)}</td>
