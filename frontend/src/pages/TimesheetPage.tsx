@@ -321,6 +321,9 @@ export function TimesheetPage() {
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // Сводка «По компаниям» в подвале: при 8 юрлицах занимала пол-экрана
+  // (в основном прочерками), поэтому по умолчанию свёрнута.
+  const [companySummaryOpen, setCompanySummaryOpen] = useState(false);
   const [autofillPreview, setAutofillPreview] = useState<AutofillPreview | null>(null);
   const [autofillLoading, setAutofillLoading] = useState(false);
 
@@ -1475,10 +1478,21 @@ export function TimesheetPage() {
       {/* ───── Сводка по компаниям (вне скролла, не ездит горизонтально) ───── */}
       {visibleEmployees.length > 0 && data.companies.length > 0 && (
         <div className="flex-shrink-0 border-t-2 border-gray-300 bg-white">
-          <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200">
+          <button
+            type="button"
+            onClick={() => setCompanySummaryOpen((v) => !v)}
+            className="w-full flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 bg-gray-50 border-b border-gray-200 hover:bg-gray-100"
+            title={companySummaryOpen ? 'Свернуть сводку' : 'Развернуть сводку'}
+          >
+            <span className="text-[10px] leading-none">{companySummaryOpen ? '▾' : '▸'}</span>
             По компаниям
-          </div>
-          {data.companies.map((c) => {
+            {!companySummaryOpen && (
+              <span className="font-normal normal-case tracking-normal text-gray-400">
+                — скрыто, компаний: {data.companies.length}
+              </span>
+            )}
+          </button>
+          {companySummaryOpen && data.companies.map((c) => {
             const col = getCompanyColor(c.id, data.companies);
             const hours = companyTotals.get(c.id) ?? 0;
             let money = 0;
