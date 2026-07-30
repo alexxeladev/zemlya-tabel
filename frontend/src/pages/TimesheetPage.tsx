@@ -34,6 +34,7 @@ import type { AbsenceKind, AutofillPreview } from '../types/api';
 // ──────────────────────────────────────────────────────────────
 export type Employee = {
   id: number;
+  tab_number?: string | null;
   full_name: string;
   department_id: number | null;
   department?: { id: number; name: string } | null;
@@ -311,8 +312,10 @@ export function TimesheetPage() {
     const d = parseInt(searchParams.get('department_id') ?? '', 10);
     return Number.isFinite(d) ? d : null;
   });
-  // Поиск по ФИО — фильтрует строки поверх фильтра отдела, на бэк не ходит.
+  // Поиск по ФИО/таб.№ и фильтр компании — как на «Расчёт ЗП»: фильтруют строки
+  // поверх фильтра отдела, на бэк не ходят.
   const [search, setSearch] = useState('');
+  const [companyFilter, setCompanyFilter] = useState<number | null>(null);
 
   const [data, setData] = useState<MonthResponse | null>(null);
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
@@ -418,18 +421,40 @@ export function TimesheetPage() {
     [visibleEmployees]
   );
 
-  // ── Поиск по ФИО ──
+  // Компании, где у сотрудника есть часы в месяце — для фильтра по компании.
+  const companiesByEmp = useMemo(() => {
+    const map = new Map<number, Set<number>>();
+    for (const e of data?.entries ?? []) {
+      const set = map.get(e.employee_id);
+      if (set) set.add(e.company_id);
+      else map.set(e.employee_id, new Set([e.company_id]));
+    }
+    return map;
+  }, [data]);
+
+  // ── Поиск (ФИО / таб.№) + фильтр компании ──
+  // Логика та же, что на «Расчёт ЗП»: поиск по ФИО ИЛИ табельному номеру,
+  // компания — где у сотрудника есть доля (в табеле: есть часы) либо основная.
   // Чистая навигация поверх уже загруженных данных: фильтруются только СТРОКИ.
   // Итоги (ИТОГО, по компаниям, dayTotals) намеренно продолжают считаться по
-  // всем видимым сотрудникам — иначе поиск молча менял бы суммы месяца.
+  // всем видимым сотрудникам — иначе фильтр молча менял бы суммы месяца.
   // Что итоги шире выборки, видно по счётчику «найдено N из M» в шапке.
   const searchNeedle = search.trim().toLocaleLowerCase('ru');
+  const filtersActive = searchNeedle !== '' || companyFilter !== null;
   const shownEmployees = useMemo(() => {
-    if (!searchNeedle) return visibleEmployees;
-    return visibleEmployees.filter((e) =>
-      e.full_name.toLocaleLowerCase('ru').includes(searchNeedle)
-    );
-  }, [visibleEmployees, searchNeedle]);
+    if (!filtersActive) return visibleEmployees;
+    return visibleEmployees.filter((e) => {
+      if (searchNeedle) {
+        const hay = `${e.full_name} ${e.tab_number ?? ''}`.toLocaleLowerCase('ru');
+        if (!hay.includes(searchNeedle)) return false;
+      }
+      if (companyFilter !== null) {
+        const hasHours = companiesByEmp.get(e.id)?.has(companyFilter) ?? false;
+        if (!hasHours && e.default_company_id !== companyFilter) return false;
+      }
+      return true;
+    });
+  }, [visibleEmployees, searchNeedle, companyFilter, companiesByEmp, filtersActive]);
 
   // ── Группировка по отделам (Bug 5): только при «Все отделы» для admin/accountant ──
   const grouped = canSelectDept && departmentFilter === null;
@@ -1010,7 +1035,7 @@ export function TimesheetPage() {
               type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Поиск по ФИО"
+              placeholder="Поиск: ФИО или таб.№"
               className="border border-gray-300 rounded pl-2 pr-7 py-1 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             {search && (
@@ -1024,14 +1049,23 @@ export function TimesheetPage() {
               </button>
             )}
           </div>
-          {searchNeedle && (
-            <span
-              className="text-xs text-gray-500"
-              title="Поиск фильтрует только строки. Итоги остаются по всем сотрудникам месяца."
+
+          {data.companies.length > 0 && (
+            <select
+              className="border border-gray-300 rounded px-2 py-1 text-sm"
+              value={companyFilter ?? ''}
+              onChange={(e) =>
+                setCompanyFilter(e.target.value === '' ? null : parseInt(e.target.value, 10))
+              }
+              title="Сотрудники с часами по этой компании или с ней как основной"
             >
-              найдено {shownEmployees.length} из {visibleEmployees.length}
-              <span className="text-gray-400"> · итоги по всем</span>
-            </span>
+              <option value="">Все компании</option>
+              {data.companies.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code} — {c.name}
+                </option>
+              ))}
+            </select>
           )}
 
           {canSelectDept && departments.length > 0 && (
@@ -1049,6 +1083,25 @@ export function TimesheetPage() {
                 </option>
               ))}
             </select>
+          )}
+
+          {filtersActive && (
+            <>
+              <span
+                className="text-xs text-gray-500"
+                title="Фильтры сужают только строки. Итоги остаются по всем сотрудникам месяца."
+              >
+                найдено {shownEmployees.length} из {visibleEmployees.length}
+                <span className="text-gray-400"> · итоги по всем</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => { setSearch(''); setCompanyFilter(null); }}
+                className="px-2 py-1 text-sm rounded border border-gray-300 text-gray-500 hover:bg-gray-100"
+              >
+                Сброс
+              </button>
+            </>
           )}
 
           {/* Статусы периодов в шапке — только когда НЕ группируем (один отдел в выдаче) */}
@@ -1333,7 +1386,7 @@ export function TimesheetPage() {
                   colSpan={3 + numDays + (canSeeMoney ? 8 : 1)}
                   className="text-center text-gray-500 py-10"
                 >
-                  {searchNeedle ? 'Никто не найден по этому запросу' : 'Нет сотрудников'}
+                  {filtersActive ? 'Никто не найден по этим фильтрам' : 'Нет сотрудников'}
                 </td>
               </tr>
             )}
