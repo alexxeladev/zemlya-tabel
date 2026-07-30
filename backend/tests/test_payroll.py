@@ -1061,6 +1061,37 @@ class TestPayrollCalculationsIntegration:
         assert bd["company_id"] == company.id
         assert bd["company_code"] == "PC"
 
+    def test_head_company_does_not_limit_payroll(
+        self, client: TestClient, admin_pay: Employee, worker: Employee,
+        company: Company, dept: Department, calendar_2026: ProductionCalendar,
+        db_session: Session,
+    ):
+        """Головная компания отдела — ярлык для дерева оргструктуры
+        (task_org_structure ч.1). Сотрудник работает на другие юрлица, и расчёт
+        распределяет часы по фактическим компаниям, а не по головной."""
+        other = Company(code="OTH", name="Другое юрлицо", is_active=True)
+        db_session.add(other)
+        db_session.flush()
+        # Головная компания отдела — company, а часы есть и на company, и на other
+        dept.head_company_id = company.id
+        db_session.commit()
+
+        _add_entries(db_session, worker.id, company.id, [(4, "8"), (5, "8")])
+        _add_entries(db_session, worker.id, other.id, [(6, "8"), (7, "8")])
+
+        token = get_token(client, "payadmin@example.com", "admin123")
+        resp = client.get("/api/timesheet/2026/5/payroll",
+                          headers={"Authorization": f"Bearer {token}"})
+        emp_data = next(e for e in resp.json()["employees"] if e["employee_id"] == worker.id)
+        by_id = {b["company_id"]: b for b in emp_data["breakdown_by_company"]}
+        assert set(by_id) == {company.id, other.id}
+        assert Decimal(by_id[company.id]["hours"]) == Decimal("16")
+        assert Decimal(by_id[other.id]["hours"]) == Decimal("16")
+        assert (
+            Decimal(by_id[company.id]["total"]) + Decimal(by_id[other.id]["total"])
+            == Decimal(emp_data["total_amount"])
+        )
+
     def test_off_schedule_24h_edge_case(self):
         """24 часа в выходной по графику → расчёт без переполнения"""
         schedule = make_schedule(8)

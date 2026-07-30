@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_action
 from app.core.deps import get_current_user, require_role
 from app.database import get_db
+from app.models.companies import Company
 from app.models.company_shares import DepartmentCompanyShare
 from app.models.departments import Department
 from app.models.employees import Employee
@@ -26,7 +27,22 @@ _readers = require_role("admin", "accountant", "manager")
 
 
 def _to_dict(obj: Department) -> dict:
-    return {"id": obj.id, "name": obj.name, "code": obj.code, "is_active": obj.is_active}
+    return {
+        "id": obj.id,
+        "name": obj.name,
+        "code": obj.code,
+        "head_company_id": obj.head_company_id,
+        "is_active": obj.is_active,
+    }
+
+
+def _check_head_company(db: Session, company_id: int | None) -> None:
+    """Головная компания — только ярлык для дерева оргструктуры, но ссылаться
+    она должна на существующее юрлицо."""
+    if company_id is None:
+        return
+    if not db.get(Company, company_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
 
 
 @router.get("", response_model=list[DepartmentRead])
@@ -47,7 +63,13 @@ def create_department(
 ):
     if db.query(Department).filter(Department.code == payload.code).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Code already exists")
-    dept = Department(name=payload.name, code=payload.code, is_active=True)
+    _check_head_company(db, payload.head_company_id)
+    dept = Department(
+        name=payload.name,
+        code=payload.code,
+        head_company_id=payload.head_company_id,
+        is_active=True,
+    )
     db.add(dept)
     db.flush()
     log_action(db, actor, "department", dept.id, "create", after=_to_dict(dept))
@@ -81,7 +103,10 @@ def update_department(
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
     before = _to_dict(dept)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if "head_company_id" in changes:
+        _check_head_company(db, changes["head_company_id"])
+    for field, value in changes.items():
         setattr(dept, field, value)
     db.flush()
     log_action(db, actor, "department", dept.id, "update", before=before, after=_to_dict(dept))

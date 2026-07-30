@@ -11,6 +11,9 @@ from app.schemas.payroll_statement import CompanyShareInput
 class DepartmentBase(BaseModel):
     name: str
     code: str
+    # Головная компания — группировка отдела в дереве оргструктуры.
+    # На расчёт ЗП (часы и проценты по юрлицам) НЕ влияет.
+    head_company_id: Optional[int] = None
 
 
 class DepartmentCreate(DepartmentBase):
@@ -27,6 +30,7 @@ class DepartmentRead(DepartmentBase):
 class DepartmentUpdate(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None
+    head_company_id: Optional[int] = None
     is_active: Optional[bool] = None
 
 

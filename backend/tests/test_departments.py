@@ -105,3 +105,60 @@ def test_delete_department_with_employees_409(client: TestClient, admin_user: Em
     resp = client.delete(f"/api/departments/{dept.id}", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 409
     assert "сотрудников" in resp.json()["detail"]
+
+
+# ── Головная компания отдела (task_org_structure ч.1) ─────────────────────────
+# Это ярлык для дерева оргструктуры. На расчёт ЗП не влияет — сотрудник
+# по-прежнему работает на любые юрлица (см. test_head_company_does_not_limit_payroll).
+
+def test_create_department_with_head_company(client: TestClient, admin_user: Employee, db_session):
+    company = Company(code="zmo", name="ООО Земля МО", is_active=True)
+    db_session.add(company)
+    db_session.commit()
+    db_session.refresh(company)
+
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.post(
+        "/api/departments",
+        json={"name": "ИТО", "code": "ITO", "head_company_id": company.id},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["head_company_id"] == company.id
+
+
+def test_set_and_clear_head_company(client: TestClient, admin_user: Employee, db_session):
+    dept = _make_dept(db_session)
+    company = Company(code="kft", name="ООО Комфорт", is_active=True)
+    db_session.add(company)
+    db_session.commit()
+    db_session.refresh(company)
+    token = get_token(client, "admin@example.com", "admin123")
+
+    resp = client.patch(
+        f"/api/departments/{dept.id}",
+        json={"head_company_id": company.id},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["head_company_id"] == company.id
+
+    # Явный null снимает головную компанию — отдел уезжает в «Без компании»
+    resp = client.patch(
+        f"/api/departments/{dept.id}",
+        json={"head_company_id": None},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["head_company_id"] is None
+
+
+def test_head_company_must_exist(client: TestClient, admin_user: Employee, db_session):
+    dept = _make_dept(db_session)
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.patch(
+        f"/api/departments/{dept.id}",
+        json={"head_company_id": 99999},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
