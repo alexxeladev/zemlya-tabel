@@ -34,6 +34,26 @@ class DepartmentUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class DepartmentManagerRead(BaseModel):
+    """Менеджер отдела — краткая карточка для дерева оргструктуры."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    full_name: str
+    position: Optional[str] = None
+    email: Optional[str] = None
+
+
+class DepartmentManagersRead(BaseModel):
+    department_id: int
+    managers: list[DepartmentManagerRead]
+
+
+class DepartmentManagersUpdate(BaseModel):
+    """Полный набор менеджеров отдела: что прислали, то и будет (пусто — снять всех)."""
+    employee_ids: list[int]
+
+
 class DepartmentSharesRead(BaseModel):
     """Дефолт распределения по юрлицам на уровне отдела (task_distribution_v2 ч.3)."""
     department_id: int

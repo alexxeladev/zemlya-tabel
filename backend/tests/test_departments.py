@@ -162,3 +162,104 @@ def test_head_company_must_exist(client: TestClient, admin_user: Employee, db_se
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 404
+
+
+# ── Менеджеры отдела: many-to-many (task_org_structure ч.2) ───────────────────
+
+def _make_manager(db_session, name="Иванов И.И.", email="m1@example.com", role="manager") -> Employee:
+    emp = Employee(
+        full_name=name,
+        email=email,
+        hashed_password=hash_password("pass1234"),
+        role=role,
+        is_active=True,
+        must_change_password=False,
+    )
+    db_session.add(emp)
+    db_session.commit()
+    db_session.refresh(emp)
+    return emp
+
+
+def test_set_department_managers(client: TestClient, admin_user: Employee, db_session):
+    dept = _make_dept(db_session)
+    m1 = _make_manager(db_session, "Иванов И.И.", "m1@example.com")
+    m2 = _make_manager(db_session, "Петров П.П.", "m2@example.com")
+    token = get_token(client, "admin@example.com", "admin123")
+
+    resp = client.put(
+        f"/api/departments/{dept.id}/managers",
+        json={"employee_ids": [m1.id, m2.id]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert [m["id"] for m in resp.json()["managers"]] == sorted([m1.id, m2.id])
+
+    resp = client.get(
+        f"/api/departments/{dept.id}/managers",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert {m["full_name"] for m in resp.json()["managers"]} == {"Иванов И.И.", "Петров П.П."}
+
+
+def test_manager_can_lead_several_departments(client: TestClient, admin_user: Employee, db_session):
+    """Один менеджер — несколько отделов. department_id при этом не трогается."""
+    d1 = _make_dept(db_session, "ИТО", "ITO")
+    d2 = _make_dept(db_session, "Бухгалтерия", "BUH")
+    m = _make_manager(db_session)
+    token = get_token(client, "admin@example.com", "admin123")
+
+    for d in (d1, d2):
+        resp = client.put(
+            f"/api/departments/{d.id}/managers",
+            json={"employee_ids": [m.id]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+
+    db_session.refresh(m)
+    assert m.managed_department_ids == sorted([d1.id, d2.id])
+    assert m.department_id is None  # где числится — отдельное поле, не изменилось
+
+
+def test_set_managers_replaces_previous_set(client: TestClient, admin_user: Employee, db_session):
+    dept = _make_dept(db_session)
+    m1 = _make_manager(db_session, "Иванов И.И.", "m1@example.com")
+    m2 = _make_manager(db_session, "Петров П.П.", "m2@example.com")
+    token = get_token(client, "admin@example.com", "admin123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    client.put(f"/api/departments/{dept.id}/managers", json={"employee_ids": [m1.id]}, headers=headers)
+    resp = client.put(
+        f"/api/departments/{dept.id}/managers", json={"employee_ids": [m2.id]}, headers=headers
+    )
+    assert [m["id"] for m in resp.json()["managers"]] == [m2.id]
+
+    # Пустой список снимает всех
+    resp = client.put(
+        f"/api/departments/{dept.id}/managers", json={"employee_ids": []}, headers=headers
+    )
+    assert resp.json()["managers"] == []
+
+
+def test_set_managers_rejects_non_manager_role(client: TestClient, admin_user: Employee, db_session):
+    dept = _make_dept(db_session)
+    emp = _make_manager(db_session, "Сидоров С.С.", "e1@example.com", role="employee")
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.put(
+        f"/api/departments/{dept.id}/managers",
+        json={"employee_ids": [emp.id]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422
+
+
+def test_set_managers_admin_only(client: TestClient, admin_user: Employee, manager_user: Employee, db_session):
+    dept = _make_dept(db_session)
+    token = get_token(client, "manager@example.com", "manager123")
+    resp = client.put(
+        f"/api/departments/{dept.id}/managers",
+        json={"employee_ids": [manager_user.id]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403

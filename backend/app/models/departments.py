@@ -6,6 +6,7 @@ from sqlalchemy import Boolean, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.department_managers import department_managers
 
 if TYPE_CHECKING:
     from app.models.companies import Company
@@ -33,3 +34,11 @@ class Department(Base):
 
     employees: Mapped[list[Employee]] = relationship("Employee", back_populates="department")
     head_company: Mapped[Company | None] = relationship("Company")
+
+    # Менеджеры отдела (task_org_structure ч.2). Отдельно от `employees`:
+    # руководить отделом можно, не числясь в нём.
+    managers: Mapped[list[Employee]] = relationship(
+        "Employee",
+        secondary=department_managers,
+        back_populates="managed_departments",
+    )

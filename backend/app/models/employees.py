@@ -9,6 +9,7 @@ from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, St
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.department_managers import department_managers
 
 if TYPE_CHECKING:
     from app.models.companies import Company
@@ -109,6 +110,21 @@ class Employee(Base):
 
     # Relationships
     department: Mapped[Optional[Department]] = relationship("Department", back_populates="employees")
+    # Отделы, которыми сотрудник РУКОВОДИТ (task_org_structure ч.2). Не путать
+    # с `department` — это отдел, где он числится. Заполняется только у manager.
+    # lazy="selectin" — доступ проверяется на каждом запросе, без этого был бы
+    # отдельный SELECT на каждого сотрудника в списке.
+    managed_departments: Mapped[list[Department]] = relationship(
+        "Department",
+        secondary=department_managers,
+        back_populates="managers",
+        lazy="selectin",
+    )
+
+    @property
+    def managed_department_ids(self) -> list[int]:
+        """Id отделов, которыми руководит сотрудник (см. app.services.org_access)."""
+        return sorted(d.id for d in self.managed_departments)
     schedule: Mapped[Optional[Schedule]] = relationship("Schedule", back_populates="employees")
     default_company: Mapped[Optional[Company]] = relationship("Company", back_populates="employees")
     timesheet_entries: Mapped[list[TimesheetEntry]] = relationship(

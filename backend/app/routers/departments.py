@@ -12,6 +12,9 @@ from app.models.departments import Department
 from app.models.employees import Employee
 from app.schemas.department import (
     DepartmentCreate,
+    DepartmentManagerRead,
+    DepartmentManagersRead,
+    DepartmentManagersUpdate,
     DepartmentRead,
     DepartmentSharesRead,
     DepartmentSharesUpdate,
@@ -135,6 +138,74 @@ def delete_department(
     db.flush()
     log_action(db, actor, "department", dept.id, "delete", before=before)
     db.commit()
+
+
+# ── Менеджеры отдела (task_org_structure ч.2) ─────────────────────────────────
+#
+# Связь many-to-many, управляется СО СТОРОНЫ ОТДЕЛА. Не путать с
+# Employee.department_id: там сотрудник числится, здесь — руководит.
+
+def _managers_response(dept: Department) -> DepartmentManagersRead:
+    return DepartmentManagersRead(
+        department_id=dept.id,
+        managers=[
+            DepartmentManagerRead.model_validate(m)
+            for m in sorted(dept.managers, key=lambda m: m.full_name)
+        ],
+    )
+
+
+@router.get("/{dept_id}/managers", response_model=DepartmentManagersRead)
+def get_department_managers(
+    dept_id: int,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(_readers),
+):
+    dept = db.get(Department, dept_id)
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
+    return _managers_response(dept)
+
+
+@router.put("/{dept_id}/managers", response_model=DepartmentManagersRead)
+def set_department_managers(
+    dept_id: int,
+    payload: DepartmentManagersUpdate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Задать полный список менеджеров отдела. Пустой список снимает всех —
+    отдел останется без руководителя (видят только admin/accountant)."""
+    dept = db.get(Department, dept_id)
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
+
+    before = [m.id for m in dept.managers]
+    wanted = sorted(set(payload.employee_ids))
+    managers: list[Employee] = []
+    for emp_id in wanted:
+        emp = db.get(Employee, emp_id)
+        if not emp:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=f"Employee {emp_id} not found"
+            )
+        if emp.role != "manager":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"«{emp.full_name}» не руководитель — сначала выдайте роль «Руководитель»",
+            )
+        managers.append(emp)
+
+    dept.managers = managers
+    db.flush()
+    log_action(
+        db, actor, "department_managers", dept.id, "set",
+        before={"employee_ids": before},
+        after={"employee_ids": wanted},
+    )
+    db.commit()
+    db.refresh(dept)
+    return _managers_response(dept)
 
 
 # ── Дефолт распределения по юрлицам (task_distribution_v2 ч.3) ─────────────────

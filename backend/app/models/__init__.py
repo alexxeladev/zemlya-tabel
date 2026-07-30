@@ -5,6 +5,7 @@ from app.models.company_shares import (
     DepartmentCompanyShare,
     EmployeeCompanyShare,
 )
+from app.models.department_managers import department_managers
 from app.models.departments import Department
 from app.models.employee_absences import (
     ABSENCE_CODES,
@@ -40,4 +41,5 @@ __all__ = [
     "Schedule",
     "TimesheetEntry",
     "TimesheetPeriod",
+    "department_managers",
 ]

@@ -78,6 +78,10 @@ class EmployeeRead(EmployeeBase):
     schedule: Optional[ScheduleRead] = None
     default_company: Optional[CompanyRead] = None
 
+    # Чем менеджер РУКОВОДИТ (task_org_structure ч.2) — не путать с `department`,
+    # где он числится. Фронт по этому полю строит селектор отделов менеджера.
+    managed_department_ids: list[int] = []
+
     @model_validator(mode="after")
     def _compute_fields(self) -> "EmployeeRead":
         self.has_access = self.email is not None
