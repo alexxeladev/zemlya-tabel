@@ -40,11 +40,27 @@ def test_create_department_manager_forbidden(client: TestClient, manager_user: E
 
 
 def test_list_departments_manager(client: TestClient, admin_user: Employee, manager_user: Employee, db_session):
+    """Менеджер видит в справочнике только свои отделы — из этого списка
+    строится его селектор отделов (task_org_structure ч.2)."""
+    own = _make_dept(db_session)
+    _make_dept(db_session, name="Чужой отдел", code="FOR")
+    manager_user.managed_departments = [own]
+    db_session.commit()
+
+    token = get_token(client, "manager@example.com", "manager123")
+    resp = client.get("/api/departments", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert [d["name"] for d in resp.json()] == ["Дирекция"]
+
+
+def test_list_departments_manager_without_managed_is_empty(
+    client: TestClient, admin_user: Employee, manager_user: Employee, db_session
+):
     _make_dept(db_session)
     token = get_token(client, "manager@example.com", "manager123")
     resp = client.get("/api/departments", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
-    assert len(resp.json()) == 1
+    assert resp.json() == []
 
 
 def test_list_departments_employee_forbidden(client: TestClient, db_session):

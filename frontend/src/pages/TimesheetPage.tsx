@@ -292,7 +292,11 @@ export function TimesheetPage() {
   const role: string | null = user?.role ?? null;
   const canSeeMoney = role === 'admin' || role === 'accountant' || role === 'manager';
   const canExport = role === 'admin' || role === 'accountant' || role === 'manager';
-  const canSelectDept = role === 'admin' || role === 'accountant';
+  // Селектор отделов: admin/accountant всегда, manager — если руководит
+  // несколькими (task_org_structure ч.2). С одним отделом выбирать нечего.
+  const managedDeptCount: number = user?.managed_department_ids?.length ?? 0;
+  const canSelectDept =
+    role === 'admin' || role === 'accountant' || (role === 'manager' && managedDeptCount > 1);
 
   const viewMode = useTimesheetViewStore((s) => s.mode);
   const setViewMode = useTimesheetViewStore((s) => s.setMode);
@@ -1079,7 +1083,7 @@ export function TimesheetPage() {
                 setDepartmentFilter(e.target.value === '' ? null : parseInt(e.target.value, 10))
               }
             >
-              <option value="">Все отделы</option>
+              <option value="">{role === 'manager' ? 'Все мои отделы' : 'Все отделы'}</option>
               {departments.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}

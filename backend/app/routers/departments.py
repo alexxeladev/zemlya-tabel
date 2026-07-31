@@ -22,6 +22,7 @@ from app.schemas.department import (
 )
 from app.schemas.payroll_statement import CompanyShareInput
 from app.services.company_shares import SharesValidationError, validate_shares
+from app.services.org_access import managed_department_ids
 
 router = APIRouter()
 
@@ -55,6 +56,13 @@ def list_departments(
 ):
     if current_user.role == "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+    if current_user.role == "manager":
+        # Менеджеру — только его отделы: из этого списка строится селектор
+        # отделов, и чужие в нём делать нечего (task_org_structure ч.2).
+        managed = managed_department_ids(current_user)
+        if not managed:
+            return []
+        return db.query(Department).filter(Department.id.in_(managed)).all()
     return db.query(Department).all()
 
 

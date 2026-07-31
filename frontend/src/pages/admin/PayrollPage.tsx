@@ -247,13 +247,16 @@ export function PayrollPage() {
               <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
             ))}
           </select>
-          {!isManager && departments.length > 0 && (
+          {/* Менеджеру с несколькими отделами селектор нужен так же, как
+              бухгалтеру: /api/departments отдаёт ему только его отделы
+              (task_org_structure ч.2). С одним отделом выбирать нечего. */}
+          {departments.length > 1 && (
             <select
               value={departmentId ?? ''}
               onChange={(e) => setDepartmentId(e.target.value === '' ? undefined : Number(e.target.value))}
               className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
             >
-              <option value="">Все отделы</option>
+              <option value="">{isManager ? 'Все мои отделы' : 'Все отделы'}</option>
               {departments.map((d) => (
                 <option key={d.id} value={d.id}>{d.name}</option>
               ))}
