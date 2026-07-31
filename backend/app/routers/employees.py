@@ -80,6 +80,16 @@ def _gen_temp_password() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(12))
 
 
+def _drop_managed_departments_if_not_manager(emp: Employee) -> list[int]:
+    """Управляемые отделы имеют смысл только у роли manager (task_org_structure ч.2).
+    Возвращает id отделов, с которых сотрудник снят, — для audit log."""
+    if emp.role == "manager" or not emp.managed_departments:
+        return []
+    dropped = emp.managed_department_ids
+    emp.managed_departments = []
+    return dropped
+
+
 # ── List / Get ─────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[EmployeeRead])
@@ -315,9 +325,13 @@ def update_access_role(
 
     before_role = emp.role
     emp.role = payload.role
+    # Роль сменили с «руководителя» — снимаем его со всех отделов, иначе он
+    # остаётся в списке менеджеров отдела, уже ничем не руководя.
+    dropped = _drop_managed_departments_if_not_manager(emp)
     db.flush()
     log_action(db, actor, "employee", emp.id, "role_changed",
-               before={"role": before_role}, after={"role": emp.role})
+               before={"role": before_role, "managed_department_ids": dropped},
+               after={"role": emp.role})
     db.commit()
     db.refresh(emp)
     return emp
@@ -358,11 +372,17 @@ def revoke_access(
     if emp.email is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Employee has no system access")
 
-    before = {"email": emp.email, "role": emp.role}
+    before = {
+        "email": emp.email,
+        "role": emp.role,
+        "managed_department_ids": emp.managed_department_ids,
+    }
     emp.email = None
     emp.hashed_password = None
     emp.role = None
     emp.must_change_password = False
+    # Без доступа в систему руководить отделами не может — связь снимаем.
+    _drop_managed_departments_if_not_manager(emp)
     db.flush()
     log_action(db, actor, "employee", emp.id, "access_revoked", before=before)
     db.commit()
@@ -449,7 +469,9 @@ def get_company_shares(
     emp = db.get(Employee, emp_id)
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    if current_user.role == "manager" and not can_access_department(current_user, emp.department_id):
+    if current_user.role == "manager" and not can_access_department(
+        current_user, emp.department_id
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
 
     return _shares_response(db, emp)
