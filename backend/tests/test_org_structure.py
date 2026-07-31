@@ -436,3 +436,29 @@ def test_org_tree_hides_system_admin(client: TestClient, admin: Employee, worker
         for d in c["departments"]:
             everyone += [e["full_name"] for e in d["employees"]]
     assert "Org Admin" not in everyone
+
+
+def test_role_change_drops_managed_departments(
+    client: TestClient, admin: Employee, multi_manager: Employee, db_session: Session
+):
+    """Сняли роль руководителя — сотрудник уходит из менеджеров отдела,
+    иначе он остаётся в списке, уже ничем не руководя."""
+    headers = _admin_headers(client)
+    resp = client.patch(
+        f"/api/employees/{multi_manager.id}/access",
+        json={"role": "accountant"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    db_session.refresh(multi_manager)
+    assert multi_manager.managed_department_ids == []
+
+
+def test_revoke_access_drops_managed_departments(
+    client: TestClient, admin: Employee, multi_manager: Employee, db_session: Session
+):
+    headers = _admin_headers(client)
+    resp = client.delete(f"/api/employees/{multi_manager.id}/access", headers=headers)
+    assert resp.status_code in (200, 204)
+    db_session.refresh(multi_manager)
+    assert multi_manager.managed_department_ids == []
