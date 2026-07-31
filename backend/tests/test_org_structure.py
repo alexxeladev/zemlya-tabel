@@ -365,3 +365,74 @@ def test_payroll_still_splits_by_actual_companies(
     assert set(by_company) == {company.id, other.id}
     assert Decimal(by_company[company.id]["hours"]) == Decimal("16")
     assert Decimal(by_company[other.id]["hours"]) == Decimal("16")
+
+
+# ── Дерево оргструктуры (task_org_structure ч.3) ──────────────────────────────
+
+def _admin_headers(client: TestClient) -> dict:
+    return {"Authorization": f"Bearer {get_token(client, 'orgadmin@example.com', 'admin123')}"}
+
+
+def test_org_tree_groups_departments_under_head_company(
+    client: TestClient, admin: Employee, workers: dict, company: Company,
+    dept_a: Department, dept_b: Department, db_session: Session,
+):
+    dept_a.head_company_id = company.id
+    dept_b.head_company_id = company.id
+    db_session.commit()
+
+    resp = client.get("/api/org/tree", headers=_admin_headers(client))
+    assert resp.status_code == 200
+    tree = resp.json()
+
+    node = next(c for c in tree["companies"] if c["id"] == company.id)
+    names = [d["name"] for d in node["departments"]]
+    assert "ИТО" in names and "Бухгалтерия" in names
+
+    ito = next(d for d in node["departments"] if d["name"] == "ИТО")
+    assert ito["employee_count"] == 1
+    assert [e["full_name"] for e in ito["employees"]] == ["Сотрудник А"]
+
+
+def test_org_tree_keeps_orphans_visible(
+    client: TestClient, admin: Employee, workers: dict, dept_c: Department,
+    company: Company, schedule: Schedule, db_session: Session,
+):
+    """Отдел без головной компании и сотрудник без отдела не должны исчезать —
+    иначе их нельзя будет починить из дерева."""
+    orphan = Employee(full_name="Ничейный Сотрудник", is_active=True,
+                      default_company_id=company.id, schedule_id=schedule.id)
+    db_session.add(orphan)
+    db_session.commit()
+
+    tree = client.get("/api/org/tree", headers=_admin_headers(client)).json()
+    assert dept_c.name in [d["name"] for d in tree["departments_without_company"]]
+    assert "Ничейный Сотрудник" in [
+        e["full_name"] for e in tree["employees_without_department"]
+    ]
+
+
+def test_org_tree_shows_department_managers(
+    client: TestClient, admin: Employee, multi_manager: Employee,
+    company: Company, dept_a: Department, db_session: Session,
+):
+    dept_a.head_company_id = company.id
+    db_session.commit()
+
+    tree = client.get("/api/org/tree", headers=_admin_headers(client)).json()
+    node = next(c for c in tree["companies"] if c["id"] == company.id)
+    ito = next(d for d in node["departments"] if d["id"] == dept_a.id)
+    assert [m["full_name"] for m in ito["managers"]] == ["Мульти Менеджер"]
+
+
+def test_org_tree_admin_only(client: TestClient, multi_manager: Employee):
+    assert client.get("/api/org/tree", headers=_auth(client)).status_code == 403
+
+
+def test_org_tree_hides_system_admin(client: TestClient, admin: Employee, workers: dict):
+    tree = client.get("/api/org/tree", headers=_admin_headers(client)).json()
+    everyone = [e["full_name"] for e in tree["employees_without_department"]]
+    for c in tree["companies"]:
+        for d in c["departments"]:
+            everyone += [e["full_name"] for e in d["employees"]]
+    assert "Org Admin" not in everyone

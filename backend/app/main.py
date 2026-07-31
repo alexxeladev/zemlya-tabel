@@ -14,6 +14,7 @@ from app.routers.companies import router as companies_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.departments import router as departments_router
 from app.routers.employees import router as employees_router
+from app.routers.org import router as org_router
 from app.routers.schedules import router as schedules_router
 from app.routers.timesheet import router as timesheet_router
 from app.services.calendar import CalendarFetchError, ensure_calendar
@@ -56,6 +57,7 @@ app.include_router(employees_router, prefix="/api/employees", tags=["employees"]
 app.include_router(calendar_router, prefix="/api/calendar", tags=["calendar"])
 app.include_router(timesheet_router, prefix="/api/timesheet", tags=["timesheet"])
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(org_router, prefix="/api/org", tags=["org"])
 
 
 @app.get("/health")
