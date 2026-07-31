@@ -21,13 +21,17 @@ import {
   updateDepartment,
   deleteDepartment,
   setDepartmentManagers,
+  getDepartmentShares,
+  setDepartmentShares,
 } from '../../api/departments'
+import { listCompanies } from '../../api/companies'
 import { listEmployees } from '../../api/employees'
 import { getOrgTree } from '../../api/org'
 import { ApiError } from '../../api/client'
 import { useApi } from '../../hooks/useApi'
 import { toast } from '../../store/toasts'
-import type { OrgCompany, OrgDepartment, OrgEmployee } from '../../types/api'
+import type { CompanyShare, OrgCompany, OrgDepartment, OrgEmployee } from '../../types/api'
+import { SharesEditor, type SharesMap } from '../../components/SharesEditor'
 import { Badge } from '../../components/Badge'
 import { Button } from '../../components/Button'
 import { Confirm } from '../../components/Confirm'
@@ -216,6 +220,11 @@ export function OrgStructurePage() {
   const [companyForm, setCompanyForm] = useState<CompanyForm | null>(null)
   const [deptForm, setDeptForm] = useState<DepartmentForm | null>(null)
   const [managersFor, setManagersFor] = useState<OrgDepartment | null>(null)
+  // Дефолт распределения по юрлицам на уровне отдела (task_distribution_v2 ч.3):
+  // редактируется здесь же, чтобы вместе с вкладкой «Отделы» не потерялся.
+  const { data: allCompanies } = useApi(listCompanies)
+  const [shares, setShares] = useState<SharesMap>({})
+  const [sharesKey, setSharesKey] = useState(0)
   const [deleteCompanyTarget, setDeleteCompanyTarget] = useState<OrgCompany | null>(null)
   const [deleteDeptTarget, setDeleteDeptTarget] = useState<OrgDepartment | null>(null)
   const [saving, setSaving] = useState(false)
@@ -264,13 +273,20 @@ export function OrgStructurePage() {
       toast.error('Название и код обязательны')
       return
     }
+    const shareList: CompanyShare[] = Object.entries(shares)
+      .filter(([, v]) => (Number(v) || 0) > 0)
+      .map(([cid, v]) => ({ company_id: Number(cid), percent: String(Number(v)) }))
+
     setSaving(true)
     try {
       if (deptForm.id) {
         await updateDepartment(deptForm.id, payload)
+        // Пустой список очищает дефолт отдела — сотрудники уходят на авто по часам.
+        await setDepartmentShares(deptForm.id, shareList)
         toast.success('Отдел обновлён')
       } else {
-        await createDepartment(payload)
+        const created = await createDepartment(payload)
+        if (shareList.length > 0) await setDepartmentShares(created.id, shareList)
         toast.success('Отдел создан')
       }
       setDeptForm(null)
@@ -308,9 +324,26 @@ export function OrgStructurePage() {
     }
   }
 
+  const openDeptForm = (form: DepartmentForm) => {
+    setDeptForm(form)
+    setShares({})
+    if (!form.id) {
+      setSharesKey((n) => n + 1)
+      return
+    }
+    getDepartmentShares(form.id)
+      .then((d) => {
+        const map: SharesMap = {}
+        for (const sh of d.shares) map[sh.company_id] = sh.percent
+        setShares(map)
+      })
+      .catch(() => {})
+      .finally(() => setSharesKey((n) => n + 1))
+  }
+
   const deptNodeProps = {
     onEdit: (d: OrgDepartment) =>
-      setDeptForm({
+      openDeptForm({
         id: d.id,
         name: d.name,
         code: d.code,
@@ -353,7 +386,7 @@ export function OrgStructurePage() {
             }
             onDeleteCompany={setDeleteCompanyTarget}
             onAddDepartment={(companyId) =>
-              setDeptForm({ name: '', code: '', head_company_id: companyId })
+              openDeptForm({ name: '', code: '', head_company_id: companyId })
             }
             {...deptNodeProps}
           />
@@ -491,6 +524,26 @@ export function OrgStructurePage() {
                 на любые юрлица — часы и распределение процентов это не ограничивает.
               </p>
             </Field>
+
+            {/* Дефолт распределения затрат по юрлицам (task_distribution_v2 ч.3).
+                Это и есть «на кого работают» в деньгах — в отличие от головной
+                компании выше, которая на расчёт не влияет. */}
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                Распределение по компаниям по умолчанию
+              </p>
+              <SharesEditor
+                companies={allCompanies ?? []}
+                shares={shares}
+                onChange={setShares}
+                resetKey={sharesKey}
+              />
+              <p className="mt-2 text-[11px] text-gray-400">
+                Наследуют сотрудники отдела, у которых НЕ задано своё распределение
+                (в карточке или правкой на месяц). Пусто — распределение считается
+                автоматически по фактическим часам табеля.
+              </p>
+            </div>
           </div>
         )}
       </Modal>
