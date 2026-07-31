@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -187,6 +188,19 @@ export function EmployeesPage() {
     setEditTarget(null)
     form.reset()
   }
+
+  // Переход из дерева оргструктуры (?employee_id=N) — сразу открыть карточку.
+  // Параметр снимаем, чтобы карточка не открывалась заново после закрытия.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    const id = Number(searchParams.get('employee_id'))
+    if (!id || !employees?.length) return
+    const target = employees.find((e) => e.id === id)
+    if (target) openEdit(target)
+    searchParams.delete('employee_id')
+    setSearchParams(searchParams, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employees, searchParams])
 
   const onSubmit = async (data: FormData) => {
     try {

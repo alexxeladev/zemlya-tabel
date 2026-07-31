@@ -57,9 +57,8 @@ export function AppLayout() {
   const role = user?.role
 
   const adminItems: NavItem[] = [
+    { to: '/admin/org', label: 'Оргструктура' },
     { to: '/admin/employees', label: 'Сотрудники' },
-    { to: '/admin/departments', label: 'Отделы' },
-    { to: '/admin/companies', label: 'Компании' },
     { to: '/admin/schedules', label: 'Графики работы' },
     { to: '/admin/calendar', label: 'Произв. календарь' },
   ]

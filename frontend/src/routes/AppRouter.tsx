@@ -3,8 +3,7 @@ import { AppLayout } from '../layouts/AppLayout'
 import { ChangePasswordPage } from '../pages/ChangePasswordPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { LoginPage } from '../pages/LoginPage'
-import { DepartmentsPage } from '../pages/admin/DepartmentsPage'
-import { CompaniesPage } from '../pages/admin/CompaniesPage'
+import { OrgStructurePage } from '../pages/admin/OrgStructurePage'
 import { SchedulesPage } from '../pages/admin/SchedulesPage'
 import { CalendarPage } from '../pages/admin/CalendarPage'
 import { EmployeesPage } from '../pages/admin/EmployeesPage'
@@ -46,22 +45,18 @@ export function AppRouter() {
             />
             <Route path="/change-password" element={<ChangePasswordPage />} />
 
+            {/* Единый экран оргструктуры вместо отдельных «Компании» и «Отделы»
+                (task_org_structure ч.3). Структуру и права меняет только admin. */}
             <Route
-              path="/admin/departments"
+              path="/admin/org"
               element={
-                <RoleRoute allow={['admin', 'accountant']}>
-                  <DepartmentsPage />
+                <RoleRoute allow={['admin']}>
+                  <OrgStructurePage />
                 </RoleRoute>
               }
             />
-            <Route
-              path="/admin/companies"
-              element={
-                <RoleRoute allow={['admin', 'accountant']}>
-                  <CompaniesPage />
-                </RoleRoute>
-              }
-            />
+            <Route path="/admin/departments" element={<Navigate to="/admin/org" replace />} />
+            <Route path="/admin/companies" element={<Navigate to="/admin/org" replace />} />
             <Route
               path="/admin/schedules"
               element={

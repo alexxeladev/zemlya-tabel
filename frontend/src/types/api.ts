@@ -367,7 +367,64 @@ export interface Department {
   id: number
   name: string
   code: string
+  /**
+   * Головная компания — где отдел числится в дереве оргструктуры.
+   * ТОЛЬКО группировка: на расчёт ЗП не влияет, сотрудники по-прежнему
+   * работают на несколько юрлиц (часы + проценты распределения).
+   */
+  head_company_id: number | null
   is_active: boolean
+}
+
+/** Менеджер отдела — краткая карточка (task_org_structure ч.2). */
+export interface DepartmentManager {
+  id: number
+  full_name: string
+  position: string | null
+  email: string | null
+}
+
+export interface DepartmentManagers {
+  department_id: number
+  managers: DepartmentManager[]
+}
+
+// ── Дерево оргструктуры: Компания → Отдел → Сотрудники (ч.3) ──
+
+export interface OrgEmployee {
+  id: number
+  full_name: string
+  tab_number: string | null
+  position: string | null
+  role: UserRole | null
+  is_active: boolean
+}
+
+export interface OrgDepartment {
+  id: number
+  name: string
+  code: string
+  is_active: boolean
+  head_company_id: number | null
+  managers: OrgEmployee[]
+  /** Количество сотрудников — чтобы свёрнутый узел не рендерил список. */
+  employee_count: number
+  employees: OrgEmployee[]
+}
+
+export interface OrgCompany {
+  id: number
+  code: string
+  name: string
+  inn: string | null
+  is_active: boolean
+  departments: OrgDepartment[]
+}
+
+export interface OrgTree {
+  companies: OrgCompany[]
+  departments_without_company: OrgDepartment[]
+  employees_without_department: OrgEmployee[]
 }
 
 export interface Company {
@@ -455,6 +512,11 @@ export interface Employee {
   department: Department | null
   schedule: Schedule | null
   default_company: Company | null
+  /**
+   * Отделы, которыми РУКОВОДИТ (task_org_structure ч.2) — не путать с
+   * `department`, где сотрудник числится. Заполнено только у manager.
+   */
+  managed_department_ids: number[]
 }
 
 // ── Импорт сотрудников из Excel (task_employee_import) ──
