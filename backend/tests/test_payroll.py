@@ -819,6 +819,7 @@ def manager_pay(db_session: Session, dept: Department) -> Employee:
         is_active=True,
         must_change_password=False,
         department_id=dept.id,
+        managed_departments=[dept],
     )
     db_session.add(emp)
     db_session.commit()

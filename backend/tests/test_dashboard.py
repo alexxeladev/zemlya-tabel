@@ -102,6 +102,7 @@ def dash_manager(db_session: Session, dept1: Department) -> Employee:
         full_name="Dash Manager", email="dashmgr@example.com",
         hashed_password=hash_password("mgr123"), role="manager",
         is_active=True, must_change_password=False, department_id=dept1.id,
+        managed_departments=[dept1],
     )
     db_session.add(emp)
     db_session.commit()

@@ -110,6 +110,7 @@ def manager_emp(db_session: Session, dept: Department) -> Employee:
         role="manager",
         is_active=True,
         department_id=dept.id,
+        managed_departments=[dept],
     )
     db_session.add(emp)
     db_session.commit()

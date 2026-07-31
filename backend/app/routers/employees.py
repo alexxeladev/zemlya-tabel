@@ -38,6 +38,7 @@ from app.services.employee_import import (
     parse_import_file,
 )
 from app.services.employees import build_employee
+from app.services.org_access import accessible_department_ids, can_access_department
 
 router = APIRouter()
 
@@ -96,9 +97,11 @@ def list_employees(
     q = db.query(Employee)
 
     if current_user.role == "manager":
-        if current_user.department_id is None:
+        # Сотрудники всех отделов, которыми руководит менеджер (task_org_structure ч.2)
+        dept_ids = accessible_department_ids(current_user, department_id)
+        if not dept_ids:
             return []
-        q = q.filter(Employee.department_id == current_user.department_id)
+        q = q.filter(Employee.department_id.in_(dept_ids))
     elif department_id is not None:
         q = q.filter(Employee.department_id == department_id)
 
@@ -129,7 +132,7 @@ def get_employee(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     if current_user.role == "manager":
-        if emp.department_id != current_user.department_id:
+        if not can_access_department(current_user, emp.department_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     return emp
@@ -446,7 +449,7 @@ def get_company_shares(
     emp = db.get(Employee, emp_id)
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    if current_user.role == "manager" and emp.department_id != current_user.department_id:
+    if current_user.role == "manager" and not can_access_department(current_user, emp.department_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
 
     return _shares_response(db, emp)

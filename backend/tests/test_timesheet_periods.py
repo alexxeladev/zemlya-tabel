@@ -85,6 +85,7 @@ def manager_a(db_session: Session, dept_a: Department) -> Employee:
         role="manager",
         is_active=True,
         department_id=dept_a.id,
+        managed_departments=[dept_a],
     )
     db_session.add(emp)
     db_session.commit()
@@ -101,6 +102,7 @@ def manager_b(db_session: Session, dept_b: Department) -> Employee:
         role="manager",
         is_active=True,
         department_id=dept_b.id,
+        managed_departments=[dept_b],
     )
     db_session.add(emp)
     db_session.commit()

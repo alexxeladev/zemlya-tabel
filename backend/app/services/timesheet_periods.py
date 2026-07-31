@@ -10,6 +10,7 @@ from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.timesheet_period import PeriodTaskRead, TimesheetPeriodRead
+from app.services.org_access import can_access_department
 
 
 class PeriodLockedException(Exception):
@@ -33,7 +34,8 @@ def _can_submit(period: TimesheetPeriod, actor: Employee) -> bool:
         return False
     if actor.role == "admin":
         return True
-    return actor.role == "manager" and actor.department_id == period.department_id
+    # Менеджер может отправить любой из СВОИХ отделов (task_org_structure ч.2)
+    return actor.role == "manager" and can_access_department(actor, period.department_id)
 
 
 def _can_close(period: TimesheetPeriod, actor: Employee) -> bool:
@@ -193,8 +195,8 @@ def submit_for_review(
         raise ValueError(f"Ожидается статус draft, текущий: {period.status}")
     if actor.role not in ("admin", "manager"):
         raise PermissionError("Только manager или admin может отправить на проверку")
-    if actor.role == "manager" and actor.department_id != period.department_id:
-        raise PermissionError("Manager может отправить только свой отдел")
+    if actor.role == "manager" and not can_access_department(actor, period.department_id):
+        raise PermissionError("Manager может отправить только свои отделы")
 
     before_status = period.status
     period.status = "pending_review"

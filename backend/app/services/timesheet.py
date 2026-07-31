@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_action
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
+from app.services.org_access import accessible_department_ids
 
 
 def visible_employees_for_actor(
@@ -36,9 +37,12 @@ def visible_employees_for_actor(
         return q.filter(Employee.id == actor.id).all()
 
     if actor.role == "manager":
-        if actor.department_id is None:
+        # Отделы, которыми менеджер руководит (task_org_structure ч.2) — их может
+        # быть несколько, и это НЕ его собственный department_id.
+        dept_ids = accessible_department_ids(actor, department_id)
+        if not dept_ids:
             return []
-        return q.filter(Employee.department_id == actor.department_id).all()
+        return q.filter(Employee.department_id.in_(dept_ids)).all()
 
     # admin / accountant
     if department_id is not None:

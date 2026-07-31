@@ -54,6 +54,7 @@ from app.services.payroll_statement import (
     build_payroll_statement,
     build_payroll_summary,
 )
+from app.services.org_access import can_access_department
 from app.services.timesheet import (
     apply_autofill,
     build_autofill_preview,
@@ -79,6 +80,15 @@ router = APIRouter()
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def _require_dept_access(actor: Employee, department_id: int | None) -> None:
+    """Менеджер получает данные только своих отделов (task_org_structure ч.2).
+    `department_id is None` — фильтр не задан, отдавать все его отделы."""
+    if actor.role != "manager" or department_id is None:
+        return
+    if not can_access_department(actor, department_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+
+
 def _check_cell_access(actor: Employee, target_employee_id: int, db: Session) -> Employee:
     target = db.get(Employee, target_employee_id)
     if not target:
@@ -87,7 +97,7 @@ def _check_cell_access(actor: Employee, target_employee_id: int, db: Session) ->
     if actor.role in ("admin", "accountant"):
         return target
     if actor.role == "manager":
-        if target.department_id != actor.department_id:
+        if not can_access_department(actor, target.department_id):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         return target
     if actor.id != target_employee_id:
@@ -206,9 +216,8 @@ def get_payroll(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
-    # Manager видит только свой отдел — запрос финансов чужого отдела запрещён
-    if actor.role == "manager" and department_id is not None and department_id != actor.department_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    # Manager видит только свои отделы — запрос финансов чужого отдела запрещён
+    _require_dept_access(actor, department_id)
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
     return _build_payroll_summary(db, employees, entries, year, month)
@@ -229,8 +238,7 @@ def get_payroll_statement(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
-    if actor.role == "manager" and department_id is not None and department_id != actor.department_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    _require_dept_access(actor, department_id)
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
     return build_payroll_statement(db, employees, entries, year, month)
@@ -319,8 +327,7 @@ def export_statement_excel(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
-    if actor.role == "manager" and department_id is not None and department_id != actor.department_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    _require_dept_access(actor, department_id)
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
     statement = build_payroll_statement(db, employees, entries, year, month)
@@ -355,6 +362,8 @@ def get_month(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
+    # Отдел, которым менеджер не руководит, — явный 403, а не молча пустая выдача
+    _require_dept_access(actor, department_id)
 
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     companies = db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
@@ -559,8 +568,7 @@ def autofill_preview(
 ):
     if actor.role not in ("admin", "accountant", "manager"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
-    if actor.role == "manager" and payload.department_id is not None and payload.department_id != actor.department_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager может автозаполнить только свой отдел")
+    _require_dept_access(actor, payload.department_id)
     try:
         return build_autofill_preview(db, actor, payload.year, payload.month, payload.department_id)
     except ValueError as exc:
@@ -575,8 +583,7 @@ def autofill_apply(
 ):
     if actor.role not in ("admin", "accountant", "manager"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
-    if actor.role == "manager" and payload.department_id is not None and payload.department_id != actor.department_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager может автозаполнить только свой отдел")
+    _require_dept_access(actor, payload.department_id)
     try:
         preview = build_autofill_preview(db, actor, payload.year, payload.month, payload.department_id)
     except ValueError as exc:
@@ -653,9 +660,7 @@ def export_excel(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
-    if actor.role == "manager" and department_id is not None:
-        if actor.department_id != department_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
+    _require_dept_access(actor, department_id)
 
     from app.services.timesheet_export import generate_t13_excel
     excel_bytes = generate_t13_excel(db, actor, year, month, department_id)
@@ -689,8 +694,7 @@ def list_adjustments(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
-    if actor.role == "manager" and department_id is not None and department_id != actor.department_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    _require_dept_access(actor, department_id)
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     return _load_adjustments(db, employees, year, month)
 

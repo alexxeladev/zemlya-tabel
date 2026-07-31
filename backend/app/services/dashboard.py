@@ -29,6 +29,7 @@ from app.schemas.dashboard import (
     TrendPointRead,
 )
 from app.services.absences import get_month_absences, sick_days_used_before_month
+from app.services.org_access import managed_department_ids
 from app.services.payroll import EmployeePayroll, calculate_employee_payroll
 from app.services.payroll_statement import build_payroll_summary
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
@@ -238,10 +239,10 @@ def _period_row(
 def _periods_block(db: Session, actor: Employee, year: int, month: int) -> PeriodsBlockRead:
     # Отделы в зоне видимости actor-а
     if actor.role == "manager":
+        # Все отделы, которыми руководит менеджер (task_org_structure ч.2)
+        managed = managed_department_ids(actor)
         depts = (
-            db.query(Department).filter(Department.id == actor.department_id).all()
-            if actor.department_id is not None
-            else []
+            db.query(Department).filter(Department.id.in_(managed)).all() if managed else []
         )
         include_null_group = False
     else:
@@ -274,7 +275,9 @@ def _periods_block(db: Session, actor: Employee, year: int, month: int) -> Perio
         ),
     )
     if actor.role == "manager":
-        overdue_q = overdue_q.filter(TimesheetPeriod.department_id == actor.department_id)
+        overdue_q = overdue_q.filter(
+            TimesheetPeriod.department_id.in_(managed_department_ids(actor))
+        )
     overdue_periods = overdue_q.order_by(
         TimesheetPeriod.year.desc(), TimesheetPeriod.month.desc()
     ).all()

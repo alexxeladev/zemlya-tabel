@@ -287,6 +287,7 @@ class TestDashboardRoundingEffect:
             full_name="Manager", email="round.manager@example.com",
             hashed_password=hash_password("mgr12345"), role="manager",
             is_active=True, must_change_password=False, department_id=dept.id,
+            managed_departments=[dept],
         )
         db_session.add(manager)
         db_session.commit()

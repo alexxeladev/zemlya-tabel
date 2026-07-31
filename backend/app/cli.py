@@ -78,8 +78,13 @@ def reset_data(assume_yes: bool = False) -> None:
     from app.database import SessionLocal
     from app.models.audit_log import AuditLog
     from app.models.companies import Company
-    from app.models.company_shares import CompanyShareOverride, EmployeeCompanyShare
+    from app.models.company_shares import (
+        CompanyShareOverride,
+        DepartmentCompanyShare,
+        EmployeeCompanyShare,
+    )
     from app.models.departments import Department
+    from app.models.employee_absences import EmployeeAbsence
     from app.models.employee_adjustments import EmployeeAdjustment
     from app.models.employees import Employee
     from app.models.loan_deductions import LoanDeduction
@@ -106,15 +111,23 @@ def reset_data(assume_yes: bool = False) -> None:
             ).scalars()
         )
 
+        # Связь «менеджер ↔ управляемые отделы» — обычная таблица без модели.
+        from app.models.department_managers import department_managers
+        stats["department_managers"] = db.execute(
+            department_managers.delete()
+        ).rowcount
+
         # Зависимые от employees / справочников — удаляем первыми.
         for model in (
             AuditLog,
             TimesheetEntry,
             TimesheetPeriod,
+            EmployeeAbsence,
             EmployeeAdjustment,
             LoanDeduction,
             CompanyShareOverride,
             EmployeeCompanyShare,
+            DepartmentCompanyShare,
         ):
             stats[model.__tablename__] = db.query(model).delete(synchronize_session=False)
 
@@ -181,10 +194,17 @@ def seed_test_data() -> None:
                             {"name": "Секьюрити", "is_active": True}, "companies")
 
         # --- Отделы ---
+        # head_company_id — головная компания: группировка в дереве оргструктуры,
+        # на расчёт ЗП не влияет (сотрудники по-прежнему работают на любые юрлица).
         ito = get_or_create(Department, {"code": "ITO"},
-                            {"name": "ИТО", "is_active": True}, "departments")
+                            {"name": "ИТО", "is_active": True,
+                             "head_company_id": zmo.id}, "departments")
         buh = get_or_create(Department, {"code": "BUH"},
-                            {"name": "Бухгалтерия", "is_active": True}, "departments")
+                            {"name": "Бухгалтерия", "is_active": True,
+                             "head_company_id": zmo.id}, "departments")
+        sec_dept = get_or_create(Department, {"code": "SEC"},
+                            {"name": "Охрана", "is_active": True,
+                             "head_company_id": kft.id}, "departments")
 
         # --- Графики ---
         sch52 = get_or_create(Schedule, {"name": "5/2"},
@@ -254,6 +274,9 @@ def seed_test_data() -> None:
             ("QA Менеджер ИТО", "QA-MGR", ito, sch52, zmo, D("90000"),
              coef, D("1.5"), None, None,
              "qa.manager@example.com", "manager"),
+            ("QA Менеджер Охраны", "QA-MGR2", sec_dept, sch52, kft, D("85000"),
+             coef, D("1.5"), None, None,
+             "qa.manager2@example.com", "manager"),
             ("QA Сотрудник", "QA-EMP", ito, sch52, zmo, D("60000"),
              coef, D("1.5"), None, None,
              "qa.employee@example.com", "employee"),
@@ -306,6 +329,18 @@ def seed_test_data() -> None:
             db.add(emp)
             db.flush()
             created["employees"] += 1
+
+        # --- Менеджеры отделов (task_org_structure ч.2) ---
+        # Управляемые отделы задаются ОТДЕЛЬНО от department_id: менеджер ИТО
+        # ведёт сразу два отдела (проверка мульти-отдела), менеджер охраны — один.
+        managed = {
+            "qa.manager@example.com": [ito, buh],
+            "qa.manager2@example.com": [sec_dept],
+        }
+        for email, depts in managed.items():
+            mgr = db.query(Employee).filter_by(email=email).first()
+            if mgr and not mgr.managed_departments:
+                mgr.managed_departments = depts
 
         db.commit()
     finally:

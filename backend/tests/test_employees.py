@@ -262,6 +262,7 @@ def test_manager_sees_only_own_department(client: TestClient, db_session):
         hashed_password=hash_password("password123"),
         role="manager",
         department_id=dept1.id,
+        managed_departments=[dept1],
         is_active=True,
     )
     db_session.add(mgr)
@@ -285,6 +286,7 @@ def test_manager_cannot_see_other_dept_employee(client: TestClient, db_session):
         hashed_password=hash_password("password123"),
         role="manager",
         department_id=dept1.id,
+        managed_departments=[dept1],
         is_active=True,
     )
     db_session.add(mgr)
@@ -304,6 +306,8 @@ def _mgr(db_session, dept_id, email="mgr@example.com"):
         hashed_password=hash_password("password123"),
         role="manager",
         department_id=dept_id,
+        # Чем руководит — отдельно от того, где числится (task_org_structure ч.2)
+        managed_departments=[db_session.get(Department, dept_id)],
         is_active=True,
     )
     db_session.add(mgr)

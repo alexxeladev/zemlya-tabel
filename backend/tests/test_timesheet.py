@@ -80,6 +80,7 @@ def manager_user(db_session: Session, dept_a: Department) -> Employee:
         is_active=True,
         must_change_password=False,
         department_id=dept_a.id,
+        managed_departments=[dept_a],
     )
     db_session.add(emp)
     db_session.commit()
