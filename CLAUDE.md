@@ -30,16 +30,19 @@ backend/
     models/         — отдельной таблицы users НЕТ: auth-поля (email, role, ...) в Employee
       employees.py  — Employee (персональные + финансовые + auth-поля, is_system_admin)
       departments.py / companies.py / schedules.py
+      department_managers.py — связь manager ↔ управляемые отделы (many-to-many)
       timesheet_entries.py   — TimesheetEntry (employee, work_date, company, hours int)
       timesheet_periods.py   — TimesheetPeriod (workflow draft/pending_review/closed)
       production_calendars.py — ProductionCalendar (JSONB с xmlcalendar.ru)
       audit_log.py  — AuditLog (append-only)
     schemas/        — auth, employee, department, company, schedule, calendar,
-                      timesheet, timesheet_period, payroll, dashboard
+                      timesheet, timesheet_period, payroll, dashboard, org
     routers/
       auth.py       — POST /api/auth/login, /auth/change-password, GET /api/auth/me
       employees.py  — CRUD /api/employees + dismiss/rehire + access/reset-password (admin)
       departments.py / companies.py / schedules.py — справочники (чтение: не-employee, CUD: admin)
+                      + /api/departments/{id}/managers (менеджеры отдела, PUT — admin)
+      org.py        — GET /api/org/tree: дерево Компания→Отдел→Сотрудники (admin)
       calendar.py   — /api/calendar: import, load, {year}, summary
       timesheet.py  — /api/timesheet: месяц, ячейки, периоды, autofill, payroll, export, tasks
       dashboard.py  — GET /api/dashboard/{year}/{month} (сводный, видимость по ролям в сервисе)
@@ -49,6 +52,8 @@ backend/
       audit.py      — log_action(db, actor, entity_type, entity_id, action, ...)
     services/
       calendar.py   — производственный календарь (parsing, нормы, fetch с xmlcalendar.ru)
+      org_access.py — доступ менеджера к отделам (единственный источник правды)
+      org_structure.py — build_org_tree (дерево оргструктуры, только чтение)
       timesheet.py  — visible_employees_for_actor, upsert_cell, autofill
       timesheet_periods.py — workflow периодов, tasks inbox
       payroll.py    — calculate_employee_payroll (чистая функция, Decimal)
@@ -65,7 +70,8 @@ frontend/
     routes/         — AppRouter (RoleRoute), PrivateRoute (must_change_password gate)
     pages/          — TimesheetPage (классический табель), TimesheetCompanyView (вид «по компаниям»),
                       TasksPage, DashboardPage, Login, ChangePassword
-    pages/admin/    — Employees, Departments, Companies, Schedules, Calendar, Payroll
+    pages/admin/    — OrgStructure (дерево Компания→Отдел→Сотрудники, заменяет
+                      Departments+Companies), Employees, Schedules, Calendar, Payroll
     components/ / hooks/ / layouts/ / types/
     utils/          — money.ts (formatMoney/formatHours), colors.ts (общая палитра компаний
                       и статусов — единая для чипов табеля и графиков дашборда)
@@ -136,16 +142,19 @@ docker exec -t $(docker ps -q -f ancestor=postgres:16) pg_dump -U tabel tabel \
 python -m app.cli reset-data           # спросит подтверждение
 python -m app.cli reset-data --yes     # без подтверждения
 
-# Тестовые данные: 3 компании (zmo/kft/sec), 2 отдела (ИТО/Бухгалтерия),
+# Тестовые данные: 3 компании (zmo/kft/sec), 3 отдела (ИТО/Бухгалтерия/Охрана
+# с головными компаниями),
 # графики 5/2, 6/1 (weekday) и 2/2, 3/3 по две смены (cyclic, анкеры под фазы
-# 1С на июнь 2026), производственный календарь на текущий год, 10 сотрудников
+# 1С на июнь 2026), производственный календарь на текущий год, 11 сотрудников
 # с граничными случаями (фикс-ставка выходных, коэф 0, заём, без отдела,
 # без графика, сменщик 2/2). Табель часами НЕ заполняется. Идемпотентна.
 python -m app.cli seed-test-data
 ```
 
 QA-учётки (пароль у всех `Test1234!`): `qa.admin@` (admin), `qa.accountant@`
-(accountant), `qa.manager@` (manager, отдел ИТО), `qa.employee@` (employee) —
+(accountant), `qa.manager@` (manager: числится в ИТО, **руководит ИТО и
+Бухгалтерией** — проверка мульти-отдела), `qa.manager2@` (manager, отдел
+Охрана — проверка изоляции чужого отдела), `qa.employee@` (employee) —
 все на `@example.com`.
 
 ## Конвенции
@@ -282,6 +291,24 @@ alembic current  # должен совпадать с head
 - Импортируются только валидные строки, частичный импорт — норма. Карточка собирается общим `build_employee` (`app/services/employees.py`, вынесен из роутера — им же создаёт обычный CRUD), поэтому оклад/ставка и дефолты коэффициентов обрабатываются одинаково. **Доступы (email/роль/пароль) через импорт не заводятся**, часы/премии/займы тоже. Всё в одной транзакции, audit log на каждого созданного + сводка `employees_imported`.
 - Фронт: `pages/admin/EmployeeImportModal.tsx` (кнопка «Импорт из Excel» в шапке раздела «Сотрудники»). Сводка + таблица всех строк, ошибочные красным со списком причин, нераспознанный справочник — зачёркнутым значением из файла. Кнопка подтверждения называет число валидных строк и блокируется, если их нет.
 
+## Оргструктура: головная компания отдела и мульти-отдел менеджера (task_org_structure)
+
+- **Головная компания отдела** (`Department.head_company_id`, nullable) — в какой компании отдел числится в дереве. Это **ярлык для навигации и группировки**, и НИЧЕГО больше: расчёт остаётся мультикомпанийным (часы по юрлицам + проценты распределения), формулы на это поле не смотрят и смотреть не должны. Отдел без головной компании — нормальное состояние, он попадает в ветку «Без головной компании». Миграция проставила её там, где она однозначна (все активные сотрудники отдела на одной основной компании).
+- **Менеджер ↔ отделы — many-to-many** (`department_managers`, управляется со стороны отдела). Не путать два поля:
+  - `Employee.department_id` — где сотрудник **числится** (работает). Не тронуто этой задачей;
+  - `Employee.managed_departments` / `managed_department_ids` — чем менеджер **руководит**. Числиться в отделе и руководить им — независимые вещи: менеджер может руководить отделами, где не числится, и наоборот (числится, но не руководит → доступа нет).
+  - Загружается `lazy="selectin"` — права проверяются на каждом запросе, ленивая загрузка дала бы N+1.
+- **Единственный источник правды доступа — `app/services/org_access.py`** (`managed_department_ids`, `can_access_department`, `accessible_department_ids`). Проверок «manager по одному отделу» в коде больше нет; новые места делать только через эти функции. Роутеры переводят отказ в 403 (в `routers/timesheet.py` — общий `_require_dept_access`).
+- Правило: `department_id` в запросе не задан → отдаются **все** отделы менеджера; задан свой → сужается до него; задан чужой → **403** (не пустая выдача — молчаливая пустота выглядит как «данных нет»). Группа «Без отдела» (`department_id IS NULL`) менеджеру недоступна никогда.
+- Покрыто: табель, расчёт ЗП, ведомость, премии/удержания, автозаполнение, оба Excel-экспорта, сотрудники, дашборд, submit периода. `GET /api/departments` отдаёт менеджеру только его отделы — из этого списка строится селектор.
+- Менеджеры отдела: `GET/PUT /api/departments/{id}/managers` (PUT — admin). PUT задаёт **полный набор** (пусто — снять всех), в набор принимаются только сотрудники с ролью `manager` (иначе 422), audit log `department_managers`.
+- Миграция `e2f3a4b5c6d7` перенесла каждому существующему менеджеру его `department_id` в новую связь — доступ не потерян. Фикстуры менеджеров в тестах обязаны задавать `managed_departments` явно, иначе менеджер не управляет ничем.
+- **Единый экран «Оргструктура»** (`pages/admin/OrgStructurePage.tsx`, `/admin/org`, только admin) — дерево Компания → Отдел → Сотрудники, заменил вкладки «Компании» и «Отделы» (старые пути редиректят на `/admin/org`). Из дерева: создать компанию, создать отдел внутри компании (головная компания подставляется), сменить головную компанию, назначить менеджеров, перейти в карточку сотрудника (`/admin/employees?employee_id=N`).
+  - Данные: `GET /api/org/tree` (`services/org_structure.py`) — всё дерево за несколько запросов, без N+1. CRUD экран не дублирует: пишет через существующие `/api/companies` и `/api/departments`, чтобы права и audit log остались в одном месте.
+  - **Сотрудники в узле отдела свёрнуты по умолчанию** и не рендерятся, пока узел не раскрыт (в свёрнутом — `employee_count`): при 100+ сотрудниках иначе взрывается DOM.
+  - Отделы без головной компании и сотрудники без отдела отдаются отдельными ветками — иначе они пропали бы из дерева вместе с возможностью их починить.
+- Селектор отделов на фронте: admin/accountant — всегда, manager — если отделов **больше одного**, с опцией «Все мои отделы» (табель и «Расчёт ЗП»).
+
 ## Timesheet Periods
 
 - Workflow: `draft → pending_review → closed`; возвраты: `pending_review → draft` (accountant+admin), `closed → draft` (только admin)
@@ -319,7 +346,8 @@ alembic current  # должен совпадать с head
 - `is_calculable=True` для сменных графиков с анкером цикла. Не считается: нет графика, сменный без `cycle_start_date`/паттерна, weekday без производственного календаря (норма была бы завышена — сменному календарь не нужен), нет оклада, норма 0.
 - Распределение по компаниям (`CompanyBreakdown`): base/overtime ₽ — пропорционально всем часам; off_schedule ₽ и holiday ₽ — пропорционально часам СВОЕЙ категории (то есть туда, где реально отработано). Поля per-company: `hours`, `percent`, `overtime_hours`, `off_schedule_hours`, `holiday_hours`, `base_amount`, `overtime_amount`, `off_schedule_amount`, `holiday_amount`, `total`. `off_schedule_hours`/`holiday_hours` — точные, `overtime_hours` — пропорционально часам (метод наибольших остатков, сумма = итог).
 - **Сумма частей по компаниям сходится с итогом точно** — распределение через `_distribute_whole_rubles()` (метод наибольших остатков: floor долей + остаток рублей компаниям с наибольшими дробными остатками, тай-брейк по company_id). НЕ округлять доли независимо — даёт расхождение до ±N/2 руб. на категорию.
-- Видят только admin / accountant / **manager** (свой отдел). На бэке принудительная проверка — игнорировать `?include_payroll=true` от employee.
+- Видят только admin / accountant / **manager** (свои отделы, см. раздел «Оргструктура»). На бэке принудительная проверка — игнорировать `?include_payroll=true` от employee.
+- **Головная компания отдела на расчёт не влияет вообще.** Компании берутся из часов табеля и процентов распределения; отдел в дереве — только навигация. Не завязывать распределение на `Department.head_company_id`.
 - Эндпоинт: `GET /api/timesheet/{year}/{month}/payroll`, параметр `?include_payroll=true` у основного GET.
 - Сервис: `app/services/payroll.py` — чистая функция `calculate_employee_payroll`, не лезет в БД.
 - Фронт: Decimal с бэка приходят как строки; `formatMoney()` / `formatHours()` в `frontend/src/utils/money.ts`.
