@@ -39,6 +39,7 @@ from app.services.employee_import import (
 )
 from app.services.employees import build_employee
 from app.services.org_access import accessible_department_ids, can_access_department
+from app.services.positions import in_department, in_departments
 
 router = APIRouter()
 
@@ -111,9 +112,9 @@ def list_employees(
         dept_ids = accessible_department_ids(current_user, department_id)
         if not dept_ids:
             return []
-        q = q.filter(Employee.department_id.in_(dept_ids))
+        q = q.filter(in_departments(dept_ids))
     elif department_id is not None:
-        q = q.filter(Employee.department_id == department_id)
+        q = q.filter(in_department(department_id))
 
     if is_active is not None:
         q = q.filter(Employee.is_active == is_active)

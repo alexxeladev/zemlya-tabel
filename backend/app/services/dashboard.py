@@ -32,6 +32,7 @@ from app.services.absences import get_month_absences, sick_days_used_before_mont
 from app.services.org_access import managed_department_ids
 from app.services.payroll import EmployeePayroll, calculate_employee_payroll
 from app.services.payroll_statement import build_payroll_summary
+from app.services.positions import in_department
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 
 _ZERO = Decimal("0")
@@ -249,7 +250,7 @@ def _periods_block(db: Session, actor: Employee, year: int, month: int) -> Perio
         depts = db.query(Department).filter(Department.is_active == True).all()  # noqa: E712
         # Группа «Без отдела» — если есть активные несистемные сотрудники без отдела
         include_null_group = db.query(Employee).filter(
-            Employee.department_id.is_(None),
+            in_department(None),
             Employee.is_system_admin == False,  # noqa: E712
             Employee.is_active == True,  # noqa: E712
         ).first() is not None

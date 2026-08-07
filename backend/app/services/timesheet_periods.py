@@ -11,6 +11,7 @@ from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.timesheet_period import PeriodTaskRead, TimesheetPeriodRead
 from app.services.org_access import can_access_department
+from app.services.positions import in_department
 
 
 class PeriodLockedException(Exception):
@@ -138,10 +139,7 @@ def _period_total_hours(db: Session, period: TimesheetPeriod) -> int:
             TimesheetEntry.work_date <= end,
         )
     )
-    if period.department_id is None:
-        q = q.filter(Employee.department_id.is_(None))
-    else:
-        q = q.filter(Employee.department_id == period.department_id)
+    q = q.filter(in_department(period.department_id))
     return sum(int(e.hours) for e in q.all())
 
 

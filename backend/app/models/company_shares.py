@@ -26,6 +26,11 @@ class EmployeeCompanyShare(Base):
     employee_id: Mapped[int] = mapped_column(
         ForeignKey("employees.id"), index=True, nullable=False
     )
+    # Распределение задаётся на ПОЗИЦИЮ (task_positions ч.A): у совместителя
+    # каждое рабочее место разносится по юрлицам по-своему.
+    position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("employee_positions.id"), index=True, nullable=True
+    )
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
     percent: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
 
@@ -36,7 +41,9 @@ class EmployeeCompanyShare(Base):
     company: Mapped[Company] = relationship("Company", foreign_keys=[company_id])
 
     __table_args__ = (
-        UniqueConstraint("employee_id", "company_id", name="uq_emp_company_share"),
+        UniqueConstraint(
+            "employee_id", "position_id", "company_id", name="uq_emp_company_share"
+        ),
     )
 
 
@@ -81,6 +88,9 @@ class CompanyShareOverride(Base):
     employee_id: Mapped[int] = mapped_column(
         ForeignKey("employees.id"), index=True, nullable=False
     )
+    position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("employee_positions.id"), index=True, nullable=True
+    )
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     month: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -100,7 +110,7 @@ class CompanyShareOverride(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "employee_id", "company_id", "year", "month",
+            "employee_id", "position_id", "company_id", "year", "month",
             name="uq_company_share_override_period",
         ),
     )
