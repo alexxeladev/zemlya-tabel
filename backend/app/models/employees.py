@@ -3,18 +3,21 @@ from __future__ import annotations
 import datetime
 import enum
 from decimal import Decimal
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.department_managers import department_managers
+from app.models.positions import (
+    EMPLOYEE_COMPAT_FIELDS,
+    EMPLOYEE_COMPAT_RELATIONS,
+    EmployeePosition,
+)
 
 if TYPE_CHECKING:
-    from app.models.companies import Company
     from app.models.departments import Department
-    from app.models.schedules import Schedule
     from app.models.timesheet_entries import TimesheetEntry
 
 
@@ -23,6 +26,25 @@ class EmployeeRole(str, enum.Enum):
     manager = "manager"
     accountant = "accountant"
     employee = "employee"
+
+
+def _position_field(position_attr: str):
+    """Compat-аксессор к полю ОСНОВНОЙ позиции (task_positions ч.A).
+
+    Оклад/график/отдел/компания/коэффициенты переехали на позицию, но старый API,
+    импорт, CLI и фронт продолжают писать их «в сотрудника». Такой доступ означает
+    основную позицию: читаем её, а на запись — создаём, если её ещё нет.
+    Источник правды один — позиция; дублирующих колонок на employees больше нет.
+    """
+
+    def getter(self) -> object | None:
+        pos = self.primary_position
+        return getattr(pos, position_attr) if pos is not None else None
+
+    def setter(self, value: object) -> None:
+        setattr(self.ensure_primary_position(), position_attr, value)
+
+    return property(getter, setter)
 
 
 class Employee(Base):
@@ -35,54 +57,10 @@ class Employee(Base):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     position: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # Structure (all nullable)
-    department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id"), nullable=True)
-    schedule_id: Mapped[int | None] = mapped_column(ForeignKey("schedules.id"), nullable=True)
-    default_company_id: Mapped[int | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
-
-    # Finance (nullable)
-    #
-    # pay_type — способ расчёта БАЗОВОЙ суммы, всё остальное (переработка,
-    # отсутствия, премии, удержания, распределение) работает по общим правилам:
-    #   "salary"    — месячный оклад `rate`, база = оклад × зачётные часы / норма;
-    #   "per_shift" — оклада нет, база = отработанных смен × `shift_rate`.
-    # У посменного оклад пустой, а для отсутствий из ставки и нормы смен
-    # считается «условный оклад» (см. app.services.payroll).
-    pay_type: Mapped[str] = mapped_column(
-        String(20), default="salary", server_default="salary", nullable=False
-    )
-    rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
-    shift_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
-
-    # Оплата часов ВНЕ ГРАФИКА — выход в свой выходной (правка 3.9-3,
-    # триггер уточнён в task_schedule_based_pay). Per-employee.
-    # weekend_pay_type: "coefficient" → coefficient × часовая ставка;
-    #                   "fixed_rate"  → фиксированная ставка за час.
-    weekend_pay_type: Mapped[str] = mapped_column(
-        String(20), default="coefficient", server_default="coefficient", nullable=False
-    )
-    weekend_coefficient: Mapped[Decimal | None] = mapped_column(
-        Numeric(4, 2), default=Decimal("1.5"), server_default="1.5", nullable=True
-    )
-    weekend_fixed_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
-
-    # Оплата ПРАЗДНИЧНЫХ часов — работа в нерабочий праздничный день календаря.
-    # Настройка отдельная от выходных (ставка задаётся в карточке), механизм
-    # тот же, дефолт коэффициента такой же — 1.5.
-    holiday_pay_type: Mapped[str] = mapped_column(
-        String(20), default="coefficient", server_default="coefficient", nullable=False
-    )
-    holiday_coefficient: Mapped[Decimal | None] = mapped_column(
-        Numeric(4, 2), default=Decimal("1.5"), server_default="1.5", nullable=True
-    )
-    holiday_fixed_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
-
-    # Коэффициент переработки (задача 3.11b п.0): N из карточки — 0 / 1 / 1.5.
-    # Переработка считается ПОМЕСЯЧНО: (оклад/норма) × часы_переработки × коэффициент.
-    # Дефолт 1.5; None трактуется как 1.5 в app.services.payroll.
-    overtime_coefficient: Mapped[Decimal | None] = mapped_column(
-        Numeric(4, 2), default=Decimal("1.5"), server_default="1.5", nullable=True
-    )
+    # ── Оклад / график / отдел / компания / коэффициенты ──────────────────────
+    # Всё это переехало на ПОЗИЦИЮ (task_positions ч.A): у совместителя каждое
+    # рабочее место со своими условиями. Здесь их больше нет — доступ идёт через
+    # compat-аксессоры ниже, которые адресуют ОСНОВНУЮ позицию.
 
     # Займ (задача 3.11a): сумма, срок в месяцах, дата начала погашения.
     # Гасится равными долями (сумма/срок) автоматически; бухгалтер может
@@ -91,6 +69,14 @@ class Employee(Base):
     loan_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     loan_term_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
     loan_start_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
+    # К какой позиции относится удержание займа (task_positions ч.A). NULL —
+    # к основной: старые займы мигрированы, а расчёт всё равно падает на неё.
+    # use_alter — employees и employee_positions ссылаются друг на друга; без
+    # него metadata.create_all/drop_all не может отсортировать таблицы.
+    loan_position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("employee_positions.id", use_alter=True, name="fk_employees_loan_position"),
+        nullable=True,
+    )
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     hire_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
@@ -109,7 +95,18 @@ class Employee(Base):
     updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())
 
     # Relationships
-    department: Mapped[Optional[Department]] = relationship("Department", back_populates="employees")
+    # Позиции (рабочие места). Ровно одна помечена is_primary. lazy="selectin" —
+    # позиция нужна почти на каждом обращении к сотруднику (права, расчёт,
+    # compat-аксессоры), ленивая загрузка дала бы N+1.
+    positions: Mapped[list[EmployeePosition]] = relationship(
+        "EmployeePosition",
+        back_populates="employee",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="EmployeePosition.id",
+        foreign_keys="EmployeePosition.employee_id",
+    )
+
     # Отделы, которыми сотрудник РУКОВОДИТ (task_org_structure ч.2). Не путать
     # с `department` — это отдел, где он числится. Заполняется только у manager.
     # lazy="selectin" — доступ проверяется на каждом запросе, без этого был бы
@@ -121,12 +118,64 @@ class Employee(Base):
         lazy="selectin",
     )
 
+    timesheet_entries: Mapped[list[TimesheetEntry]] = relationship(
+        "TimesheetEntry", back_populates="employee", cascade="all, delete-orphan"
+    )
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Инвариант: у каждого сотрудника есть основная позиция. Аксессоры выше
+        # создают её при первом присваивании; для сотрудника без единого
+        # «позиционного» поля (например, системный админ) создаём пустую здесь.
+        self.ensure_primary_position()
+
     @property
     def managed_department_ids(self) -> list[int]:
         """Id отделов, которыми руководит сотрудник (см. app.services.org_access)."""
         return sorted(d.id for d in self.managed_departments)
-    schedule: Mapped[Optional[Schedule]] = relationship("Schedule", back_populates="employees")
-    default_company: Mapped[Optional[Company]] = relationship("Company", back_populates="employees")
-    timesheet_entries: Mapped[list[TimesheetEntry]] = relationship(
-        "TimesheetEntry", back_populates="employee", cascade="all, delete-orphan"
-    )
+
+    # ── Позиции ───────────────────────────────────────────────────────────────
+
+    @property
+    def primary_position(self) -> EmployeePosition | None:
+        """Основная позиция. Если признак почему-то потерян — первая по id,
+        чтобы расчёт не обнулился молча."""
+        first: EmployeePosition | None = None
+        for pos in self.positions:
+            if pos.is_primary:
+                return pos
+            if first is None:
+                first = pos
+        return first
+
+    @property
+    def active_positions(self) -> list[EmployeePosition]:
+        """Позиции, по которым сейчас работают: основная всегда первой."""
+        active = [p for p in self.positions if p.is_active]
+        return sorted(active, key=lambda p: (not p.is_primary, p.sort_order, p.id))
+
+    def ensure_primary_position(self) -> EmployeePosition:
+        """Вернуть основную позицию, создав её при отсутствии."""
+        pos = self.primary_position
+        if pos is None:
+            pos = EmployeePosition(is_primary=True, title=self.position)
+            self.positions.append(pos)
+        return pos
+
+    def position_by_id(self, position_id: int | None) -> EmployeePosition | None:
+        """Позиция сотрудника по id; None/чужой id → основная (совместимость со
+        строками, заведёнными до появления позиций)."""
+        if position_id is not None:
+            for pos in self.positions:
+                if pos.id == position_id:
+                    return pos
+        return self.primary_position
+
+
+# ── Compat-аксессоры к основной позиции (task_positions ч.A) ──────────────────
+# Навешиваются после объявления класса, чтобы маппер SQLAlchemy видел только
+# настоящие колонки. Старый API/импорт/CLI/тесты продолжают работать с «плоской»
+# карточкой сотрудника: emp.rate, emp.schedule_id, emp.department_id и т.д.
+for _emp_attr, _pos_attr in {**EMPLOYEE_COMPAT_FIELDS, **EMPLOYEE_COMPAT_RELATIONS}.items():
+    setattr(Employee, _emp_attr, _position_field(_pos_attr))
+del _emp_attr, _pos_attr

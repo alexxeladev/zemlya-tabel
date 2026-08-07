@@ -11,6 +11,7 @@ from app.models.department_managers import department_managers
 if TYPE_CHECKING:
     from app.models.companies import Company
     from app.models.employees import Employee
+    from app.models.positions import EmployeePosition
 
 
 class Department(Base):
@@ -32,7 +33,19 @@ class Department(Base):
     created_at: Mapped[str] = mapped_column(server_default=func.now())
     updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())
 
-    employees: Mapped[list[Employee]] = relationship("Employee", back_populates="department")
+    # Сотрудники отдела — через ПОЗИЦИИ (task_positions ч.A): в отделе числится
+    # не человек, а его рабочее место, и у совместителя они в разных отделах.
+    # viewonly — состав отдела меняется правкой позиции, не этой коллекцией.
+    positions: Mapped[list[EmployeePosition]] = relationship(
+        "EmployeePosition", back_populates="department", viewonly=True
+    )
+    employees: Mapped[list[Employee]] = relationship(
+        "Employee",
+        secondary="employee_positions",
+        primaryjoin="Department.id == EmployeePosition.department_id",
+        secondaryjoin="EmployeePosition.employee_id == Employee.id",
+        viewonly=True,
+    )
     head_company: Mapped[Company | None] = relationship("Company")
 
     # Менеджеры отдела (task_org_structure ч.2). Отдельно от `employees`:

@@ -16,6 +16,13 @@ from app.models.employee_absences import (
 from app.models.employee_adjustments import AdjustmentKind, EmployeeAdjustment
 from app.models.employees import Employee, EmployeeRole
 from app.models.loan_deductions import LoanDeduction
+from app.models.positions import (
+    PAY_TYPE_HOURLY,
+    PAY_TYPE_PER_SHIFT,
+    PAY_TYPE_SALARY,
+    PAY_TYPES,
+    EmployeePosition,
+)
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
@@ -35,8 +42,13 @@ __all__ = [
     "EmployeeAbsence",
     "EmployeeAdjustment",
     "EmployeeCompanyShare",
+    "EmployeePosition",
     "EmployeeRole",
     "LoanDeduction",
+    "PAY_TYPES",
+    "PAY_TYPE_HOURLY",
+    "PAY_TYPE_PER_SHIFT",
+    "PAY_TYPE_SALARY",
     "ProductionCalendar",
     "Schedule",
     "TimesheetEntry",

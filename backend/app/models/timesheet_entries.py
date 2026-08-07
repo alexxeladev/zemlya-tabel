@@ -18,6 +18,12 @@ class TimesheetEntry(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), index=True, nullable=False)
+    # Позиция (рабочее место), на которую отработаны часы (task_positions ч.A).
+    # NULL — строка заведена до появления позиций и относится к основной; читать
+    # только через `Employee.position_by_id`, чтобы NULL не терял часы.
+    position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("employee_positions.id"), index=True, nullable=True
+    )
     work_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
     hours: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -29,7 +35,12 @@ class TimesheetEntry(Base):
     company: Mapped[Company] = relationship("Company")
 
     __table_args__ = (
-        UniqueConstraint("employee_id", "work_date", "company_id", name="uq_timesheet_employee_date_company"),
+        # Ячейка = (позиция, день, юрлицо): у совместителя один и тот же день и
+        # то же юрлицо могут встретиться на двух рабочих местах.
+        UniqueConstraint(
+            "employee_id", "position_id", "work_date", "company_id",
+            name="uq_timesheet_employee_date_company",
+        ),
         CheckConstraint("hours >= 0 AND hours <= 24", name="ck_timesheet_hours_range"),
         Index("ix_timesheet_employee_date", "employee_id", "work_date"),
     )

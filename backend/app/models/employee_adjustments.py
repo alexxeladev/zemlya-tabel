@@ -33,6 +33,12 @@ class EmployeeAdjustment(Base):
     employee_id: Mapped[int] = mapped_column(
         ForeignKey("employees.id"), index=True, nullable=False
     )
+    # К какой позиции относится премия/KPI/аванс (task_positions ч.A): деньги
+    # начисляются человеку, но попадают в «к выплате» конкретного рабочего места.
+    # NULL — запись до появления позиций, читается как основная.
+    position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("employee_positions.id"), index=True, nullable=True
+    )
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     month: Mapped[int] = mapped_column(Integer, nullable=False)
     kind: Mapped[str] = mapped_column(String(20), nullable=False)

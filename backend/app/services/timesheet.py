@@ -11,6 +11,7 @@ from app.core.audit import log_action
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.org_access import accessible_department_ids
+from app.services.positions import in_department, in_departments
 
 
 def visible_employees_for_actor(
@@ -42,11 +43,11 @@ def visible_employees_for_actor(
         dept_ids = accessible_department_ids(actor, department_id)
         if not dept_ids:
             return []
-        return q.filter(Employee.department_id.in_(dept_ids)).all()
+        return q.filter(in_departments(dept_ids)).all()
 
     # admin / accountant
     if department_id is not None:
-        q = q.filter(Employee.department_id == department_id)
+        q = q.filter(in_department(department_id))
     return q.all()
 
 

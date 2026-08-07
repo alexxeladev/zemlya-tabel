@@ -12,6 +12,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.employees import Employee
+    from app.models.positions import EmployeePosition
 
 
 class _JSONB(TypeDecorator):
@@ -54,4 +55,15 @@ class Schedule(Base):
     created_at: Mapped[str] = mapped_column(server_default=func.now())
     updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())
 
-    employees: Mapped[list[Employee]] = relationship("Employee", back_populates="schedule")
+    # График назначается ПОЗИЦИИ (task_positions ч.A): у совместителя на разных
+    # рабочих местах разные графики.
+    positions: Mapped[list[EmployeePosition]] = relationship(
+        "EmployeePosition", back_populates="schedule", viewonly=True
+    )
+    employees: Mapped[list[Employee]] = relationship(
+        "Employee",
+        secondary="employee_positions",
+        primaryjoin="Schedule.id == EmployeePosition.schedule_id",
+        secondaryjoin="EmployeePosition.employee_id == Employee.id",
+        viewonly=True,
+    )

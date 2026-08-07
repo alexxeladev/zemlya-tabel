@@ -9,6 +9,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.employees import Employee
+    from app.models.positions import EmployeePosition
 
 
 class Company(Base):
@@ -22,6 +23,14 @@ class Company(Base):
     created_at: Mapped[str] = mapped_column(server_default=func.now())
     updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())
 
+    # Основная компания задаётся у ПОЗИЦИИ (task_positions ч.A), не у человека.
+    positions: Mapped[list[EmployeePosition]] = relationship(
+        "EmployeePosition", back_populates="company", viewonly=True
+    )
     employees: Mapped[list[Employee]] = relationship(
-        "Employee", back_populates="default_company"
+        "Employee",
+        secondary="employee_positions",
+        primaryjoin="Company.id == EmployeePosition.company_id",
+        secondaryjoin="EmployeePosition.employee_id == Employee.id",
+        viewonly=True,
     )
