@@ -88,6 +88,7 @@ def reset_data(assume_yes: bool = False) -> None:
     from app.models.employee_adjustments import EmployeeAdjustment
     from app.models.employees import Employee
     from app.models.loan_deductions import LoanDeduction
+    from app.models.positions import EmployeePosition
     from app.models.production_calendars import ProductionCalendar
     from app.models.schedules import Schedule
     from app.models.timesheet_entries import TimesheetEntry
@@ -131,10 +132,22 @@ def reset_data(assume_yes: bool = False) -> None:
         ):
             stats[model.__tablename__] = db.query(model).delete(synchronize_session=False)
 
+        # Позиции удаляемых сотрудников — раньше самих сотрудников: bulk delete
+        # идёт мимо ORM-каскада, и FK employee_positions → employees не пустил бы.
+        # Ссылку на позицию с самого сотрудника (займ) тоже надо снять.
+        emp_filter = Employee.id.notin_(keep_ids) if keep_ids else None
+        pos_q = db.query(EmployeePosition)
+        upd_q = db.query(Employee)
+        if emp_filter is not None:
+            pos_q = pos_q.filter(EmployeePosition.employee_id.notin_(keep_ids))
+            upd_q = upd_q.filter(emp_filter)
+        upd_q.update({Employee.loan_position_id: None}, synchronize_session=False)
+        stats[EmployeePosition.__tablename__] = pos_q.delete(synchronize_session=False)
+
         # Сотрудники, кроме системных админов.
         emp_q = db.query(Employee)
-        if keep_ids:
-            emp_q = emp_q.filter(Employee.id.notin_(keep_ids))
+        if emp_filter is not None:
+            emp_q = emp_q.filter(emp_filter)
         stats[Employee.__tablename__] = emp_q.delete(synchronize_session=False)
 
         # Справочники (на системного админа FK не ссылается — поля null).
@@ -165,6 +178,7 @@ def seed_test_data() -> None:
     from app.models.companies import Company
     from app.models.departments import Department
     from app.models.employees import Employee
+    from app.models.positions import EmployeePosition
     from app.models.schedules import Schedule
 
     today = datetime.date.today()
@@ -298,6 +312,14 @@ def seed_test_data() -> None:
             ("Сменщик Первый", "T-010", ito, sch22, zmo, D("60000"),
              coef, D("1.5"), None, None,
              None, None),
+            # Совместитель: основная позиция инженера, вторая заводится ниже.
+            ("Совместитель Двойнов", "T-011", ito, sch52, zmo, D("60000"),
+             coef, D("1.5"), None, None,
+             None, None),
+            # Почасовик: оклада нет, ставка за час — в поле ниже (rate=None).
+            ("Почасовик Часов", "T-012", ito, sch52, kft, None,
+             coef, D("1.5"), None, None,
+             None, None),
         ]
 
         for (name, tab, dept, sch, comp, rate, wtype, wcoef, wfixed,
@@ -319,6 +341,10 @@ def seed_test_data() -> None:
                 overtime_coefficient=D("1.5"),
                 is_active=True,
             )
+            if tab == "T-012":
+                # Почасовая оплата: оклада нет, платим за фактические часы.
+                emp.pay_type = "hourly"
+                emp.hour_rate = D("450")
             if loan:
                 emp.loan_amount, emp.loan_term_months, emp.loan_start_date = loan
             if email:
@@ -329,6 +355,20 @@ def seed_test_data() -> None:
             db.add(emp)
             db.flush()
             created["employees"] += 1
+
+        # --- Совместительство (task_positions ч.A) ---
+        # Вторая позиция у T-011: другая должность, другой оклад, другое юрлицо.
+        # Расчёт по каждой идёт отдельно, «к выплате» не суммируется.
+        moonlighter = db.query(Employee).filter_by(tab_number="T-011").first()
+        if moonlighter and len(moonlighter.positions) == 1:
+            moonlighter.primary_position.title = "Инженер"
+            moonlighter.positions.append(EmployeePosition(
+                title="Электрик",
+                rate=D("30000"),
+                schedule_id=sch52.id,
+                department_id=ito.id,
+                company_id=kft.id,
+            ))
 
         # --- Менеджеры отделов (task_org_structure ч.2) ---
         # Управляемые отделы задаются ОТДЕЛЬНО от department_id: менеджер ИТО
