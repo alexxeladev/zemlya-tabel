@@ -200,6 +200,28 @@ def daily_overtime_hours(
     return overtime
 
 
+def hourly_overtime_hours(
+    schedule,
+    hours_by_date: dict[date, Decimal],
+    calendar_data: dict | None,
+) -> Decimal:
+    """
+    Переработка ПОЧАСОВИКА — по дням, как у окладника (task_positions_fixes п.2):
+    для каждого дня max(0, факт − длительность смены), сумма за месяц.
+
+    Отличие от `daily_overtime_hours`: у почасовика нет категорий «вне графика»
+    и «праздничные» (каждый час уже оплачен по ставке), поэтому дневная норма
+    равна смене по графику в ЛЮБОЙ день с часами, а не только в плановый —
+    иначе выход в свой выходной целиком превратился бы в переработку ×1.5.
+    """
+    overtime = _ZERO
+    for work_date, hours in hours_by_date.items():
+        norm = shift_hours_for_date(schedule, work_date, calendar_data)
+        if norm > _ZERO and hours > norm:
+            overtime += hours - norm
+    return overtime
+
+
 def absence_pay(
     hourly_rate: Decimal | None, paid_days: int, day_hours: Decimal = ABSENCE_DAY_HOURS
 ) -> Decimal:
@@ -561,10 +583,13 @@ def calculate_position_payroll(
             # Платим ровно за отработанные часы: гарантии оклада нет, отработал
             # меньше нормы — получил пропорционально меньше (этим и отличается
             # от окладной, где норма даёт полный оклад).
-            # Переработка — ОТ МЕСЯЧНОЙ НОРМЫ, а не по дням: сверх нормы месяца
-            # часы идут по коэффициенту переработки позиции (0/1/1.5).
+            # Переработка — ПО ДНЯМ, единообразно с окладной (task_positions_fixes):
+            # сверх дневной смены часы идут по коэффициенту позиции (0/1/1.5).
+            # Помесячный вариант гасил переработку одного дня недоработкой другого.
             hourly_rate = hour_rate
-            overtime_hours = max(_ZERO, total_hours - norm_hours)
+            overtime_hours = hourly_overtime_hours(
+                schedule, hours_by_date, calendar_data
+            )
             base_amount = (total_hours - overtime_hours) * hour_rate
             overtime_amount = overtime_hours * hour_rate * _overtime_coeff(position)
             # Отдельных категорий «вне графика» и «праздничные» у почасовика нет:
