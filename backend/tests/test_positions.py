@@ -591,6 +591,71 @@ class TestPayTypes:
         # Оклада у почасовика нет
         assert p.rate is None
 
+    def test_hourly_overtime_is_counted_per_day_not_per_month(
+        self, db_session: Session, schedule_5_2, companies
+    ):
+        """task_positions_fixes п.2: переработка почасовика — по дням, как у
+        окладника. 10 дней по 12 ч = 120 ч при норме 160: по месячной норме
+        переработки не было бы вовсе, по дням — 4 ч сверх смены каждый день."""
+        emp = Employee(full_name="Почасовик", pay_type=PAY_TYPE_HOURLY,
+                       hour_rate=Decimal("500"), overtime_coefficient=Decimal("1.5"),
+                       schedule_id=schedule_5_2.id, default_company_id=companies[0].id)
+        db_session.add(emp)
+        db_session.commit()
+        db_session.refresh(emp)
+        add_hours(db_session, emp, emp.primary_position, companies[0],
+                  MAY_WORKDAYS[:10], hours=12)
+
+        p = self._position_payroll(db_session, emp, db_session.query(TimesheetEntry).all())
+
+        assert p.total_hours == Decimal("120")
+        assert p.overtime_hours == Decimal("40")          # 10 дней × 4 ч
+        assert p.base_amount == Decimal("40000")          # 80 ч × 500
+        assert p.overtime_amount == Decimal("30000")      # 40 × 500 × 1.5
+        assert p.total_amount == Decimal("70000")
+
+    def test_hourly_underwork_does_not_offset_another_days_overtime(
+        self, db_session: Session, schedule_5_2, companies
+    ):
+        """Недоработка одного дня не гасит переработку другого (как у окладной)."""
+        emp = Employee(full_name="Почасовик", pay_type=PAY_TYPE_HOURLY,
+                       hour_rate=Decimal("500"), overtime_coefficient=Decimal("1.5"),
+                       schedule_id=schedule_5_2.id, default_company_id=companies[0].id)
+        db_session.add(emp)
+        db_session.commit()
+        db_session.refresh(emp)
+        # День 1: 12 ч (4 ч сверх смены), день 2: 4 ч (недоработка) — итого 16 ч
+        add_hours(db_session, emp, emp.primary_position, companies[0],
+                  [MAY_WORKDAYS[0]], hours=12)
+        add_hours(db_session, emp, emp.primary_position, companies[0],
+                  [MAY_WORKDAYS[1]], hours=4)
+
+        p = self._position_payroll(db_session, emp, db_session.query(TimesheetEntry).all())
+
+        assert p.overtime_hours == Decimal("4")
+        assert p.base_amount == Decimal("6000")           # 12 ч по ставке
+        assert p.overtime_amount == Decimal("3000")       # 4 × 500 × 1.5
+
+    def test_hourly_day_off_hours_are_not_all_overtime(
+        self, db_session: Session, schedule_5_2, companies
+    ):
+        """Выход в свой выходной у почасовика — обычные часы по ставке: смена
+        задаёт дневную норму в любой день, категории «вне графика» у него нет."""
+        emp = Employee(full_name="Почасовик", pay_type=PAY_TYPE_HOURLY,
+                       hour_rate=Decimal("500"), overtime_coefficient=Decimal("1.5"),
+                       schedule_id=schedule_5_2.id, default_company_id=companies[0].id)
+        db_session.add(emp)
+        db_session.commit()
+        db_session.refresh(emp)
+        add_hours(db_session, emp, emp.primary_position, companies[0], [16], hours=8)
+
+        p = self._position_payroll(db_session, emp, db_session.query(TimesheetEntry).all())
+
+        assert p.overtime_hours == Decimal("0")
+        assert p.off_schedule_hours == Decimal("0")
+        assert p.base_amount == Decimal("4000")
+        assert p.total_amount == Decimal("4000")
+
     def test_hourly_overtime_coefficient_zero(
         self, db_session: Session, schedule_5_2, companies
     ):
