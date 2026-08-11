@@ -377,6 +377,124 @@ class TestTwoPositions:
         assert by_position[electrician.id].distribution_total == Decimal("30000")
 
 
+# ── Отпуск/больничный совместителя: платит только основная позиция ────────────
+
+class TestAbsencesOnlyFromPrimary:
+    """task_positions_fixes п.1: отсутствие отмечено на человеке (он отсутствует
+    на всех работах), но оплачивается ТОЛЬКО по основной позиции. Иначе
+    совместитель получал бы отпускные столько раз, сколько у него мест."""
+
+    @pytest.fixture
+    def moonlighter(
+        self, db_session: Session, schedule_5_2, companies, department, calendar_2026
+    ):
+        """Инженер (оклад 60000, основная) + электрик (оклад 30000)."""
+        emp = Employee(
+            full_name="Петров Пётр", tab_number="T-2",
+            rate=Decimal("60000"), schedule_id=schedule_5_2.id,
+            department_id=department.id, default_company_id=companies[0].id,
+        )
+        db_session.add(emp)
+        db_session.commit()
+        emp.primary_position.title = "Инженер"
+        emp.positions.append(EmployeePosition(
+            title="Электрик", rate=Decimal("30000"), schedule_id=schedule_5_2.id,
+            department_id=department.id, company_id=companies[1].id,
+        ))
+        db_session.commit()
+        db_session.refresh(emp)
+        return emp
+
+    def _absent(self, db_session, emp, days: list[int], kind: str) -> None:
+        from app.models.employee_absences import EmployeeAbsence
+
+        for day in days:
+            db_session.add(EmployeeAbsence(
+                employee_id=emp.id, work_date=date(2026, 5, day), kind=kind,
+            ))
+        db_session.commit()
+
+    def _payrolls(self, db_session, emp):
+        from app.models.employee_absences import EmployeeAbsence
+
+        absences = db_session.query(EmployeeAbsence).all()
+        entries = db_session.query(TimesheetEntry).all()
+        return {
+            pos.id: calculate_position_payroll(
+                emp, pos, [e for e in entries if e.position_id == pos.id],
+                MAY_REAL, 2026, 5, absences=absences,
+            )
+            for pos in emp.active_positions
+        }
+
+    def test_vacation_paid_only_from_primary_position(
+        self, db_session: Session, moonlighter, companies
+    ):
+        """5 дней отпуска: отпускные с оклада 60000, подработка — 0."""
+        engineer, electrician = moonlighter.active_positions
+        worked, vacation = MAY_WORKDAYS[:15], MAY_WORKDAYS[15:]
+        add_hours(db_session, moonlighter, engineer, companies[0], worked)
+        add_hours(db_session, moonlighter, electrician, companies[1], worked)
+        self._absent(db_session, moonlighter, vacation, "vacation")
+
+        by_position = self._payrolls(db_session, moonlighter)
+        p_eng, p_ele = by_position[engineer.id], by_position[electrician.id]
+
+        # Основная: оклад 60000 × 120/160 = 45000 + отпускные 60000/160 × 5 × 8
+        assert p_eng.base_amount == Decimal("45000")
+        assert p_eng.vacation_amount == Decimal("15000")
+        assert p_eng.total_amount == Decimal("60000")
+
+        # Совместительство: только оклад за отработанное, отпускных нет
+        assert p_ele.base_amount == Decimal("22500")
+        assert p_ele.vacation_amount == Decimal("0")
+        assert p_ele.vacation_paid_days == 0
+        assert p_ele.total_amount == Decimal("22500")
+
+        # Дни отсутствия в строке видны у обеих позиций — человек отсутствовал
+        assert p_eng.vacation_days == len(vacation) == p_ele.vacation_days
+
+    def test_sick_paid_only_from_primary_and_limit_is_per_person(
+        self, db_session: Session, moonlighter, companies
+    ):
+        """Больничный — тоже только с основной; годовой лимит на человека."""
+        engineer, electrician = moonlighter.active_positions
+        worked, sick = MAY_WORKDAYS[:15], MAY_WORKDAYS[15:]
+        add_hours(db_session, moonlighter, engineer, companies[0], worked)
+        add_hours(db_session, moonlighter, electrician, companies[1], worked)
+        self._absent(db_session, moonlighter, sick, "sick")
+
+        by_position = self._payrolls(db_session, moonlighter)
+        p_eng, p_ele = by_position[engineer.id], by_position[electrician.id]
+
+        assert p_eng.sick_paid_days == 5
+        assert p_eng.sick_amount == Decimal("15000")
+        assert p_ele.sick_amount == Decimal("0")
+        assert p_ele.sick_paid_days == 0
+        assert p_ele.sick_unpaid_days == 0
+        # Лимит (10 дней в году) израсходован один раз, а не по разу на позицию
+        assert p_eng.sick_limit_remaining == 5
+
+    def test_statement_does_not_double_vacation_across_positions(
+        self, db_session: Session, moonlighter, companies
+    ):
+        """Ведомость: сумма отпускных по человеку = отпускные основной позиции."""
+        engineer, electrician = moonlighter.active_positions
+        worked, vacation = MAY_WORKDAYS[:15], MAY_WORKDAYS[15:]
+        add_hours(db_session, moonlighter, engineer, companies[0], worked)
+        add_hours(db_session, moonlighter, electrician, companies[1], worked)
+        self._absent(db_session, moonlighter, vacation, "vacation")
+
+        summary = build_payroll_summary(
+            db_session, [moonlighter], db_session.query(TimesheetEntry).all(), 2026, 5
+        )
+        by_position = {r.position_id: r for r in summary.employees}
+
+        assert summary.total_vacation_amount == Decimal("15000")
+        assert by_position[engineer.id].net_payout == Decimal("60000")
+        assert by_position[electrician.id].net_payout == Decimal("22500")
+
+
 # ── Три типа оплаты ───────────────────────────────────────────────────────────
 
 class TestPayTypes:

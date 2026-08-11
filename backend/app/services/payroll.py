@@ -348,8 +348,9 @@ def calculate_position_payroll(
     entries: часы ЭТОЙ позиции (разложить помогает services.positions).
     companies_by_id: dict[company_id → (code, name)]
     absences: список EmployeeAbsence сотрудника за месяц (ОТ/ДО/Б/Н). Отсутствие
-        у человека одно на день (он отсутствует везде), но оплачивается по
-        каждой позиции от её оклада и нормы.
+        у человека одно на день (он отсутствует везде), а ОПЛАЧИВАЕТСЯ только по
+        ОСНОВНОЙ позиции — от её оклада и нормы. На совместительстве дни
+        отсутствия начислений не дают.
     sick_days_used_before: оплачиваемых дней больничного израсходовано в этом
         году ДО текущего месяца (годовой лимит, часть 2) — считает вызывающий
         код по всем месяцам года, здесь только применяется остаток.
@@ -388,6 +389,18 @@ def calculate_position_payroll(
     sick_limit_remaining = max(
         0, sick_limit - max(0, sick_days_used_before) - len(sick_paid_dates)
     )
+
+    # Отпускные и больничные платит только ОСНОВНАЯ позиция (task_positions_fixes
+    # п.1): отсутствие отмечено на человеке — он отсутствует на всех работах, —
+    # но оплачивать его с каждого рабочего места значило бы платить отпуск N раз.
+    # На совместительстве дни отсутствия просто не дают начисления.
+    # Дни отсутствия (absence_days) остаются в строке справочно, обнуляется
+    # только всё «оплачиваемое»: годовой лимит больничного — на человека и
+    # расходуется основной позицией.
+    pays_absences = position is None or bool(position.is_primary)
+    if not pays_absences:
+        absence_paid_days = {kind: 0 for kind in ABSENCE_CODES}
+        sick_unpaid_days = 0
 
     schedule = position.schedule if position is not None else None
 
