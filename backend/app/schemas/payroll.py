@@ -25,14 +25,25 @@ class CompanyBreakdownRead(BaseModel):
 class EmployeePayrollRead(BaseModel):
     employee_id: int
     employee_name: str
+
+    # Позиция (рабочее место) строки — task_positions ч.A. У совместителя
+    # строк столько же, сколько позиций, employee_id при этом повторяется.
+    # «К выплате» между строками одного человека НЕ суммируется.
+    position_id: Optional[int] = None
+    position_title: Optional[str] = None
+    is_primary_position: bool = True
+
     # rate — оклад окладника; у посменного здесь УСЛОВНЫЙ оклад
-    # (ставка × норма смен), от которого считаются отпускные/больничные.
+    # (ставка × норма смен), от которого считаются отпускные/больничные;
+    # у почасовика оклада нет — None.
     rate: Decimal | None
     schedule_name: str | None
 
-    # Тип оплаты: "salary" (оклад) или "per_shift" (смены × ставка)
+    # Тип оплаты позиции: "salary" (оклад), "per_shift" (смены × ставка),
+    # "hourly" (часы × ставка за час)
     pay_type: str = "salary"
     shift_rate: Decimal | None = None
+    hour_rate: Decimal | None = None
     worked_shifts: int = 0
     norm_shifts: int | None = None
 

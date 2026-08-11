@@ -13,7 +13,8 @@ from app.schemas.schedule import ScheduleRead
 
 EmployeeRoleType = Literal["admin", "manager", "accountant", "employee"]
 WeekendPayType = Literal["coefficient", "fixed_rate"]
-PayType = Literal["salary", "per_shift"]
+# Тип оплаты позиции: оклад / смены × ставка / часы × ставка за час
+PayType = Literal["salary", "per_shift", "hourly"]
 
 
 class EmployeeAccessCreate(BaseModel):
@@ -37,11 +38,14 @@ class EmployeeBase(BaseModel):
     department_id: Optional[int] = None
     schedule_id: Optional[int] = None
     default_company_id: Optional[int] = None
-    # Тип оплаты: "salary" — месячный оклад `rate`; "per_shift" — оклада нет,
-    # база = отработанных смен × `shift_rate`.
+    # Тип оплаты и его база — взаимоисключающие (task_positions ч.A):
+    #   "salary"    — месячный оклад `rate`;
+    #   "per_shift" — ставка за смену `shift_rate`;
+    #   "hourly"    — ставка за час `hour_rate`.
     pay_type: PayType = "salary"
     rate: Optional[Decimal] = None
     shift_rate: Optional[Decimal] = None
+    hour_rate: Optional[Decimal] = None
     weekend_pay_type: WeekendPayType = "coefficient"
     weekend_coefficient: Optional[Decimal] = None
     weekend_fixed_rate: Optional[Decimal] = None
@@ -103,6 +107,7 @@ class EmployeeUpdate(BaseModel):
     pay_type: Optional[PayType] = None
     rate: Optional[Decimal] = None
     shift_rate: Optional[Decimal] = None
+    hour_rate: Optional[Decimal] = None
     weekend_pay_type: Optional[WeekendPayType] = None
     weekend_coefficient: Optional[Decimal] = None
     weekend_fixed_rate: Optional[Decimal] = None

@@ -11,6 +11,9 @@ AdjustmentKindType = Literal["premium", "kpi", "advance"]
 
 class AdjustmentCreate(BaseModel):
     employee_id: int
+    # Рабочее место, к которому относится премия/KPI/аванс (task_positions ч.A):
+    # деньги попадут в «к выплате» именно этой позиции. Не указано — основная.
+    position_id: Optional[int] = None
     year: int
     month: int
     kind: AdjustmentKindType
@@ -44,6 +47,7 @@ class AdjustmentRead(BaseModel):
 
     id: int
     employee_id: int
+    position_id: Optional[int] = None
     year: int
     month: int
     kind: AdjustmentKindType

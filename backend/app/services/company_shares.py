@@ -27,18 +27,29 @@ def _as_decimal(value) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
-def load_employee_shares(db: Session, emp_ids: list[int]) -> dict[int, dict[int, Decimal]]:
-    """{employee_id: {company_id: percent}} — проценты из карточек сотрудников."""
-    result: dict[int, dict[int, Decimal]] = {}
+def load_employee_shares(
+    db: Session,
+    emp_ids: list[int],
+    primary_position_ids: dict[int, int | None] | None = None,
+) -> dict[int | None, dict[int, Decimal]]:
+    """{position_id: {company_id: percent}} — проценты, заданные для рабочего места.
+
+    Ключ — ПОЗИЦИЯ (task_positions ч.A): у совместителя каждое рабочее место
+    разносится по юрлицам по-своему. Строки с `position_id IS NULL` заведены до
+    появления позиций и относятся к основной.
+    """
+    result: dict[int | None, dict[int, Decimal]] = {}
     if not emp_ids:
         return result
+    primary_position_ids = primary_position_ids or {}
     rows = (
         db.query(EmployeeCompanyShare)
         .filter(EmployeeCompanyShare.employee_id.in_(emp_ids))
         .all()
     )
     for r in rows:
-        result.setdefault(r.employee_id, {})[r.company_id] = _as_decimal(r.percent)
+        key = r.position_id if r.position_id is not None else primary_position_ids.get(r.employee_id)
+        result.setdefault(key, {})[r.company_id] = _as_decimal(r.percent)
     return result
 
 
@@ -59,12 +70,17 @@ def load_department_shares(db: Session, dept_ids: list[int]) -> dict[int, dict[i
 
 
 def load_month_overrides(
-    db: Session, emp_ids: list[int], year: int, month: int
-) -> dict[int, dict[int, Decimal]]:
-    """{employee_id: {company_id: percent}} — переопределения за конкретный месяц."""
-    result: dict[int, dict[int, Decimal]] = {}
+    db: Session,
+    emp_ids: list[int],
+    year: int,
+    month: int,
+    primary_position_ids: dict[int, int | None] | None = None,
+) -> dict[int | None, dict[int, Decimal]]:
+    """{position_id: {company_id: percent}} — переопределения за конкретный месяц."""
+    result: dict[int | None, dict[int, Decimal]] = {}
     if not emp_ids:
         return result
+    primary_position_ids = primary_position_ids or {}
     rows = (
         db.query(CompanyShareOverride)
         .filter(
@@ -75,7 +91,8 @@ def load_month_overrides(
         .all()
     )
     for r in rows:
-        result.setdefault(r.employee_id, {})[r.company_id] = _as_decimal(r.percent)
+        key = r.position_id if r.position_id is not None else primary_position_ids.get(r.employee_id)
+        result.setdefault(key, {})[r.company_id] = _as_decimal(r.percent)
     return result
 
 

@@ -6,6 +6,12 @@ from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 
 from app.models.employee_absences import ABSENCE_CODES, AbsenceKind
 from app.models.employees import Employee
+from app.models.positions import (
+    PAY_TYPE_HOURLY,
+    PAY_TYPE_PER_SHIFT,
+    PAY_TYPE_SALARY,
+    EmployeePosition,
+)
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.absences import sick_limit_days, split_sick_dates_by_limit
 from app.services.calendar import (
@@ -79,7 +85,7 @@ def _extra_hours_pay(
 ) -> Decimal:
     """
     Оплата часов повышенной категории (вне графика / праздничных) по настройкам
-    конкретного сотрудника:
+    конкретной позиции:
       - coefficient: часы × hourly_rate × коэффициент (0 = не оплачивается)
       - fixed_rate:  часы × фикс_ставка (не зависит от оклада)
     """
@@ -95,44 +101,45 @@ def _extra_hours_pay(
     return hours * hourly_rate * coeff
 
 
-def _off_schedule_pay(employee: Employee, hours: Decimal, hourly_rate: Decimal) -> Decimal:
+def _off_schedule_pay(position, hours: Decimal, hourly_rate: Decimal) -> Decimal:
     """
     Оплата часов ВНЕ ГРАФИКА — выход в свой законный выходной по графику
     (правка 3.9-3, триггер уточнён в task_schedule_based_pay). Дефолт 1.5.
     """
     return _extra_hours_pay(
         hours, hourly_rate,
-        getattr(employee, "weekend_pay_type", None),
-        getattr(employee, "weekend_coefficient", None),
-        getattr(employee, "weekend_fixed_rate", None),
+        getattr(position, "weekend_pay_type", None),
+        getattr(position, "weekend_coefficient", None),
+        getattr(position, "weekend_fixed_rate", None),
         _ONE_HALF,
     )
 
 
-def _holiday_pay(employee: Employee, hours: Decimal, hourly_rate: Decimal) -> Decimal:
+def _holiday_pay(position, hours: Decimal, hourly_rate: Decimal) -> Decimal:
     """
     Оплата ПРАЗДНИЧНЫХ часов — работа в нерабочий праздничный день календаря.
-    Настройка отдельная от выходных (задаётся в карточке), дефолт — 1.5.
+    Настройка отдельная от выходных (задаётся в позиции), дефолт — 1.5.
     """
     return _extra_hours_pay(
         hours, hourly_rate,
-        getattr(employee, "holiday_pay_type", None),
-        getattr(employee, "holiday_coefficient", None),
-        getattr(employee, "holiday_fixed_rate", None),
+        getattr(position, "holiday_pay_type", None),
+        getattr(position, "holiday_coefficient", None),
+        getattr(position, "holiday_fixed_rate", None),
         _ONE_HALF,
     )
 
 
-PAY_TYPE_SALARY = "salary"
-PAY_TYPE_PER_SHIFT = "per_shift"
-
-
-def is_per_shift(employee: Employee) -> bool:
+def is_per_shift(position) -> bool:
     """Посменная оплата: оклада нет, база = отработанных смен × ставка за смену."""
-    return getattr(employee, "pay_type", PAY_TYPE_SALARY) == PAY_TYPE_PER_SHIFT
+    return getattr(position, "pay_type", PAY_TYPE_SALARY) == PAY_TYPE_PER_SHIFT
 
 
-def notional_salary(employee: Employee, norm_shifts: int | None) -> Decimal | None:
+def is_hourly(position) -> bool:
+    """Почасовая оплата: оклада нет, база = отработанные часы × ставка за час."""
+    return getattr(position, "pay_type", PAY_TYPE_SALARY) == PAY_TYPE_HOURLY
+
+
+def notional_salary(position, norm_shifts: int | None) -> Decimal | None:
     """
     «Условный месячный оклад» посменного = ставка_за_смену × норма_смен_месяца.
 
@@ -141,15 +148,15 @@ def notional_salary(employee: Employee, norm_shifts: int | None) -> Decimal | No
     дни × 8». Отдельным полем НЕ хранится — норма смен меняется от месяца
     к месяцу, поэтому считается на лету.
     """
-    shift_rate = getattr(employee, "shift_rate", None)
+    shift_rate = getattr(position, "shift_rate", None)
     if shift_rate is None or not norm_shifts:
         return None
     return Decimal(str(shift_rate)) * Decimal(norm_shifts)
 
 
-def _overtime_coeff(employee: Employee) -> Decimal:
-    """Коэффициент переработки сотрудника (0/1/1.5), дефолт 1.5 (задача 3.11b п.0)."""
-    coeff = getattr(employee, "overtime_coefficient", None)
+def _overtime_coeff(position) -> Decimal:
+    """Коэффициент переработки позиции (0/1/1.5), дефолт 1.5 (задача 3.11b п.0)."""
+    coeff = getattr(position, "overtime_coefficient", None)
     return _ONE_HALF if coeff is None else Decimal(str(coeff))
 
 
@@ -231,14 +238,24 @@ class CompanyBreakdown:
 class EmployeePayroll:
     employee_id: int
     employee_name: str
+
+    # Позиция (рабочее место), по которой посчитана строка (task_positions ч.A).
+    # У сотрудника с совместительством строк столько же, сколько позиций, и
+    # «к выплате» между ними НЕ суммируется — платят разные компании.
+    position_id: int | None
+    position_title: str | None
+    is_primary_position: bool
+
     # rate — месячный оклад окладника; у посменного это УСЛОВНЫЙ оклад
     # (ставка × норма смен), от которого считаются отпускные/больничные.
+    # У почасовика оклада нет вовсе — здесь None.
     rate: Decimal | None
     schedule_name: str | None
 
-    # Тип оплаты и посменные показатели (task_search_and_shiftpay)
+    # Тип оплаты и показатели посменной/почасовой оплаты
     pay_type: str
     shift_rate: Decimal | None
+    hour_rate: Decimal | None
     worked_shifts: int
     norm_shifts: int | None
 
@@ -296,11 +313,43 @@ def calculate_employee_payroll(
     sick_days_used_before: int = 0,
     sick_limit: int | None = None,
 ) -> EmployeePayroll:
+    """Расчёт по ОСНОВНОЙ позиции сотрудника.
+
+    Совместимость и одиночный случай: у сотрудника без совместительства позиция
+    ровно одна, и результат идентичен доположенческому. Для совместителя нужен
+    расчёт по каждому рабочему месту — `calculate_position_payroll`.
     """
-    Чистая функция: считает зарплату сотрудника за период.
+    return calculate_position_payroll(
+        employee, employee.primary_position, entries, calendar_data, year, month,
+        companies_by_id, absences, sick_days_used_before, sick_limit,
+    )
+
+
+def calculate_position_payroll(
+    employee: Employee,
+    position: EmployeePosition | None,
+    entries: list[TimesheetEntry],
+    calendar_data: dict | None,
+    year: int,
+    month: int,
+    companies_by_id: dict[int, tuple[str, str]] | None = None,
+    absences: list | None = None,
+    sick_days_used_before: int = 0,
+    sick_limit: int | None = None,
+) -> EmployeePayroll:
+    """
+    Чистая функция: считает зарплату ОДНОЙ ПОЗИЦИИ сотрудника за период.
     Не лезет в БД, принимает все данные на вход.
+
+    Оклад/ставка, график, коэффициенты и тип оплаты берутся из позиции — у
+    совместителя каждое рабочее место считается по своим условиям и независимо
+    от остальных. От сотрудника нужны только имя и id для подписи строки.
+
+    entries: часы ЭТОЙ позиции (разложить помогает services.positions).
     companies_by_id: dict[company_id → (code, name)]
-    absences: список EmployeeAbsence сотрудника за месяц (ОТ/ДО/Б/Н).
+    absences: список EmployeeAbsence сотрудника за месяц (ОТ/ДО/Б/Н). Отсутствие
+        у человека одно на день (он отсутствует везде), но оплачивается по
+        каждой позиции от её оклада и нормы.
     sick_days_used_before: оплачиваемых дней больничного израсходовано в этом
         году ДО текущего месяца (годовой лимит, часть 2) — считает вызывающий
         код по всем месяцам года, здесь только применяется остаток.
@@ -340,7 +389,7 @@ def calculate_employee_payroll(
         0, sick_limit - max(0, sick_days_used_before) - len(sick_paid_dates)
     )
 
-    schedule = employee.schedule
+    schedule = position.schedule if position is not None else None
 
     # Aggregate hours by company and by date. Каждый день попадает ровно в одну
     # категорию (`day_category`): плановый рабочий → оклад/переработка,
@@ -427,24 +476,38 @@ def calculate_employee_payroll(
             is_calculable = False
             reason = "Норма не определена (0 рабочих дней)"
 
-    # ── Тип оплаты ────────────────────────────────────────────────────────────
-    # Меняется ТОЛЬКО способ расчёта базовой суммы. У посменного вместо оклада
-    # ставка за смену, а «оклад» для формул отсутствий — условный
-    # (ставка × норма смен месяца).
-    per_shift = is_per_shift(employee)
+    # ── Тип оплаты позиции ────────────────────────────────────────────────────
+    # Меняется ТОЛЬКО способ расчёта базовой суммы; переработка, отсутствия,
+    # премии, удержания и распределение работают по общим правилам.
+    #   salary    — месячный оклад, база пропорционально зачётным часам;
+    #   per_shift — ставка за смену, «оклад» для отсутствий условный
+    #               (ставка × норма смен месяца);
+    #   hourly    — ставка за час, оклада нет вовсе.
+    per_shift = is_per_shift(position)
+    hourly = is_hourly(position)
     shift_rate: Decimal | None = None
+    hour_rate: Decimal | None = None
     norm_shifts: int | None = norm_days if is_calculable else None
     worked_shifts = fact_days
 
-    rate = employee.rate
+    rate = position.rate if position is not None else None
     if per_shift:
-        raw_shift_rate = getattr(employee, "shift_rate", None)
+        raw_shift_rate = getattr(position, "shift_rate", None)
         shift_rate = None if raw_shift_rate is None else Decimal(str(raw_shift_rate))
         if is_calculable and (shift_rate is None or shift_rate == _ZERO):
             is_calculable = False
             reason = "Не задана ставка за смену"
         # Оклад для формул (отпуск/больничный) — условный, из ставки и нормы смен.
-        rate = notional_salary(employee, norm_shifts) if is_calculable else None
+        rate = notional_salary(position, norm_shifts) if is_calculable else None
+    elif hourly:
+        raw_hour_rate = getattr(position, "hour_rate", None)
+        hour_rate = None if raw_hour_rate is None else Decimal(str(raw_hour_rate))
+        if is_calculable and (hour_rate is None or hour_rate == _ZERO):
+            is_calculable = False
+            reason = "Не задана ставка за час"
+        # У почасовика оклада нет ни настоящего, ни условного: отпуск и
+        # больничный ему не начисляются, а значит и «оклад для формул» не нужен.
+        rate = None
     elif is_calculable and (rate is None or rate == _ZERO):
         is_calculable = False
         reason = "Не задан оклад"
@@ -478,16 +541,34 @@ def calculate_employee_payroll(
     vacation_amount = _ZERO
     sick_amount = _ZERO
 
-    if is_calculable and rate is not None and norm_hours is not None and norm_hours > _ZERO:
-        # hourly_rate у окладника — от оклада, у посменного — от УСЛОВНОГО
-        # оклада (ставка × норма смен). Дальше формулы отсутствий одинаковы.
-        hourly_rate = rate / norm_hours
-
-        if per_shift and shift_rate is not None:
-            # База посменного: каждая отработанная смена стоит ставку, где бы
-            # она ни выпала. Поэтому у него нет ни переработки, ни доплат за
-            # выход вне графика и в праздник — доп. смена это просто ещё одна
-            # смена × ставка, без ×1,5.
+    has_base = rate is not None or hour_rate is not None
+    if is_calculable and has_base and norm_hours is not None and norm_hours > _ZERO:
+        if hourly and hour_rate is not None:
+            # ── Почасовая ─────────────────────────────────────────────────────
+            # Платим ровно за отработанные часы: гарантии оклада нет, отработал
+            # меньше нормы — получил пропорционально меньше (этим и отличается
+            # от окладной, где норма даёт полный оклад).
+            # Переработка — ОТ МЕСЯЧНОЙ НОРМЫ, а не по дням: сверх нормы месяца
+            # часы идут по коэффициенту переработки позиции (0/1/1.5).
+            hourly_rate = hour_rate
+            overtime_hours = max(_ZERO, total_hours - norm_hours)
+            base_amount = (total_hours - overtime_hours) * hour_rate
+            overtime_amount = overtime_hours * hour_rate * _overtime_coeff(position)
+            # Отдельных категорий «вне графика» и «праздничные» у почасовика нет:
+            # каждый час уже оплачен по часовой ставке, а сверхнормативные —
+            # с коэффициентом. Часы остаются в общем итоге, доплат сверх этого нет.
+            total_off_schedule_hours = _ZERO
+            total_holiday_hours = _ZERO
+            company_off_schedule_hours = {cid: _ZERO for cid in company_hours}
+            company_holiday_hours = {cid: _ZERO for cid in company_hours}
+            # Отпуск и больничный почасовику НЕ начисляются: нет часов — нет
+            # денег, код отсутствия остаётся справочной отметкой в табеле.
+        elif per_shift and shift_rate is not None:
+            # ── Посменная ─────────────────────────────────────────────────────
+            # Каждая отработанная смена стоит ставку, где бы она ни выпала.
+            # Поэтому нет ни переработки, ни доплат за выход вне графика и в
+            # праздник — доп. смена это просто ещё одна смена × ставка, без ×1,5.
+            hourly_rate = rate / norm_hours
             base_amount = shift_rate * Decimal(worked_shifts)
             overtime_hours = _ZERO
             total_off_schedule_hours = _ZERO
@@ -495,26 +576,29 @@ def calculate_employee_payroll(
             company_off_schedule_hours = {cid: _ZERO for cid in company_hours}
             company_holiday_hours = {cid: _ZERO for cid in company_hours}
         else:
+            # ── Окладная ──────────────────────────────────────────────────────
             # Оклад ПРОПОРЦИОНАЛЬНО отработанному: зачётные часы графика / норма.
             # Дни отсутствия часов не дают, поэтому оклад за них не начисляется —
             # они оплачиваются отдельно (отпускные/больничные) и сумма не задваивается.
+            hourly_rate = rate / norm_hours
             base_amount = rate * min(_ONE, planned_credited_hours / norm_hours)
-            # Переработка: (оклад/норма) × часы × коэффициент сотрудника (0/1/1.5).
-            overtime_amount = overtime_hours * hourly_rate * _overtime_coeff(employee)
-            # Вне графика и праздничные — по персональным настройкам сотрудника.
+            # Переработка: (оклад/норма) × часы × коэффициент позиции (0/1/1.5).
+            overtime_amount = overtime_hours * hourly_rate * _overtime_coeff(position)
+            # Вне графика и праздничные — по настройкам позиции.
             off_schedule_amount = _off_schedule_pay(
-                employee, total_off_schedule_hours, hourly_rate
+                position, total_off_schedule_hours, hourly_rate
             )
-            holiday_amount = _holiday_pay(employee, total_holiday_hours, hourly_rate)
+            holiday_amount = _holiday_pay(position, total_holiday_hours, hourly_rate)
 
-        # Отпуск и больничный — отдельные начисления по «дни × 8», для обоих
-        # типов оплаты по одной формуле (у посменного оклад условный).
-        vacation_amount = absence_pay(
-            hourly_rate, absence_paid_days[AbsenceKind.vacation.value]
-        )
-        sick_amount = absence_pay(
-            hourly_rate, absence_paid_days[AbsenceKind.sick.value]
-        )
+        if not hourly:
+            # Отпуск и больничный — отдельные начисления по «дни × 8», у окладной
+            # и посменной по одной формуле (у посменного оклад условный).
+            vacation_amount = absence_pay(
+                hourly_rate, absence_paid_days[AbsenceKind.vacation.value]
+            )
+            sick_amount = absence_pay(
+                hourly_rate, absence_paid_days[AbsenceKind.sick.value]
+            )
 
     base_amount = _round(base_amount)
     overtime_amount = _round(overtime_amount)
@@ -569,13 +653,24 @@ def calculate_employee_payroll(
                 total=comp_base + comp_overtime + comp_off_schedule + comp_holiday,
             ))
 
+    if per_shift:
+        pay_type = PAY_TYPE_PER_SHIFT
+    elif hourly:
+        pay_type = PAY_TYPE_HOURLY
+    else:
+        pay_type = PAY_TYPE_SALARY
+
     return EmployeePayroll(
         employee_id=employee.id,
         employee_name=employee.full_name,
+        position_id=position.id if position is not None else None,
+        position_title=position.display_title if position is not None else None,
+        is_primary_position=bool(position is not None and position.is_primary),
         rate=rate,
         schedule_name=schedule_name,
-        pay_type=PAY_TYPE_PER_SHIFT if per_shift else PAY_TYPE_SALARY,
+        pay_type=pay_type,
         shift_rate=shift_rate,
+        hour_rate=hour_rate,
         worked_shifts=worked_shifts,
         norm_shifts=norm_shifts,
         total_hours=total_hours,

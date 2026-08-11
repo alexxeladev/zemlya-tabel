@@ -11,6 +11,11 @@ from __future__ import annotations
 from decimal import Decimal
 
 from app.models.employees import Employee
+from app.models.positions import (
+    PAY_TYPE_HOURLY,
+    PAY_TYPE_PER_SHIFT,
+    PAY_TYPE_SALARY,
+)
 from app.schemas.employee import EmployeeCreate
 
 
@@ -23,10 +28,12 @@ def build_employee(payload: EmployeeCreate) -> Employee:
         schedule_id=payload.schedule_id,
         default_company_id=payload.default_company_id,
         pay_type=payload.pay_type,
-        # Оклад и ставка за смену взаимоисключающие — чужое поле не сохраняем,
-        # иначе в карточке останется мусор от прошлого типа оплаты.
-        rate=payload.rate if payload.pay_type != "per_shift" else None,
-        shift_rate=payload.shift_rate if payload.pay_type == "per_shift" else None,
+        # Оклад, ставка за смену и ставка за час взаимоисключающие — чужие поля
+        # не сохраняем, иначе в карточке останется мусор от прошлого типа оплаты
+        # и расчёт молча возьмёт не ту базу.
+        rate=payload.rate if payload.pay_type == PAY_TYPE_SALARY else None,
+        shift_rate=payload.shift_rate if payload.pay_type == PAY_TYPE_PER_SHIFT else None,
+        hour_rate=payload.hour_rate if payload.pay_type == PAY_TYPE_HOURLY else None,
         weekend_pay_type=payload.weekend_pay_type,
         # default 1.5 для coefficient, чтобы не хранить NULL при старом поведении
         weekend_coefficient=(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -136,6 +137,7 @@ def _load_adjustments(
         AdjustmentRead(
             id=r.id,
             employee_id=r.employee_id,
+            position_id=r.position_id,
             year=r.year,
             month=r.month,
             kind=r.kind,
@@ -182,8 +184,12 @@ def _build_payroll_summary(
     entries,
     year: int,
     month: int,
+    actor: Employee,
+    department_id: int | None = None,
 ) -> PayrollSummaryRead:
-    return build_payroll_summary(db, employees, entries, year, month)
+    return build_payroll_summary(
+        db, employees, entries, year, month, actor, department_id
+    )
 
 
 # ── Tasks inbox (Bug 3) ───────────────────────────────────────────────────────
@@ -220,7 +226,7 @@ def get_payroll(
     _require_dept_access(actor, department_id)
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
-    return _build_payroll_summary(db, employees, entries, year, month)
+    return _build_payroll_summary(db, employees, entries, year, month, actor, department_id)
 
 
 # ── Payroll statement: сводная ведомость + распределение по % (задача 3.11b) ───
@@ -241,7 +247,9 @@ def get_payroll_statement(
     _require_dept_access(actor, department_id)
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
-    return build_payroll_statement(db, employees, entries, year, month)
+    return build_payroll_statement(
+        db, employees, entries, year, month, actor, department_id
+    )
 
 
 @router.put("/distribution", status_code=status.HTTP_200_OK)
@@ -253,7 +261,7 @@ def set_distribution_override(
     """Переопределить распределение по компаниям на конкретный месяц (правка в
     ведомости). Заменяет весь набор процентов сотрудника за этот период."""
     _require_finance_role(actor)
-    _check_cell_access(actor, payload.employee_id, db)
+    target = _check_cell_access(actor, payload.employee_id, db)
     if not (1 <= payload.month <= 12) or not (2000 <= payload.year <= 2100):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month")
     for s in payload.shares:
@@ -261,17 +269,25 @@ def set_distribution_override(
         if s.percent < 0:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Процент не может быть отрицательным")
 
-    # Полностью заменяем набор за период.
+    # Полностью заменяем набор РАБОЧЕГО МЕСТА за период (task_positions ч.A):
+    # у совместителя каждое разносится по юрлицам отдельно.
+    position = target.position_by_id(payload.position_id)
+    position_id = position.id if position else None
     db.query(CompanyShareOverride).filter(
         CompanyShareOverride.employee_id == payload.employee_id,
         CompanyShareOverride.year == payload.year,
         CompanyShareOverride.month == payload.month,
+        or_(
+            CompanyShareOverride.position_id == position_id,
+            CompanyShareOverride.position_id.is_(None),
+        ),
     ).delete(synchronize_session=False)
     for s in payload.shares:
         if s.percent <= 0:
             continue
         db.add(CompanyShareOverride(
             employee_id=payload.employee_id,
+            position_id=position_id,
             company_id=s.company_id,
             year=payload.year,
             month=payload.month,
@@ -280,7 +296,7 @@ def set_distribution_override(
         ))
     log_action(
         db, actor, "company_share_override", payload.employee_id, "set",
-        after={"year": payload.year, "month": payload.month,
+        after={"position_id": position_id, "year": payload.year, "month": payload.month,
                "shares": {s.company_id: str(s.percent) for s in payload.shares}},
     )
     db.commit()
@@ -330,7 +346,9 @@ def export_statement_excel(
     _require_dept_access(actor, department_id)
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
-    statement = build_payroll_statement(db, employees, entries, year, month)
+    statement = build_payroll_statement(
+        db, employees, entries, year, month, actor, department_id
+    )
 
     from app.services.payroll_statement_export import generate_statement_excel
     excel_bytes = generate_statement_excel(statement)
@@ -392,7 +410,9 @@ def get_month(
     if actor.role in ("admin", "accountant", "manager"):
         adjustments = _load_adjustments(db, employees, year, month)
         if include_payroll:
-            payroll = _build_payroll_summary(db, employees, entries, year, month)
+            payroll = _build_payroll_summary(
+                db, employees, entries, year, month, actor, department_id
+            )
 
     return TimesheetMonthResponse(
         year=year,
@@ -422,6 +442,7 @@ def save_cell(
         result = upsert_cell(
             db, actor,
             payload.employee_id, payload.work_date, payload.company_id, payload.hours,
+            payload.position_id,
         )
     except PeriodLockedException as exc:
         raise HTTPException(
@@ -441,7 +462,10 @@ def save_cells_batch(
         _check_cell_access(actor, cell.employee_id, db)
         _check_company_exists(db, cell.company_id)
 
-    cells = [(c.employee_id, c.work_date, c.company_id, c.hours) for c in payload.entries]
+    cells = [
+        (c.employee_id, c.work_date, c.company_id, c.hours, c.position_id)
+        for c in payload.entries
+    ]
     try:
         results = upsert_cells_batch(db, actor, cells)
     except PeriodLockedException as exc:
@@ -707,12 +731,14 @@ def create_adjustment(
 ):
     _require_finance_role(actor)
     # _check_cell_access проверяет видимость сотрудника по роли (manager — свой отдел)
-    _check_cell_access(actor, payload.employee_id, db)
+    target = _check_cell_access(actor, payload.employee_id, db)
     if not (2000 <= payload.year <= 2100):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year")
 
+    position = target.position_by_id(payload.position_id)
     adj = EmployeeAdjustment(
         employee_id=payload.employee_id,
+        position_id=position.id if position else None,
         year=payload.year,
         month=payload.month,
         kind=payload.kind,
@@ -730,7 +756,8 @@ def create_adjustment(
     db.commit()
     db.refresh(adj)
     return AdjustmentRead(
-        id=adj.id, employee_id=adj.employee_id, year=adj.year, month=adj.month,
+        id=adj.id, employee_id=adj.employee_id, position_id=adj.position_id,
+        year=adj.year, month=adj.month,
         kind=adj.kind, amount=adj.amount, reason=adj.reason,
         created_by_id=adj.created_by_id, created_at=str(adj.created_at) if adj.created_at else None,
     )

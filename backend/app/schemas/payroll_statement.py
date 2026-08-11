@@ -17,6 +17,8 @@ class EmployeeSharesRead(BaseModel):
     при пустом собственном распределении наследуется отдел (ч.3 каскада).
     """
     employee_id: int
+    # Рабочее место, к которому относятся проценты (task_positions ч.A).
+    position_id: int | None = None
     shares: list[CompanyShareInput]
     percent_sum: Decimal
     department_id: int | None = None
@@ -27,12 +29,17 @@ class EmployeeSharesRead(BaseModel):
 
 
 class EmployeeSharesUpdate(BaseModel):
+    # Какому рабочему месту задаются проценты (task_positions ч.A);
+    # не указано — основному.
+    position_id: int | None = None
     shares: list[CompanyShareInput]
 
 
 class DistributionOverrideInput(BaseModel):
     """Переопределение распределения на конкретный месяц (правка в ведомости)."""
     employee_id: int
+    # Рабочее место, чьё распределение правим; не указано — основное.
+    position_id: int | None = None
     year: int
     month: int
     shares: list[CompanyShareInput]
@@ -52,6 +59,11 @@ class StatementCompanyAmount(BaseModel):
 
 class StatementRow(BaseModel):
     employee_id: int
+    # Строка ведомости = ПОЗИЦИЯ (task_positions ч.A). У совместителя строк
+    # столько, сколько рабочих мест, employee_id при этом повторяется, а
+    # «к выплате» между ними не суммируется — платят разные компании.
+    position_id: int | None = None
+    is_primary_position: bool = True
     tab_number: str | None
     employee_name: str
     main_company_id: int | None
@@ -60,11 +72,12 @@ class StatementRow(BaseModel):
     position: str | None
     schedule_name: str | None
 
-    # rate — оклад окладника; у посменного УСЛОВНЫЙ оклад (ставка × норма смен).
-    # Что перед нами, видно по pay_type.
+    # rate — оклад окладника; у посменного УСЛОВНЫЙ оклад (ставка × норма смен);
+    # у почасовика оклада нет. Что перед нами, видно по pay_type.
     rate: Decimal | None
     pay_type: str = "salary"
     shift_rate: Decimal | None = None
+    hour_rate: Decimal | None = None
     worked_shifts: int = 0
     norm_shifts: int | None = None
     norm_hours: Decimal | None
