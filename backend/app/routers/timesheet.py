@@ -56,6 +56,7 @@ from app.services.payroll_statement import (
     build_payroll_summary,
 )
 from app.services.org_access import can_access_department
+from app.services.positions import department_ids_of
 from app.services.timesheet import (
     apply_autofill,
     build_autofill_preview,
@@ -164,8 +165,15 @@ def _build_periods_for_response(
     month: int,
     actor: Employee,
 ) -> list[TimesheetPeriodRead]:
-    """Create/fetch periods for all unique department_ids visible in this response."""
-    dept_ids: set[int | None] = {e.department_id for e in employees}
+    """Create/fetch periods for all unique department_ids visible in this response.
+
+    Отдел — у ПОЗИЦИИ (task_positions ч.A), поэтому у совместителя, работающего
+    в двух отделах, нужны периоды обоих: иначе его часы во втором отделе не за
+    что было бы закрыть.
+    """
+    dept_ids: set[int | None] = {
+        dept_id for e in employees for dept_id in department_ids_of(e)
+    }
     periods = []
     for dept_id in dept_ids:
         period = get_or_create_period(db, dept_id, year, month)

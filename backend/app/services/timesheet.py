@@ -186,8 +186,14 @@ def _upsert_cell_no_commit(
         return entry
 
 
-def _check_period_lock(db: Session, employee_id: int, work_date: date) -> None:
-    """Raises PeriodLockedException if the period for this employee+date is not draft."""
+def _check_period_lock(
+    db: Session, employee_id: int, work_date: date, position_id: int | None = None
+) -> None:
+    """Raises PeriodLockedException if the period for this position+date is not draft.
+
+    Период привязан к отделу, а отдел — к ПОЗИЦИИ (task_positions ч.A): часы
+    подработки в другом отделе закрывает период того отдела, а не основного.
+    """
     from app.services.timesheet_periods import (
         PeriodLockedException,
         can_edit_cells,
@@ -197,7 +203,9 @@ def _check_period_lock(db: Session, employee_id: int, work_date: date) -> None:
     emp = db.get(Employee, employee_id)
     if emp is None:
         return  # employee not found — let the FK check handle it
-    period = get_or_create_period(db, emp.department_id, work_date.year, work_date.month)
+    position = emp.position_by_id(position_id)
+    department_id = position.department_id if position is not None else None
+    period = get_or_create_period(db, department_id, work_date.year, work_date.month)
     if not can_edit_cells(period):
         raise PeriodLockedException(period.status)
 
@@ -211,7 +219,7 @@ def upsert_cell(
     hours: Decimal,
     position_id: int | None = None,
 ) -> TimesheetEntry | None:
-    _check_period_lock(db, employee_id, work_date)
+    _check_period_lock(db, employee_id, work_date, position_id)
     result = _upsert_cell_no_commit(
         db, actor, employee_id, work_date, company_id, hours, position_id
     )
@@ -233,7 +241,7 @@ def upsert_cells_batch(
     """
     # Check period lock for all cells first
     for cell in cells:
-        _check_period_lock(db, cell[0], cell[1])
+        _check_period_lock(db, cell[0], cell[1], cell[4] if len(cell) > 4 else None)
 
     results = []
     for cell in cells:
