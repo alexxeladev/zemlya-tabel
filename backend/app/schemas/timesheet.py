@@ -16,6 +16,9 @@ class TimesheetEntryRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     employee_id: int
+    # Рабочее место, на которое отработаны часы (task_positions ч.A). NULL —
+    # строка заведена до появления позиций, относится к основной.
+    position_id: int | None = None
     work_date: date
     company_id: int
     hours: int
@@ -23,6 +26,9 @@ class TimesheetEntryRead(BaseModel):
 
 class TimesheetCellInput(BaseModel):
     employee_id: int
+    # Не задано — часы уходят на ОСНОВНУЮ позицию (выбор рабочего места в
+    # табеле появится в части B).
+    position_id: int | None = None
     work_date: date
     company_id: int
     hours: int = Field(ge=0, le=24)

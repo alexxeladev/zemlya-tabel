@@ -173,12 +173,22 @@ def compute_payout(
 # ── DB-aware helpers ───────────────────────────────────────────────────────────
 
 def load_adjustment_sums(
-    db: Session, emp_ids: list[int], year: int, month: int
-) -> dict[int, dict[str, Decimal]]:
-    """{employee_id: {"premium": Σ, "kpi": Σ, "advance": Σ}} за период."""
-    result: dict[int, dict[str, Decimal]] = {}
+    db: Session,
+    emp_ids: list[int],
+    year: int,
+    month: int,
+    primary_position_ids: dict[int, int | None] | None = None,
+) -> dict[int, dict[int | None, dict[str, Decimal]]]:
+    """{employee_id: {position_id: {"premium": Σ, "kpi": Σ, "advance": Σ}}} за период.
+
+    Премии/KPI/аванс адресованы конкретной позиции (task_positions ч.A). Записи
+    с `position_id IS NULL` заведены до появления позиций и относятся к основной —
+    иначе деньги пропали бы из расчёта после миграции.
+    """
+    result: dict[int, dict[int | None, dict[str, Decimal]]] = {}
     if not emp_ids:
         return result
+    primary_position_ids = primary_position_ids or {}
     rows = (
         db.query(EmployeeAdjustment)
         .filter(
@@ -189,8 +199,11 @@ def load_adjustment_sums(
         .all()
     )
     for r in rows:
-        bucket = result.setdefault(
-            r.employee_id, {"premium": _ZERO, "kpi": _ZERO, "advance": _ZERO}
+        position_id = r.position_id
+        if position_id is None:
+            position_id = primary_position_ids.get(r.employee_id)
+        bucket = result.setdefault(r.employee_id, {}).setdefault(
+            position_id, {"premium": _ZERO, "kpi": _ZERO, "advance": _ZERO}
         )
         amount = r.amount if isinstance(r.amount, Decimal) else Decimal(str(r.amount))
         bucket[r.kind] = bucket.get(r.kind, _ZERO) + amount

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from decimal import ROUND_HALF_EVEN, Decimal
+from typing import Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
+from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
 from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.dashboard import (
@@ -30,9 +32,9 @@ from app.schemas.dashboard import (
 )
 from app.services.absences import get_month_absences, sick_days_used_before_month
 from app.services.org_access import managed_department_ids
-from app.services.payroll import EmployeePayroll, calculate_employee_payroll
+from app.services.payroll import EmployeePayroll, calculate_position_payroll
 from app.services.payroll_statement import build_payroll_summary
-from app.services.positions import in_department
+from app.services.positions import entries_by_position, in_department, visible_positions
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 
 _ZERO = Decimal("0")
@@ -42,7 +44,9 @@ _PERCENT_Q = Decimal("0.1")
 TREND_MONTHS = 6
 
 # (employee, payroll-результат) за один месяц
-_MonthResults = list[tuple[Employee, EmployeePayroll]]
+# Строка результата — (сотрудник, ПОЗИЦИЯ, расчёт): у совместителя человек
+# встречается столько раз, сколько у него рабочих мест (task_positions ч.A).
+_MonthResults = list[tuple[Employee, Optional[EmployeePosition], EmployeePayroll]]
 
 
 # ── Помесячный расчёт (reuse payroll) ─────────────────────────────────────────
@@ -89,26 +93,33 @@ def _month_payrolls(
         db, [e.id for e in employees], year, month, calendar_data
     )
 
-    return [
-        (
-            emp,
-            calculate_employee_payroll(
-                emp, by_emp.get(emp.id, []), calendar_data, year, month, companies_by_id,
-                absences=absences_by_emp.get(emp.id, []),
-                sick_days_used_before=sick_used_before.get(emp.id, 0),
-            ),
-        )
-        for emp in employees
-    ]
+    # По одной строке на ПОЗИЦИЮ (task_positions ч.A) — так же, как считает
+    # /payroll: иначе у совместителя ФОТ дашборда разошёлся бы с табелем.
+    results: _MonthResults = []
+    for emp in employees:
+        by_position = entries_by_position(emp, by_emp.get(emp.id, []))
+        for position in visible_positions(emp, actor) or [emp.primary_position]:
+            results.append((
+                emp,
+                position,
+                calculate_position_payroll(
+                    emp, position,
+                    by_position.get(position.id, []) if position else [],
+                    calendar_data, year, month, companies_by_id,
+                    absences=absences_by_emp.get(emp.id, []),
+                    sick_days_used_before=sick_used_before.get(emp.id, 0),
+                ),
+            ))
+    return results
 
 
 # ── Блок 1: часы ──────────────────────────────────────────────────────────────
 
 def _sum_hours(results: _MonthResults) -> tuple[Decimal, Decimal | None, Decimal]:
     """(отработано, норма | None, переработка) по списку результатов."""
-    total = sum((p.total_hours for _, p in results), _ZERO)
-    overtime = sum((p.overtime_hours for _, p in results), _ZERO)
-    norms = [p.norm_hours for _, p in results if p.norm_hours is not None]
+    total = sum((p.total_hours for *_, p in results), _ZERO)
+    overtime = sum((p.overtime_hours for *_, p in results), _ZERO)
+    norms = [p.norm_hours for *_, p in results if p.norm_hours is not None]
     norm = sum(norms, _ZERO) if norms else None
     return total, norm, overtime
 
@@ -127,8 +138,11 @@ def _group_by_department(
     db: Session, results: _MonthResults
 ) -> list[tuple[int | None, str, _MonthResults]]:
     by_dept: dict[int | None, _MonthResults] = {}
-    for emp, p in results:
-        by_dept.setdefault(emp.department_id, []).append((emp, p))
+    for emp, position, p in results:
+        # Группируем по отделу ПОЗИЦИИ: подработка в другом отделе и должна
+        # попасть в тот отдел, а не в отдел основного места работы.
+        dept_id = position.department_id if position is not None else None
+        by_dept.setdefault(dept_id, []).append((emp, position, p))
 
     dept_ids = [d for d in by_dept if d is not None]
     names: dict[int, str] = {}
@@ -160,13 +174,13 @@ def _hours_by_department(db: Session, results: _MonthResults) -> list[Department
 
 def _payroll_totals(results: _MonthResults, rounding_effect: Decimal) -> PayrollTotalsRead:
     return PayrollTotalsRead(
-        total=sum((p.total_amount for _, p in results), _ZERO),
-        base=sum((p.base_amount for _, p in results), _ZERO),
-        overtime=sum((p.overtime_amount for _, p in results), _ZERO),
-        off_schedule=sum((p.off_schedule_amount for _, p in results), _ZERO),
-        holiday=sum((p.holiday_amount for _, p in results), _ZERO),
+        total=sum((p.total_amount for *_, p in results), _ZERO),
+        base=sum((p.base_amount for *_, p in results), _ZERO),
+        overtime=sum((p.overtime_amount for *_, p in results), _ZERO),
+        off_schedule=sum((p.off_schedule_amount for *_, p in results), _ZERO),
+        holiday=sum((p.holiday_amount for *_, p in results), _ZERO),
         rounding_effect=rounding_effect,
-        non_calculable_employees=sum(1 for _, p in results if not p.is_calculable),
+        non_calculable_employees=sum(1 for *_, p in results if not p.is_calculable),
     )
 
 
@@ -189,7 +203,7 @@ def _payroll_by_department(db: Session, results: _MonthResults) -> list[Departme
     for dept_id, name, items in _group_by_department(db, results):
         out.append(DepartmentPayrollRead(
             department_id=dept_id, department_name=name,
-            total=sum((p.total_amount for _, p in items), _ZERO),
+            total=sum((p.total_amount for *_, p in items), _ZERO),
         ))
     return out
 
@@ -198,7 +212,7 @@ def _payroll_by_company(
     results: _MonthResults, companies_by_id: dict[int, tuple[str, str]]
 ) -> list[CompanyPayrollRead]:
     totals: dict[int, Decimal] = {}
-    for _, p in results:
+    for *_, p in results:
         for bd in p.breakdown_by_company:
             totals[bd.company_id] = totals.get(bd.company_id, _ZERO) + bd.total
     out = []
@@ -321,7 +335,7 @@ def _trend(
         )
         total, _, overtime = _sum_hours(results)
         payroll_total = (
-            sum((p.total_amount for _, p in results), _ZERO) if include_money else None
+            sum((p.total_amount for *_, p in results), _ZERO) if include_money else None
         )
         points.append(TrendPointRead(
             year=y, month=m,

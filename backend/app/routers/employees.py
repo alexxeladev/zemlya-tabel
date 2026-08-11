@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -12,6 +13,12 @@ from app.core.security import hash_password
 from app.database import get_db
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
+from app.models.positions import (
+    PAY_TYPE_HOURLY,
+    PAY_TYPE_PER_SHIFT,
+    PAY_TYPE_SALARY,
+    EmployeePosition,
+)
 from app.schemas.employee import (
     DismissalRequest,
     EmployeeAccessGrant,
@@ -47,6 +54,14 @@ _admin_only = require_role("admin")
 
 _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+# Тип оплаты → поле, в котором лежит его база. Поля взаимоисключающие: при смене
+# типа чужие гасятся, иначе в карточке остаётся мусор от прошлого типа.
+_PAY_TYPE_BASE_FIELD = {
+    PAY_TYPE_SALARY: "rate",
+    PAY_TYPE_PER_SHIFT: "shift_rate",
+    PAY_TYPE_HOURLY: "hour_rate",
+}
+
 
 def _to_dict(emp: Employee) -> dict:
     return {
@@ -60,6 +75,7 @@ def _to_dict(emp: Employee) -> dict:
         "pay_type": emp.pay_type,
         "rate": str(emp.rate) if emp.rate is not None else None,
         "shift_rate": str(emp.shift_rate) if emp.shift_rate is not None else None,
+        "hour_rate": str(emp.hour_rate) if emp.hour_rate is not None else None,
         "weekend_pay_type": emp.weekend_pay_type,
         "weekend_coefficient": str(emp.weekend_coefficient) if emp.weekend_coefficient is not None else None,
         "weekend_fixed_rate": str(emp.weekend_fixed_rate) if emp.weekend_fixed_rate is not None else None,
@@ -197,12 +213,12 @@ def update_employee(
     before = _to_dict(emp)
     for field, value in data.items():
         setattr(emp, field, value)
-    # Смена типа оплаты гасит поле чужого типа: у окладника не должно остаться
-    # ставки за смену, у посменного — оклада (иначе расчёт молча возьмёт не то).
-    if emp.pay_type == "per_shift":
-        emp.rate = None
-    else:
-        emp.shift_rate = None
+    # Смена типа оплаты гасит поля чужих типов: у окладника не должно остаться
+    # ставки за смену или за час, у посменного — оклада (иначе расчёт молча
+    # возьмёт не ту базу).
+    for pay_type, base_field in _PAY_TYPE_BASE_FIELD.items():
+        if emp.pay_type != pay_type:
+            setattr(emp, base_field, None)
     db.flush()
     log_action(db, actor, "employee", emp.id, "update", before=before, after=_to_dict(emp))
     db.commit()
@@ -391,23 +407,36 @@ def revoke_access(
 
 # ── Распределение по компаниям по умолчанию (задача 3.11b п.1) ──────────────────
 
-def _shares_response(db: Session, emp: Employee) -> EmployeeSharesRead:
-    """Своё распределение сотрудника + дефолт его отдела (наследуется, если своего
-    нет — task_distribution_v2 ч.3, каскад)."""
-    rows = (
-        db.query(EmployeeCompanyShare)
+def _shares_response(
+    db: Session, emp: Employee, position: EmployeePosition | None = None
+) -> EmployeeSharesRead:
+    """Распределение РАБОЧЕГО МЕСТА + дефолт его отдела (наследуется, если своего
+    нет — task_distribution_v2 ч.3, каскад).
+
+    Без явной позиции берётся основная — так же, как было до совместительства.
+    """
+    position = position or emp.primary_position
+    position_id = position.id if position else None
+    rows = [
+        r
+        for r in db.query(EmployeeCompanyShare)
         .filter(EmployeeCompanyShare.employee_id == emp.id)
         .all()
-    )
+        # Строки без позиции заведены до неё и относятся к основной.
+        if r.position_id == position_id
+        or (r.position_id is None and position is not None and position.is_primary)
+    ]
     percent_sum = sum((r.percent for r in rows), Decimal("0"))
-    dept_map = load_department_shares(db, [emp.department_id] if emp.department_id else [])
-    dept_shares = dept_map.get(emp.department_id, {}) if emp.department_id else {}
+    dept_id = position.department_id if position else None
+    dept_map = load_department_shares(db, [dept_id] if dept_id else [])
+    dept_shares = dept_map.get(dept_id, {}) if dept_id else {}
     return EmployeeSharesRead(
         employee_id=emp.id,
+        position_id=position_id,
         shares=[CompanyShareInput(company_id=r.company_id, percent=r.percent) for r in rows],
         percent_sum=percent_sum,
-        department_id=emp.department_id,
-        department_name=emp.department.name if emp.department else None,
+        department_id=dept_id,
+        department_name=position.department.name if position and position.department else None,
         department_shares=[
             CompanyShareInput(company_id=cid, percent=pct)
             for cid, pct in sorted(dept_shares.items())
@@ -497,14 +526,24 @@ def set_company_shares(
         code = status.HTTP_404_NOT_FOUND if e.not_found else status.HTTP_422_UNPROCESSABLE_ENTITY
         raise HTTPException(status_code=code, detail=str(e)) from e
 
+    # Проценты задаются РАБОЧЕМУ МЕСТУ (task_positions ч.A); не указано какому —
+    # основному, как было до совместительства.
+    position = emp.position_by_id(payload.position_id)
+    position_id = position.id if position else None
     db.query(EmployeeCompanyShare).filter(
-        EmployeeCompanyShare.employee_id == emp_id
+        EmployeeCompanyShare.employee_id == emp_id,
+        or_(
+            EmployeeCompanyShare.position_id == position_id,
+            EmployeeCompanyShare.position_id.is_(None),
+        ),
     ).delete(synchronize_session=False)
     for s in positive:
         db.add(EmployeeCompanyShare(
-            employee_id=emp_id, company_id=s.company_id, percent=s.percent,
+            employee_id=emp_id, position_id=position_id,
+            company_id=s.company_id, percent=s.percent,
         ))
     log_action(db, actor, "employee_company_shares", emp_id, "set",
-               after={s.company_id: str(s.percent) for s in positive})
+               after={"position_id": position_id,
+                      "shares": {s.company_id: str(s.percent) for s in positive}})
     db.commit()
-    return _shares_response(db, emp)
+    return _shares_response(db, emp, position)
