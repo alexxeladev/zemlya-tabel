@@ -144,7 +144,12 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
         if r.pay_type == "per_shift":
             note = (
                 (note + "; " if note else "")
-                + f"посменно: {r.worked_shifts} смен × ставку"
+                + f"посменно: {r.base_shifts} смен × ставку"
+                + (
+                    f" (+{r.worked_shifts - r.base_shifts} смен "
+                    "в выходные/праздники по коэффициенту)"
+                    if r.worked_shifts > r.base_shifts else ""
+                )
             )
         source_label = _SOURCE_LABELS.get(r.distribution_source)
         if source_label and r.distribution:

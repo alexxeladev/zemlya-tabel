@@ -75,19 +75,26 @@ def _distribute_whole_rubles(
     return parts
 
 
-def _extra_hours_pay(
+def _extra_pay(
     hours: Decimal,
-    hourly_rate: Decimal,
+    units: Decimal,
+    unit_rate: Decimal,
     pay_type: str | None,
     coefficient: Decimal | None,
     fixed_rate: Decimal | None,
     default_coefficient: Decimal,
 ) -> Decimal:
     """
-    Оплата часов повышенной категории (вне графика / праздничных) по настройкам
+    Оплата повышенной категории (вне графика / праздничных) по настройкам
     конкретной позиции:
-      - coefficient: часы × hourly_rate × коэффициент (0 = не оплачивается)
-      - fixed_rate:  часы × фикс_ставка (не зависит от оклада)
+      - coefficient: `units × unit_rate × коэффициент` (0 = не оплачивается).
+        Единица зависит от типа оплаты: у окладной это ЧАС (units = часы,
+        unit_rate = часовая ставка), у посменной — целая СМЕНА (units = смены,
+        unit_rate = ставка за смену): смена в выходной стоит ставку ×
+        коэффициент независимо от того, сколько часов она длилась
+        (task_shiftpay_addons).
+      - fixed_rate: `часы × фикс_ставка`. Фикс-ставка задаётся ЗА ЧАС и от
+        оклада/ставки смены не зависит — считается по часам при любом типе.
     """
     if hours <= _ZERO:
         return _ZERO
@@ -97,17 +104,23 @@ def _extra_hours_pay(
             return _ZERO
         return hours * Decimal(str(fixed_rate))
 
+    if units <= _ZERO:
+        return _ZERO
     coeff = default_coefficient if coefficient is None else Decimal(str(coefficient))
-    return hours * hourly_rate * coeff
+    return units * unit_rate * coeff
 
 
-def _off_schedule_pay(position, hours: Decimal, hourly_rate: Decimal) -> Decimal:
+def _off_schedule_pay(
+    position, hours: Decimal, units: Decimal, unit_rate: Decimal
+) -> Decimal:
     """
-    Оплата часов ВНЕ ГРАФИКА — выход в свой законный выходной по графику
+    Оплата ВНЕ ГРАФИКА — выход в свой законный выходной по графику
     (правка 3.9-3, триггер уточнён в task_schedule_based_pay). Дефолт 1.5.
+    Окладной/почасовой передают часы и часовую ставку, посменной — смены и
+    ставку за смену.
     """
-    return _extra_hours_pay(
-        hours, hourly_rate,
+    return _extra_pay(
+        hours, units, unit_rate,
         getattr(position, "weekend_pay_type", None),
         getattr(position, "weekend_coefficient", None),
         getattr(position, "weekend_fixed_rate", None),
@@ -115,13 +128,15 @@ def _off_schedule_pay(position, hours: Decimal, hourly_rate: Decimal) -> Decimal
     )
 
 
-def _holiday_pay(position, hours: Decimal, hourly_rate: Decimal) -> Decimal:
+def _holiday_pay(
+    position, hours: Decimal, units: Decimal, unit_rate: Decimal
+) -> Decimal:
     """
-    Оплата ПРАЗДНИЧНЫХ часов — работа в нерабочий праздничный день календаря.
+    Оплата ПРАЗДНИЧНЫХ — работа в нерабочий праздничный день календаря.
     Настройка отдельная от выходных (задаётся в позиции), дефолт — 1.5.
     """
-    return _extra_hours_pay(
-        hours, hourly_rate,
+    return _extra_pay(
+        hours, units, unit_rate,
         getattr(position, "holiday_pay_type", None),
         getattr(position, "holiday_coefficient", None),
         getattr(position, "holiday_fixed_rate", None),
@@ -130,7 +145,11 @@ def _holiday_pay(position, hours: Decimal, hourly_rate: Decimal) -> Decimal:
 
 
 def is_per_shift(position) -> bool:
-    """Посменная оплата: оклада нет, база = отработанных смен × ставка за смену."""
+    """
+    Посменная оплата: оклада нет, база = смен плановых дней графика × ставка.
+    Смены в выходной/праздник и часы сверх смены оплачиваются сверх базы
+    (task_shiftpay_addons).
+    """
     return getattr(position, "pay_type", PAY_TYPE_SALARY) == PAY_TYPE_PER_SHIFT
 
 
@@ -152,6 +171,27 @@ def notional_salary(position, norm_shifts: int | None) -> Decimal | None:
     if shift_rate is None or not norm_shifts:
         return None
     return Decimal(str(shift_rate)) * Decimal(norm_shifts)
+
+
+def per_shift_hourly_rate(position, schedule) -> Decimal | None:
+    """
+    Часовая ставка ПОСМЕННОЙ позиции = `ставка_за_смену / часы_смены`
+    (task_shiftpay_addons). Нужна для переработки: часы сверх дневной нормы
+    оплачиваются по часам, а не сменами.
+
+    Часы смены — `hours_per_shift` графика позиции (6/1 → 9, 2/2 → 12), БЕЗ
+    сокращения предпраздничного дня: это ставка сотрудника, а не свойство
+    конкретной даты. Не путать с `EmployeePayroll.hourly_rate` — там условный
+    оклад / норма часов, от которого считаются отпускные и больничные.
+
+    None — ставка за смену или график не заданы (такая позиция и так не
+    считается: `schedule_issue` / «Не задана ставка за смену»).
+    """
+    shift_rate = getattr(position, "shift_rate", None)
+    hours = getattr(schedule, "hours_per_shift", None) if schedule is not None else None
+    if shift_rate is None or not hours:
+        return None
+    return Decimal(str(shift_rate)) / Decimal(str(hours))
 
 
 def _overtime_coeff(position) -> Decimal:
@@ -280,6 +320,11 @@ class EmployeePayroll:
     hour_rate: Decimal | None
     worked_shifts: int
     norm_shifts: int | None
+    # Смены, вошедшие в БАЗУ посменного (плановые дни графика). Смены в свой
+    # выходной и в праздник сюда НЕ входят — они оплачены по коэффициенту
+    # (task_shiftpay_addons), поэтому `base_amount = base_shifts × shift_rate`,
+    # а не `worked_shifts × shift_rate`.
+    base_shifts: int
 
     total_hours: Decimal
     norm_hours: Decimal | None
@@ -524,6 +569,8 @@ def calculate_position_payroll(
     hour_rate: Decimal | None = None
     norm_shifts: int | None = norm_days if is_calculable else None
     worked_shifts = fact_days
+    # Смен в базе посменного (плановых) — считается в ветке расчёта ниже.
+    base_shifts = 0
 
     rate = position.rate if position is not None else None
     if per_shift:
@@ -603,16 +650,34 @@ def calculate_position_payroll(
             # денег, код отсутствия остаётся справочной отметкой в табеле.
         elif per_shift and shift_rate is not None:
             # ── Посменная ─────────────────────────────────────────────────────
-            # Каждая отработанная смена стоит ставку, где бы она ни выпала.
-            # Поэтому нет ни переработки, ни доплат за выход вне графика и в
-            # праздник — доп. смена это просто ещё одна смена × ставка, без ×1,5.
-            hourly_rate = rate / norm_hours
-            base_amount = shift_rate * Decimal(worked_shifts)
-            overtime_hours = _ZERO
-            total_off_schedule_hours = _ZERO
-            total_holiday_hours = _ZERO
-            company_off_schedule_hours = {cid: _ZERO for cid in company_hours}
-            company_holiday_hours = {cid: _ZERO for cid in company_hours}
+            # База — смены ПЛАНОВЫХ дней графика × ставка за смену.
+            # Сверх базы (task_shiftpay_addons, разворот прежнего «надбавок нет»):
+            #   - смена в свой выходной / праздник — та же ставка, но с
+            #     коэффициентом позиции, и применяется к ЦЕЛОЙ смене, а не к часам;
+            #   - часы сверх дневной нормы смены — переработка ПО ДНЯМ, как у
+            #     окладной, по часовой ставке `ставка_смены / часы_смены`.
+            # Категории дня — те же три (`day_category`), что у всех типов оплаты,
+            # поэтому переработка считается только по плановым дням: часы выходной
+            # смены уже оплачены целиком по коэффициенту.
+            hourly_rate = rate / norm_hours  # условный оклад / норма — для отсутствий
+            shift_hourly_rate = per_shift_hourly_rate(position, schedule) or _ZERO
+            base_shifts = len(planned_hours_by_date)
+            base_amount = shift_rate * Decimal(base_shifts)
+            overtime_amount = (
+                overtime_hours * shift_hourly_rate * _overtime_coeff(position)
+            )
+            off_schedule_shifts = Decimal(sum(
+                1 for c in category_by_date.values() if c == DAY_OFF_SCHEDULE
+            ))
+            holiday_shifts = Decimal(sum(
+                1 for c in category_by_date.values() if c == DAY_HOLIDAY
+            ))
+            off_schedule_amount = _off_schedule_pay(
+                position, total_off_schedule_hours, off_schedule_shifts, shift_rate
+            )
+            holiday_amount = _holiday_pay(
+                position, total_holiday_hours, holiday_shifts, shift_rate
+            )
         else:
             # ── Окладная ──────────────────────────────────────────────────────
             # Оклад ПРОПОРЦИОНАЛЬНО отработанному: зачётные часы графика / норма.
@@ -623,10 +688,13 @@ def calculate_position_payroll(
             # Переработка: (оклад/норма) × часы × коэффициент позиции (0/1/1.5).
             overtime_amount = overtime_hours * hourly_rate * _overtime_coeff(position)
             # Вне графика и праздничные — по настройкам позиции.
+            # Единица повышенной категории у окладника — ЧАС.
             off_schedule_amount = _off_schedule_pay(
-                position, total_off_schedule_hours, hourly_rate
+                position, total_off_schedule_hours, total_off_schedule_hours, hourly_rate
             )
-            holiday_amount = _holiday_pay(position, total_holiday_hours, hourly_rate)
+            holiday_amount = _holiday_pay(
+                position, total_holiday_hours, total_holiday_hours, hourly_rate
+            )
 
         if not hourly:
             # Отпуск и больничный — отдельные начисления по «дни × 8», у окладной
@@ -711,6 +779,7 @@ def calculate_position_payroll(
         hour_rate=hour_rate,
         worked_shifts=worked_shifts,
         norm_shifts=norm_shifts,
+        base_shifts=base_shifts,
         total_hours=total_hours,
         norm_hours=norm_hours,
         delta_hours=delta_hours,

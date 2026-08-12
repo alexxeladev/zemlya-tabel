@@ -565,6 +565,8 @@ class TestPayTypes:
         p = self._position_payroll(db_session, emp, db_session.query(TimesheetEntry).all())
         assert p.pay_type == PAY_TYPE_PER_SHIFT
         assert p.worked_shifts == 10
+        # Все 10 смен плановые → вся сумма в базе (task_shiftpay_addons)
+        assert p.base_shifts == 10
         assert p.base_amount == Decimal("30000")
 
     def test_hourly_base_and_overtime(self, db_session: Session, schedule_5_2, companies):

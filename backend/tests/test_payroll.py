@@ -1211,9 +1211,10 @@ class TestHolidayPay:
 
 class TestPerShiftPay:
     """
-    Посменная оплата (task_search_and_shiftpay): оклада нет, база = число
-    отработанных смен × ставка. Меняется ТОЛЬКО база — переработки и доплат
-    за выход вне графика/в праздник у посменного нет, всё остальное общее.
+    Посменная оплата (task_search_and_shiftpay + task_shiftpay_addons): оклада
+    нет, база = смены плановых дней графика × ставка. Сверх базы — переработка
+    по дням (часовая ставка = ставка_смены / часы_смены) и смены в выходной/
+    праздник по коэффициенту позиции (ставка × коэф. за ЦЕЛУЮ смену).
 
     MAY_REAL: 1 мая — праздник-пятница, Сб/Вс нерабочие; для 5/2 по 8 ч
     норма 20 смен / 160 ч.
@@ -1261,8 +1262,12 @@ class TestPerShiftPay:
         assert p.is_calculable is False
         assert "ставка за смену" in (p.reason_if_not_calculable or "")
 
-    def test_extra_shift_off_schedule_is_just_another_shift(self):
-        """AC6: доп. смена в свой выходной = ещё одна ставка, без ×1.5."""
+    def test_shift_in_own_day_off_is_paid_with_coefficient(self):
+        """
+        task_shiftpay_addons: смена в свой выходной по графику оплачивается
+        ставкой × коэффициент выходных (дефолт 1.5), а не просто ставкой.
+        Оплачивается ЦЕЛАЯ смена, часы в базу оклада не идут.
+        """
         base = calculate_employee_payroll(
             self._emp(), self._entries(self.WORKDAYS), MAY_REAL, 2026, 5
         )
@@ -1271,30 +1276,120 @@ class TestPerShiftPay:
             self._emp(), self._entries(self.WORKDAYS + [2]), MAY_REAL, 2026, 5
         )
         assert extra.worked_shifts == base.worked_shifts + 1
-        assert extra.base_amount == base.base_amount + self.RATE
-        assert extra.off_schedule_hours == Decimal("0")
-        assert extra.off_schedule_amount == Decimal("0")
-        assert extra.total_amount == base.total_amount + self.RATE
+        # База не выросла: суббота — не плановая смена
+        assert extra.base_amount == base.base_amount
+        assert extra.off_schedule_hours == Decimal("8")
+        assert extra.off_schedule_amount == self.RATE * Decimal("1.5")
+        assert extra.total_amount == base.total_amount + self.RATE * Decimal("1.5")
 
-    def test_holiday_shift_is_just_another_shift(self):
-        """Смена в праздник тоже стоит ровно ставку — без удвоения."""
+    def test_off_schedule_shift_pays_whole_shift_regardless_of_hours(self):
+        """Коэффициент применяется к смене целиком: 4 часа в выходной стоят
+        столько же, сколько 8 — это одна смена × ставка × коэф."""
+        short = calculate_employee_payroll(
+            self._emp(), self._entries([2], hours=Decimal("4")), MAY_REAL, 2026, 5
+        )
+        full = calculate_employee_payroll(
+            self._emp(), self._entries([2], hours=Decimal("8")), MAY_REAL, 2026, 5
+        )
+        assert short.off_schedule_amount == full.off_schedule_amount
+        assert short.off_schedule_amount == self.RATE * Decimal("1.5")
+
+    def test_holiday_shift_is_paid_with_coefficient(self):
+        """Смена в праздник — ставка × коэффициент праздничных (дефолт 1.5)."""
         p = calculate_employee_payroll(
             self._emp(), self._entries(self.WORKDAYS + [1]), MAY_REAL, 2026, 5
         )
-        assert p.holiday_hours == Decimal("0")
-        assert p.holiday_amount == Decimal("0")
-        assert p.base_amount == self.RATE * Decimal(len(self.WORKDAYS) + 1)
+        assert p.holiday_hours == Decimal("8")
+        assert p.holiday_amount == self.RATE * Decimal("1.5")
+        # В базу праздничная смена не попадает — она оплачена по коэффициенту
+        assert p.base_amount == self.RATE * Decimal(len(self.WORKDAYS))
 
-    def test_no_overtime(self):
-        """Смена длиннее нормы часов переработки не даёт — платим за смену."""
+    def test_weekend_coefficient_from_position_card(self):
+        """Коэффициент берётся из карточки: 2.0 вместо дефолтных 1.5."""
+        emp = self._emp()
+        emp.weekend_coefficient = Decimal("2")
+        p = calculate_employee_payroll(
+            emp, self._entries([2]), MAY_REAL, 2026, 5
+        )
+        assert p.off_schedule_amount == self.RATE * Decimal("2")
+
+    def test_weekend_fixed_rate_stays_hourly(self):
+        """Фикс-ставка выходных задаётся ЗА ЧАС — считается по часам и у
+        посменного (иначе смена стоила бы одну часовую ставку)."""
+        emp = self._emp()
+        emp.weekend_pay_type = "fixed_rate"
+        emp.weekend_fixed_rate = Decimal("500")
+        p = calculate_employee_payroll(
+            emp, self._entries([2]), MAY_REAL, 2026, 5
+        )
+        assert p.off_schedule_amount == Decimal("4000")  # 8 ч × 500
+
+    def test_overtime_is_counted_per_day_by_hourly_rate(self):
+        """
+        task_shiftpay_addons: часы сверх дневной нормы смены — переработка,
+        по дням. 5 смен по 12 ч при смене 8 ч → 20 ч сверх,
+        часовая = 2500/8 = 312.5, коэф. 1.5.
+        """
         p = calculate_employee_payroll(
             self._emp(), self._entries(self.WORKDAYS[:5], hours=Decimal("12")),
             MAY_REAL, 2026, 5,
         )
         assert p.total_hours == Decimal("60")
-        assert p.overtime_hours == Decimal("0")
-        assert p.overtime_amount == Decimal("0")
+        assert p.overtime_hours == Decimal("20")
         assert p.base_amount == self.RATE * Decimal(5)
+        assert p.overtime_amount == Decimal("20") * Decimal("312.5") * Decimal("1.5")
+        assert p.total_amount == p.base_amount + p.overtime_amount
+
+    def test_overtime_coefficient_zero_disables_it(self):
+        """Коэффициент переработки 0 из карточки → переработка не оплачивается."""
+        emp = self._emp()
+        emp.overtime_coefficient = Decimal("0")
+        p = calculate_employee_payroll(
+            emp, self._entries(self.WORKDAYS[:5], hours=Decimal("12")),
+            MAY_REAL, 2026, 5,
+        )
+        assert p.overtime_hours == Decimal("20")
+        assert p.overtime_amount == Decimal("0")
+
+    def test_underwork_does_not_offset_another_days_overtime(self):
+        """Переработка по дням: короткая смена не гасит длинную (как у окладной)."""
+        entries = (
+            self._entries([self.WORKDAYS[0]], hours=Decimal("12"))
+            + self._entries([self.WORKDAYS[1]], hours=Decimal("4"))
+        )
+        p = calculate_employee_payroll(self._emp(), entries, MAY_REAL, 2026, 5)
+        assert p.overtime_hours == Decimal("4")
+
+    def test_hourly_rate_comes_from_schedule_shift_hours(self):
+        """
+        AC3/AC4: часовая ставка = ставка смены / hours_per_shift графика.
+        6/1 по 9 ч, ставка 4000 → 444.44…; работа в Вс (выходной по 6/1) →
+        4000 × 1.5 = 6000; 2 часа переработки → 2 × 4000/9 × 1.5.
+        """
+        from app.services.payroll import per_shift_hourly_rate
+
+        emp = self._emp(shift_rate=Decimal("4000"))
+        emp.schedule = Schedule(name="6/1", hours_per_shift=9, schedule_type="standard")
+        emp.schedule.id = 2
+
+        expected_hourly = Decimal("4000") / Decimal("9")
+        assert per_shift_hourly_rate(emp.primary_position, emp.schedule) == expected_hourly
+        assert expected_hourly.quantize(Decimal("0.01")) == Decimal("444.44")
+
+        # 4 мая — понедельник (плановая смена 6/1), 11 ч → 2 ч переработки;
+        # 3 мая — воскресенье, выходной по графику 6/1.
+        entries = (
+            self._entries([4], hours=Decimal("11")) + self._entries([3], hours=Decimal("9"))
+        )
+        p = calculate_employee_payroll(emp, entries, MAY_REAL, 2026, 5)
+
+        assert p.off_schedule_hours == Decimal("9")
+        assert p.off_schedule_amount == Decimal("6000")          # 4000 × 1.5
+        assert p.overtime_hours == Decimal("2")
+        assert p.overtime_amount == (
+            Decimal("2") * expected_hourly * Decimal("1.5")
+        ).quantize(Decimal("1"))
+        assert p.base_amount == Decimal("4000")                  # одна плановая смена
 
     def test_notional_salary_for_absences(self):
         """
