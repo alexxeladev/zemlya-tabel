@@ -353,7 +353,11 @@ export function PayrollPage() {
                       className="px-2 py-1.5 text-center text-gray-700"
                       title={
                         row.pay_type === 'per_shift'
-                          ? `Посменно: ${row.worked_shifts} смен × ставку; условный оклад для отсутствий ${formatMoney(row.rate)}`
+                          ? `Посменно: ${row.base_shifts} смен × ставку` +
+                            (row.worked_shifts > row.base_shifts
+                              ? `; ещё ${row.worked_shifts - row.base_shifts} смен в выходные/праздники — по коэффициенту`
+                              : '') +
+                            `; условный оклад для отсутствий ${formatMoney(row.rate)}`
                           : undefined
                       }
                     >
