@@ -1,4 +1,6 @@
-export type UserRole = 'admin' | 'manager' | 'accountant' | 'employee'
+/** timekeeper — табельщик: ведёт время своих отделов, финансов не видит
+ *  (task_timekeeper_role). По правам между employee и manager. */
+export type UserRole = 'admin' | 'manager' | 'accountant' | 'timekeeper' | 'employee'
 export type WeekendPayType = 'coefficient' | 'fixed_rate'
 
 export interface CompanyBreakdown {
@@ -403,12 +405,14 @@ export interface Department {
   is_active: boolean
 }
 
-/** Менеджер отдела — краткая карточка (task_org_structure ч.2). */
+/** Руководитель или табельщик отдела — краткая карточка (task_org_structure ч.2,
+ *  task_timekeeper_role). Связь одна, различает их `role`. */
 export interface DepartmentManager {
   id: number
   full_name: string
   position: string | null
   email: string | null
+  role: UserRole | null
 }
 
 export interface DepartmentManagers {
