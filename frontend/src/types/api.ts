@@ -109,6 +109,8 @@ export interface CompanyShare {
 
 export interface EmployeeShares {
   employee_id: number
+  /** рабочее место, к которому относятся проценты (null — основное) */
+  position_id: number | null
   shares: CompanyShare[]
   percent_sum: string
   // Дефолт отдела — наследуется, если своего распределения нет (каскад, ч.3)
@@ -441,7 +443,56 @@ export interface Company {
   is_active: boolean
 }
 
-export type PayType = 'salary' | 'per_shift'
+/** Тип оплаты позиции: оклад / смены × ставка / часы × ставка за час */
+export type PayType = 'salary' | 'per_shift' | 'hourly'
+
+/**
+ * Рабочее место сотрудника (task_positions). У совместителя их несколько:
+ * у каждого свои должность, тип оплаты и база, график, отдел, компания
+ * и коэффициенты. Ровно одно помечено `is_primary`.
+ */
+export interface EmployeePosition {
+  id: number
+  employee_id: number
+  title: string | null
+  /** должность, а без неё — «Основная»/«Совместительство» */
+  display_title: string
+  is_primary: boolean
+  is_active: boolean
+  sort_order: number
+  department_id: number | null
+  schedule_id: number | null
+  company_id: number | null
+  pay_type: PayType
+  rate: string | null
+  shift_rate: string | null
+  hour_rate: string | null
+  weekend_pay_type: WeekendPayType
+  weekend_coefficient: string | null
+  weekend_fixed_rate: string | null
+  holiday_pay_type: WeekendPayType
+  holiday_coefficient: string | null
+  holiday_fixed_rate: string | null
+  overtime_coefficient: string | null
+  has_night_shifts: boolean
+  night_rate: string | null
+  department: Department | null
+  schedule: Schedule | null
+  company: Company | null
+}
+
+/** Поля позиции, которые задаются из карточки (без служебных id). */
+export type EmployeePositionInput = Partial<
+  Pick<
+    EmployeePosition,
+    | 'title' | 'department_id' | 'schedule_id' | 'company_id'
+    | 'pay_type' | 'rate' | 'shift_rate' | 'hour_rate'
+    | 'weekend_pay_type' | 'weekend_coefficient' | 'weekend_fixed_rate'
+    | 'holiday_pay_type' | 'holiday_coefficient' | 'holiday_fixed_rate'
+    | 'overtime_coefficient' | 'has_night_shifts' | 'night_rate'
+    | 'is_active' | 'sort_order'
+  >
+> & { is_primary?: boolean }
 
 export type ScheduleType = 'weekday' | 'cyclic'
 
@@ -489,10 +540,11 @@ export interface Employee {
   department_id: number | null
   schedule_id: number | null
   default_company_id: number | null
-  /** salary — месячный оклад; per_shift — смены × ставка */
+  /** salary — месячный оклад; per_shift — смены × ставка; hourly — часы × ставка */
   pay_type: PayType
   rate: string | null
   shift_rate: string | null
+  hour_rate: string | null
   weekend_pay_type: WeekendPayType
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
@@ -523,6 +575,11 @@ export interface Employee {
    * `department`, где сотрудник числится. Заполнено только у manager.
    */
   managed_department_ids: number[]
+  /**
+   * Рабочие места (task_positions ч.B). Плоские поля выше — это ОСНОВНАЯ
+   * позиция; здесь весь список, включая совместительство.
+   */
+  positions: EmployeePosition[]
 }
 
 // ── Импорт сотрудников из Excel (task_employee_import) ──

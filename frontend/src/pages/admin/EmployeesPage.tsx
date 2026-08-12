@@ -15,7 +15,9 @@ import { listSchedules } from '../../api/schedules'
 import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../hooks/useAuth'
 import { toast } from '../../store/toasts'
-import type { Company, Employee, EmployeeShares, UserRole } from '../../types/api'
+import type {
+  Company, Employee, EmployeePosition, EmployeeShares, UserRole,
+} from '../../types/api'
 import { PageHeader } from '../../components/PageHeader'
 import { Table, Th, Td } from '../../components/Table'
 import { Badge } from '../../components/Badge'
@@ -25,6 +27,7 @@ import { Button } from '../../components/Button'
 import { Select } from '../../components/Select'
 import { SharesEditor } from '../../components/SharesEditor'
 import { EmployeeImportModal } from './EmployeeImportModal'
+import { PositionsEditor } from './PositionsEditor'
 import { ApiError } from '../../api/client'
 import { copyText } from '../../utils/clipboard'
 
@@ -51,9 +54,10 @@ const schema = z.object({
   department_id: z.coerce.number().optional(),
   schedule_id: z.coerce.number().optional(),
   default_company_id: z.coerce.number().optional(),
-  pay_type: z.enum(['salary', 'per_shift']).default('salary'),
+  pay_type: z.enum(['salary', 'per_shift', 'hourly']).default('salary'),
   rate: z.string().optional(),
   shift_rate: z.string().optional(),
+  hour_rate: z.string().optional(),
   weekend_pay_type: z.enum(['coefficient', 'fixed_rate']).default('coefficient'),
   weekend_coefficient: z.string().optional(),
   weekend_fixed_rate: z.string().optional(),
@@ -76,6 +80,28 @@ const schema = z.object({
 
 type FormInput = z.input<typeof schema>
 type FormData = z.output<typeof schema>
+
+// ── Сводка по рабочим местам для списка (task_positions ч.B) ──
+// Отдел и график живут на ПОЗИЦИИ, поэтому у совместителя их может быть
+// несколько. Показываем уникальные значения через запятую.
+
+const activePositionsOf = (e: Employee): EmployeePosition[] =>
+  (e.positions ?? []).filter((p) => p.is_active)
+
+const extraPositions = (e: Employee): number => Math.max(0, activePositionsOf(e).length - 1)
+
+function uniqueNames(e: Employee, pick: (p: EmployeePosition) => string | undefined): string {
+  const names = Array.from(
+    new Set(activePositionsOf(e).map(pick).filter((n): n is string => !!n)),
+  )
+  return names.length ? names.join(', ') : '—'
+}
+
+const deptSummary = (e: Employee): string =>
+  activePositionsOf(e).length ? uniqueNames(e, (p) => p.department?.name) : e.department?.name ?? '—'
+
+const scheduleSummary = (e: Employee): string =>
+  activePositionsOf(e).length ? uniqueNames(e, (p) => p.schedule?.name) : e.schedule?.name ?? '—'
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value)
@@ -139,7 +165,7 @@ export function EmployeesPage() {
       tab_number: '', full_name: '', position: '',
       department_id: isManager() ? (user?.department_id ?? undefined) : undefined,
       schedule_id: undefined, default_company_id: undefined,
-      pay_type: 'salary', rate: '', shift_rate: '',
+      pay_type: 'salary', rate: '', shift_rate: '', hour_rate: '',
       weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
       holiday_pay_type: 'coefficient', holiday_coefficient: '1.5', holiday_fixed_rate: '',
       overtime_coefficient: '1.5',
@@ -162,6 +188,7 @@ export function EmployeesPage() {
       pay_type: e.pay_type ?? 'salary',
       rate: e.rate ?? '',
       shift_rate: e.shift_rate ?? '',
+      hour_rate: e.hour_rate ?? '',
       weekend_pay_type: e.weekend_pay_type ?? 'coefficient',
       weekend_coefficient: e.weekend_coefficient ?? '',
       weekend_fixed_rate: e.weekend_fixed_rate ?? '',
@@ -204,10 +231,11 @@ export function EmployeesPage() {
 
   const onSubmit = async (data: FormData) => {
     try {
-      const payload = {
-        tab_number: data.tab_number || null,
-        full_name: data.full_name,
-        position: data.position || null,
+      // Поля рабочего места (отдел/график/компания/оплата) при СОЗДАНИИ уходят
+      // в основную позицию через compat-аксессоры бэка. При редактировании их
+      // не шлём: там ими управляет PositionsEditor, и стаpые значения формы
+      // затёрли бы только что сохранённую позицию.
+      const positionFields = editTarget ? {} : {
         department_id: data.department_id || null,
         schedule_id: data.schedule_id || null,
         default_company_id: data.default_company_id || null,
@@ -215,6 +243,7 @@ export function EmployeesPage() {
         // Поле чужого типа оплаты не отправляем — бэк его всё равно обнулит.
         rate: data.pay_type === 'salary' ? (data.rate || null) : null,
         shift_rate: data.pay_type === 'per_shift' ? (data.shift_rate || null) : null,
+        hour_rate: data.pay_type === 'hourly' ? (data.hour_rate || null) : null,
         weekend_pay_type: data.weekend_pay_type,
         weekend_coefficient: data.weekend_pay_type === 'coefficient' ? (data.weekend_coefficient || null) : null,
         weekend_fixed_rate: data.weekend_pay_type === 'fixed_rate' ? (data.weekend_fixed_rate || null) : null,
@@ -222,6 +251,13 @@ export function EmployeesPage() {
         holiday_coefficient: data.holiday_pay_type === 'coefficient' ? (data.holiday_coefficient || null) : null,
         holiday_fixed_rate: data.holiday_pay_type === 'fixed_rate' ? (data.holiday_fixed_rate || null) : null,
         overtime_coefficient: data.overtime_coefficient || null,
+      }
+
+      const payload = {
+        tab_number: data.tab_number || null,
+        full_name: data.full_name,
+        position: data.position || null,
+        ...positionFields,
         loan_amount: data.loan_amount || null,
         loan_term_months: data.loan_term_months ? Number(data.loan_term_months) : null,
         loan_start_date: data.loan_start_date || null,
@@ -394,9 +430,21 @@ export function EmployeesPage() {
                   </span>
                 )}
               </Td>
-              <Td>{e.position ?? '—'}</Td>
-              <Td>{e.department?.name ?? '—'}</Td>
-              <Td>{e.schedule?.name ?? '—'}</Td>
+              {/* Совместитель — несколько рабочих мест; в списке показываем
+                  основную и счётчик остальных, полный состав — в карточке. */}
+              <Td>
+                {e.position ?? e.positions?.find((p) => p.is_primary)?.display_title ?? '—'}
+                {extraPositions(e) > 0 && (
+                  <span
+                    className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700"
+                    title="Совместительство: ещё рабочие места (см. карточку)"
+                  >
+                    +{extraPositions(e)}
+                  </span>
+                )}
+              </Td>
+              <Td>{deptSummary(e)}</Td>
+              <Td>{scheduleSummary(e)}</Td>
               <Td>
                 {e.is_system_admin
                   ? <Badge variant="blue">Системный</Badge>
@@ -477,7 +525,23 @@ export function EmployeesPage() {
             </div>
           </div>
 
-          {/* Section 2 — Structure */}
+          {/* ── Должности (позиции) — task_positions ч.B ──
+              Только в режиме редактирования: у существующего сотрудника рабочих
+              мест может быть несколько, и каждое со своими условиями. При
+              создании ниже идут «плоские» поля — они заводят основную позицию. */}
+          {editTarget && (
+            <PositionsEditor
+              employeeId={editTarget.id}
+              departments={departments ?? []}
+              companies={companies ?? []}
+              schedules={schedules ?? []}
+              readOnly={readOnly}
+              onChanged={refetch}
+            />
+          )}
+
+          {/* Section 2 — Structure (только при создании: это основная позиция) */}
+          {!editTarget && (
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Структура</p>
             <div className="flex flex-col gap-3">
@@ -500,11 +564,15 @@ export function EmployeesPage() {
               />
             </div>
           </div>
+          )}
 
           {/* Section 3 — Employment */}
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Трудовая занятость</p>
             <div className="flex flex-col gap-3">
+              {/* Тип оплаты и его база — свойство ПОЗИЦИИ; при редактировании
+                  они живут в секции «Должности (позиции)» выше. */}
+              {!editTarget && (
               <div className="flex flex-col gap-2">
                 <label className="text-sm font-medium text-gray-700">Тип оплаты</label>
                 <div className="flex gap-4 text-sm">
@@ -516,18 +584,33 @@ export function EmployeesPage() {
                     <input type="radio" value="per_shift" {...form.register('pay_type')} />
                     Посменная
                   </label>
+                  <label className="flex items-center gap-1.5 text-gray-700 cursor-pointer">
+                    <input type="radio" value="hourly" {...form.register('pay_type')} />
+                    Почасовая
+                  </label>
                 </div>
               </div>
-              {payType === 'per_shift' ? (
+              )}
+              {!editTarget && payType === 'per_shift' && (
                 <div className="flex flex-col gap-1">
                   <label className="text-sm font-medium text-gray-700">Ставка за смену (₽)</label>
                   <input {...form.register('shift_rate')} placeholder="2500" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                   <p className="text-xs text-gray-400">
-                    Оклада нет: платим за каждую отработанную смену, включая выход вне
-                    графика. Переработка и доплата за праздник не начисляются.
+                    Оклада нет: база — смены плановых дней графика. Смена в выходной
+                    или праздник оплачивается ставкой × коэффициент.
                   </p>
                 </div>
-              ) : (
+              )}
+              {!editTarget && payType === 'hourly' && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Ставка за час (₽)</label>
+                  <input {...form.register('hour_rate')} placeholder="450" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <p className="text-xs text-gray-400">
+                    Платим за фактические часы; отпускные и больничные не начисляются.
+                  </p>
+                </div>
+              )}
+              {!editTarget && payType === 'salary' && (
                 <div className="flex flex-col gap-1">
                   <label className="text-sm font-medium text-gray-700">Оклад (₽)</label>
                   <input {...form.register('rate')} placeholder="50000" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
@@ -570,7 +653,11 @@ export function EmployeesPage() {
             </div>
           </div>
 
-          {/* Section 3b — оплата выхода в свой выходной по графику */}
+          {/* Section 3b — оплата выхода в свой выходной по графику.
+              Коэффициенты — свойство ПОЗИЦИИ: при редактировании они в секции
+              «Должности (позиции)», здесь остаются только для создания. */}
+          {!editTarget && (
+          <>
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Оплата работы вне графика</p>
             <div className="flex flex-col gap-3">
@@ -663,13 +750,17 @@ export function EmployeesPage() {
               </p>
             </div>
           </div>
+          </>
+          )}
 
-          {/* Section 3b-3 — Распределение затрат по юрлицам по умолчанию (3.11b п.1) */}
+          {/* Section 3b-3 — Распределение затрат по юрлицам по умолчанию (3.11b п.1).
+              Проценты задаются РАБОЧЕМУ МЕСТУ: у совместителя каждое разносится
+              по юрлицам отдельно. */}
           {editTarget && !isMgr && (
             <CompanySharesEditor
               employeeId={editTarget.id}
               companies={companies ?? []}
-              mainCompanyId={editTarget.default_company_id}
+              positions={editTarget.positions ?? []}
             />
           )}
 
@@ -860,18 +951,28 @@ export function EmployeesPage() {
 }
 
 // ── Распределение затрат по юрлицам по умолчанию (задача 3.11b п.1) ──
+// Проценты принадлежат РАБОЧЕМУ МЕСТУ (task_positions): у совместителя каждое
+// разносится по юрлицам отдельно, поэтому при нескольких позициях появляется
+// селектор. С одной позицией экран выглядит как раньше.
 function CompanySharesEditor({
-  employeeId, companies, mainCompanyId,
-}: { employeeId: number; companies: Company[]; mainCompanyId?: number | null }) {
+  employeeId, companies, positions,
+}: { employeeId: number; companies: Company[]; positions: EmployeePosition[] }) {
+  const activePositions = positions.filter((p) => p.is_active)
+  const [positionId, setPositionId] = useState<number | null>(
+    activePositions.find((p) => p.is_primary)?.id ?? activePositions[0]?.id ?? null,
+  )
   const [shares, setShares] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [loadedAt, setLoadedAt] = useState(0)
   const [inherited, setInherited] = useState<EmployeeShares | null>(null)
 
+  const mainCompanyId =
+    activePositions.find((p) => p.id === positionId)?.company_id ?? null
+
   const load = useCallback(() => {
     setLoading(true)
-    getCompanyShares(employeeId)
+    getCompanyShares(employeeId, positionId)
       .then((data) => {
         const map: Record<number, string> = {}
         for (const s of data.shares) map[s.company_id] = s.percent
@@ -881,7 +982,7 @@ function CompanySharesEditor({
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [employeeId])
+  }, [employeeId, positionId])
 
   useEffect(load, [load])
 
@@ -891,7 +992,7 @@ function CompanySharesEditor({
       .map(([cid, v]) => ({ company_id: Number(cid), percent: String(Number(v)) }))
     try {
       setSaving(true)
-      const saved = await setCompanyShares(employeeId, list)
+      const saved = await setCompanyShares(employeeId, list, positionId)
       setInherited(saved)
       toast.success(
         list.length === 0 && saved.inherits_department
@@ -921,6 +1022,20 @@ function CompanySharesEditor({
       <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
         Распределение затрат по юрлицам (по умолчанию)
       </p>
+      {activePositions.length > 1 && (
+        <select
+          value={positionId ?? ''}
+          onChange={(e) => setPositionId(e.target.value ? Number(e.target.value) : null)}
+          className="mb-2 rounded-lg border border-gray-300 px-2 py-1.5 text-sm"
+          title="Проценты задаются отдельно каждому рабочему месту"
+        >
+          {activePositions.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.display_title}{p.is_primary ? ' (основная)' : ''}
+            </option>
+          ))}
+        </select>
+      )}
       {deptHint && (
         <div className="mb-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
           Своё распределение не задано — используется дефолт отдела
@@ -942,7 +1057,7 @@ function CompanySharesEditor({
           shares={shares}
           onChange={setShares}
           mainCompanyId={mainCompanyId}
-          resetKey={`${employeeId}-${loadedAt}`}
+          resetKey={`${employeeId}-${positionId ?? 0}-${loadedAt}`}
         />
         <div>
           <Button type="button" variant="secondary" size="sm" onClick={save} disabled={saving}>

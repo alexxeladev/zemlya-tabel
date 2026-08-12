@@ -1,5 +1,6 @@
 import type {
-  CompanyShare, Employee, EmployeeImportResult, EmployeeShares, PayType, UserRole, WeekendPayType,
+  CompanyShare, Employee, EmployeeImportResult, EmployeePosition, EmployeePositionInput,
+  EmployeeShares, PayType, UserRole, WeekendPayType,
 } from '../types/api'
 import { apiClient } from './client'
 
@@ -25,6 +26,7 @@ export const createEmployee = (data: {
   pay_type?: PayType
   rate?: string | null
   shift_rate?: string | null
+  hour_rate?: string | null
   weekend_pay_type?: WeekendPayType
   weekend_coefficient?: string | null
   weekend_fixed_rate?: string | null
@@ -51,6 +53,7 @@ export const updateEmployee = (id: number, data: Partial<{
   pay_type: PayType
   rate: string | null
   shift_rate: string | null
+  hour_rate: string | null
   weekend_pay_type: WeekendPayType
   weekend_coefficient: string | null
   weekend_fixed_rate: string | null
@@ -105,9 +108,48 @@ export const importEmployees = (file: File, confirm = false) => {
     .then((r) => r.data)
 }
 
-// ── Распределение по компаниям по умолчанию (задача 3.11b) ──
-export const getCompanyShares = (id: number) =>
-  apiClient.get<EmployeeShares>(`/api/employees/${id}/company-shares`).then((r) => r.data)
+// ── Позиции (рабочие места) сотрудника — task_positions ч.B ──
+// Совместитель = несколько позиций. Читать может любой, кто видит карточку;
+// править — только admin.
 
-export const setCompanyShares = (id: number, shares: CompanyShare[]) =>
-  apiClient.put<EmployeeShares>(`/api/employees/${id}/company-shares`, { shares }).then((r) => r.data)
+export const listPositions = (employeeId: number) =>
+  apiClient.get<EmployeePosition[]>(`/api/employees/${employeeId}/positions`).then((r) => r.data)
+
+export const createPosition = (employeeId: number, data: EmployeePositionInput) =>
+  apiClient.post<EmployeePosition>(`/api/employees/${employeeId}/positions`, data).then((r) => r.data)
+
+export const updatePosition = (
+  employeeId: number, positionId: number, data: EmployeePositionInput,
+) =>
+  apiClient
+    .patch<EmployeePosition>(`/api/employees/${employeeId}/positions/${positionId}`, data)
+    .then((r) => r.data)
+
+/** Переназначить основную позицию — возвращает весь список в новом порядке. */
+export const makePositionPrimary = (employeeId: number, positionId: number) =>
+  apiClient
+    .post<EmployeePosition[]>(`/api/employees/${employeeId}/positions/${positionId}/make-primary`)
+    .then((r) => r.data)
+
+/** «deleted» — позиция удалена; «deactivated» — на ней есть часы/начисления. */
+export const deletePosition = (employeeId: number, positionId: number) =>
+  apiClient
+    .delete<{ result: 'deleted' | 'deactivated' }>(`/api/employees/${employeeId}/positions/${positionId}`)
+    .then((r) => r.data)
+
+// ── Распределение по компаниям по умолчанию (задача 3.11b) ──
+// Проценты задаются РАБОЧЕМУ МЕСТУ: у совместителя каждое разносится отдельно.
+// Без position_id — основная позиция (как было до совместительства).
+export const getCompanyShares = (id: number, positionId?: number | null) =>
+  apiClient
+    .get<EmployeeShares>(`/api/employees/${id}/company-shares`, {
+      params: positionId != null ? { position_id: positionId } : undefined,
+    })
+    .then((r) => r.data)
+
+export const setCompanyShares = (id: number, shares: CompanyShare[], positionId?: number | null) =>
+  apiClient
+    .put<EmployeeShares>(`/api/employees/${id}/company-shares`, {
+      shares, position_id: positionId ?? null,
+    })
+    .then((r) => r.data)

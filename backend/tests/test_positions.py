@@ -810,3 +810,158 @@ class TestPositionVisibility:
         assert resp.status_code == 200
         rows = [r for r in resp.json()["employees"] if r["employee_id"] == emp.id]
         assert len(rows) == 2
+
+
+# ── CRUD позиций из карточки сотрудника (task_positions ч.B) ──────────────────
+
+class TestPositionCrudApi:
+    """Карточка: список рабочих мест, добавление совместительства,
+    переназначение основной, удаление (основную нельзя)."""
+
+    @pytest.fixture
+    def employee(self, db_session: Session, schedule_5_2, companies, department) -> Employee:
+        emp = Employee(
+            full_name="Иванов И.И.", tab_number="T-900", position="Инженер",
+            rate=Decimal("60000"), schedule_id=schedule_5_2.id,
+            department_id=department.id, default_company_id=companies[0].id,
+        )
+        db_session.add(emp)
+        db_session.commit()
+        db_session.refresh(emp)
+        return emp
+
+    @pytest.fixture
+    def auth(self, client, admin_user) -> dict:
+        return {"Authorization": f"Bearer {get_token(client, 'admin@example.com', 'admin123')}"}
+
+    def test_list_returns_primary_first(self, client, auth, employee):
+        resp = client.get(f"/api/employees/{employee.id}/positions", headers=auth)
+        assert resp.status_code == 200
+        rows = resp.json()
+        assert len(rows) == 1
+        assert rows[0]["is_primary"] is True
+        assert rows[0]["display_title"] == "Инженер"
+        assert rows[0]["pay_type"] == PAY_TYPE_SALARY
+        assert Decimal(rows[0]["rate"]) == Decimal("60000")
+
+    def test_add_moonlighting_position(
+        self, client, auth, employee, schedule_5_2, companies, department
+    ):
+        resp = client.post(
+            f"/api/employees/{employee.id}/positions",
+            headers=auth,
+            json={
+                "title": "Электрик", "pay_type": PAY_TYPE_PER_SHIFT,
+                "shift_rate": "2500", "schedule_id": schedule_5_2.id,
+                "department_id": department.id, "company_id": companies[1].id,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        created = resp.json()
+        assert created["is_primary"] is False
+        assert Decimal(created["shift_rate"]) == Decimal("2500")
+        # Оклад чужого типа не сохраняется — иначе расчёт возьмёт не ту базу
+        assert created["rate"] is None
+        # Дефолты коэффициентов проставлены, как у обычного создания сотрудника
+        assert Decimal(created["weekend_coefficient"]) == Decimal("1.5")
+        assert Decimal(created["overtime_coefficient"]) == Decimal("1.5")
+
+        rows = client.get(f"/api/employees/{employee.id}/positions", headers=auth).json()
+        assert [r["display_title"] for r in rows] == ["Инженер", "Электрик"]
+
+    def test_changing_pay_type_clears_other_base(self, client, auth, employee):
+        pos_id = employee.primary_position.id
+        resp = client.patch(
+            f"/api/employees/{employee.id}/positions/{pos_id}",
+            headers=auth,
+            json={"pay_type": PAY_TYPE_HOURLY, "hour_rate": "450"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["rate"] is None
+        assert Decimal(resp.json()["hour_rate"]) == Decimal("450")
+
+    def test_make_primary_moves_the_flag(self, client, auth, employee, db_session):
+        side = client.post(
+            f"/api/employees/{employee.id}/positions",
+            headers=auth, json={"title": "Электрик", "rate": "30000"},
+        ).json()
+        resp = client.post(
+            f"/api/employees/{employee.id}/positions/{side['id']}/make-primary",
+            headers=auth,
+        )
+        assert resp.status_code == 200, resp.text
+        flags = {r["display_title"]: r["is_primary"] for r in resp.json()}
+        assert flags == {"Электрик": True, "Инженер": False}
+        db_session.expire_all()
+        # Плоские поля карточки читают ОСНОВНУЮ позицию — они переехали вместе с ней
+        assert db_session.get(Employee, employee.id).rate == Decimal("30000")
+
+    def test_primary_position_cannot_be_deleted(self, client, auth, employee):
+        pos_id = employee.primary_position.id
+        client.post(
+            f"/api/employees/{employee.id}/positions",
+            headers=auth, json={"title": "Электрик", "rate": "30000"},
+        )
+        resp = client.delete(f"/api/employees/{employee.id}/positions/{pos_id}", headers=auth)
+        assert resp.status_code == 422
+        assert "основную" in resp.json()["detail"]
+
+    def test_last_position_cannot_be_deleted(self, client, auth, employee):
+        """Даже неосновную: у сотрудника всегда есть хотя бы одно рабочее место."""
+        pos_id = employee.primary_position.id
+        resp = client.delete(f"/api/employees/{employee.id}/positions/{pos_id}", headers=auth)
+        assert resp.status_code == 422
+
+    def test_unused_position_is_deleted_but_used_one_is_deactivated(
+        self, client, auth, employee, db_session, companies, schedule_5_2
+    ):
+        side = client.post(
+            f"/api/employees/{employee.id}/positions",
+            headers=auth,
+            json={"title": "Электрик", "rate": "30000", "schedule_id": schedule_5_2.id,
+                  "company_id": companies[1].id},
+        ).json()
+        # Без часов — удаляется физически
+        resp = client.delete(f"/api/employees/{employee.id}/positions/{side['id']}", headers=auth)
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "deleted"
+
+        # С часами — только деактивация, иначе история табеля осталась бы без места
+        side2 = client.post(
+            f"/api/employees/{employee.id}/positions",
+            headers=auth,
+            json={"title": "Сторож", "rate": "20000", "schedule_id": schedule_5_2.id,
+                  "company_id": companies[1].id},
+        ).json()
+        db_session.add(TimesheetEntry(
+            employee_id=employee.id, position_id=side2["id"],
+            work_date=date(2026, 5, 12), company_id=companies[1].id, hours=8,
+        ))
+        db_session.commit()
+        resp = client.delete(f"/api/employees/{employee.id}/positions/{side2['id']}", headers=auth)
+        assert resp.status_code == 200
+        assert resp.json()["result"] == "deactivated"
+        rows = client.get(f"/api/employees/{employee.id}/positions", headers=auth).json()
+        assert [r["is_active"] for r in rows if r["display_title"] == "Сторож"] == [False]
+
+    def test_non_admin_cannot_edit_positions(self, client, employee, manager_user, department):
+        manager_user.managed_departments = [department]
+        token = get_token(client, "manager@example.com", "manager123")
+        headers = {"Authorization": f"Bearer {token}"}
+        # Читать может — карточку он видит
+        assert client.get(f"/api/employees/{employee.id}/positions", headers=headers).status_code == 200
+        resp = client.post(
+            f"/api/employees/{employee.id}/positions", headers=headers,
+            json={"title": "Электрик", "rate": "30000"},
+        )
+        assert resp.status_code == 403
+
+    def test_employee_read_includes_positions(self, client, auth, employee):
+        client.post(
+            f"/api/employees/{employee.id}/positions",
+            headers=auth, json={"title": "Электрик", "rate": "30000"},
+        )
+        resp = client.get(f"/api/employees/{employee.id}", headers=auth)
+        assert resp.status_code == 200
+        titles = [p["display_title"] for p in resp.json()["positions"]]
+        assert set(titles) == {"Инженер", "Электрик"}

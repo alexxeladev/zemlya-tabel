@@ -14,9 +14,7 @@ from app.database import get_db
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
 from app.models.positions import (
-    PAY_TYPE_HOURLY,
-    PAY_TYPE_PER_SHIFT,
-    PAY_TYPE_SALARY,
+    PAY_TYPE_BASE_FIELD,
     EmployeePosition,
 )
 from app.schemas.employee import (
@@ -33,6 +31,11 @@ from app.schemas.payroll_statement import (
     EmployeeSharesRead,
     EmployeeSharesUpdate,
 )
+from app.schemas.position import (
+    EmployeePositionCreate,
+    EmployeePositionRead,
+    EmployeePositionUpdate,
+)
 from app.services.company_shares import (
     SharesValidationError,
     load_department_shares,
@@ -46,7 +49,15 @@ from app.services.employee_import import (
 )
 from app.services.employees import build_employee
 from app.services.org_access import accessible_department_ids, can_access_department
-from app.services.positions import in_department, in_departments
+from app.services.positions import (
+    PositionError,
+    apply_position_fields,
+    create_position,
+    delete_position,
+    in_department,
+    in_departments,
+    set_primary,
+)
 
 router = APIRouter()
 
@@ -54,13 +65,8 @@ _admin_only = require_role("admin")
 
 _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-# Тип оплаты → поле, в котором лежит его база. Поля взаимоисключающие: при смене
-# типа чужие гасятся, иначе в карточке остаётся мусор от прошлого типа.
-_PAY_TYPE_BASE_FIELD = {
-    PAY_TYPE_SALARY: "rate",
-    PAY_TYPE_PER_SHIFT: "shift_rate",
-    PAY_TYPE_HOURLY: "hour_rate",
-}
+# Тип оплаты → поле, в котором лежит его база (см. app.models.positions).
+_PAY_TYPE_BASE_FIELD = PAY_TYPE_BASE_FIELD
 
 
 def _to_dict(emp: Employee) -> dict:
@@ -405,6 +411,179 @@ def revoke_access(
     db.commit()
 
 
+# ── Позиции (рабочие места) сотрудника — task_positions ч.B ────────────────────
+#
+# Совместитель = несколько позиций, у каждой свои должность, тип оплаты и база,
+# график, отдел, компания и коэффициенты. Ровно одна помечена «основная».
+# Читать может любой, кто видит карточку; править — только admin.
+
+def _sorted_positions(emp: Employee) -> list[EmployeePosition]:
+    """Порядок в карточке: основная → активные → отключённые."""
+    return sorted(
+        emp.positions,
+        key=lambda p: (not p.is_primary, not p.is_active, p.sort_order, p.id),
+    )
+
+
+def _position_or_404(emp: Employee, position_id: int) -> EmployeePosition:
+    for pos in emp.positions:
+        if pos.id == position_id:
+            return pos
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Позиция не найдена")
+
+
+def _position_dict(pos: EmployeePosition) -> dict:
+    """Снимок позиции для audit log."""
+    return {
+        "title": pos.title,
+        "is_primary": pos.is_primary,
+        "is_active": pos.is_active,
+        "department_id": pos.department_id,
+        "schedule_id": pos.schedule_id,
+        "company_id": pos.company_id,
+        "pay_type": pos.pay_type,
+        "rate": str(pos.rate) if pos.rate is not None else None,
+        "shift_rate": str(pos.shift_rate) if pos.shift_rate is not None else None,
+        "hour_rate": str(pos.hour_rate) if pos.hour_rate is not None else None,
+    }
+
+
+def _employee_for_read(db: Session, emp_id: int, actor: Employee) -> Employee:
+    """Карточка сотрудника с проверкой видимости (те же правила, что у GET)."""
+    emp = db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    if actor.role == "employee" and actor.id != emp_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    if actor.role == "manager" and not any(
+        can_access_department(actor, pos.department_id) for pos in emp.positions
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return emp
+
+
+def _employee_for_write(db: Session, emp_id: int) -> Employee:
+    emp = db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    return emp
+
+
+@router.get("/{emp_id}/positions", response_model=list[EmployeePositionRead])
+def list_positions(
+    emp_id: int,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+):
+    """Все рабочие места сотрудника (основная первой). Менеджеру отдаём полный
+    список — в карточке он видит, где ещё числится его сотрудник; скрывать чужие
+    отделы имеет смысл в табеле, где по ним вводят часы."""
+    emp = _employee_for_read(db, emp_id, current_user)
+    return _sorted_positions(emp)
+
+
+@router.post(
+    "/{emp_id}/positions",
+    response_model=EmployeePositionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_position(
+    emp_id: int,
+    payload: EmployeePositionCreate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    emp = _employee_for_write(db, emp_id)
+    position = create_position(emp, payload.model_dump())
+    db.flush()
+    log_action(db, actor, "employee_position", position.id, "create",
+               after={"employee_id": emp.id, **_position_dict(position)})
+    db.commit()
+    db.refresh(position)
+    return position
+
+
+@router.patch("/{emp_id}/positions/{position_id}", response_model=EmployeePositionRead)
+def update_position(
+    emp_id: int,
+    position_id: int,
+    payload: EmployeePositionUpdate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    emp = _employee_for_write(db, emp_id)
+    position = _position_or_404(emp, position_id)
+    before = _position_dict(position)
+    data = payload.model_dump(exclude_unset=True)
+    # Деактивировать основную нельзя — иначе сотрудник останется без рабочего
+    # места, а расчёт молча съедет на случайную позицию.
+    if data.get("is_active") is False and position.is_primary:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Нельзя отключить основную позицию — сначала назначьте основной другую",
+        )
+    apply_position_fields(position, data)
+    db.flush()
+    log_action(db, actor, "employee_position", position.id, "update",
+               before=before, after=_position_dict(position))
+    db.commit()
+    db.refresh(position)
+    return position
+
+
+@router.post(
+    "/{emp_id}/positions/{position_id}/make-primary",
+    response_model=list[EmployeePositionRead],
+)
+def make_position_primary(
+    emp_id: int,
+    position_id: int,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Переназначить основную позицию. Основная ровно одна: с прежней признак
+    снимается. От неё зависят отпускные/больничные и займ — см. CLAUDE.md."""
+    emp = _employee_for_write(db, emp_id)
+    position = _position_or_404(emp, position_id)
+    before = emp.primary_position.id if emp.primary_position else None
+    try:
+        set_primary(emp, position)
+    except PositionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    db.flush()
+    log_action(db, actor, "employee_position", position.id, "make_primary",
+               before={"primary_position_id": before},
+               after={"primary_position_id": position.id})
+    db.commit()
+    db.refresh(emp)
+    return _sorted_positions(emp)
+
+
+@router.delete("/{emp_id}/positions/{position_id}")
+def remove_position(
+    emp_id: int,
+    position_id: int,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Убрать рабочее место. С часами/начислениями позиция деактивируется, а не
+    удаляется — иначе история табеля осталась бы без рабочего места."""
+    emp = _employee_for_write(db, emp_id)
+    position = _position_or_404(emp, position_id)
+    before = _position_dict(position)
+    try:
+        result = delete_position(db, emp, position)
+    except PositionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    log_action(db, actor, "employee_position", position_id, result, before=before)
+    db.commit()
+    return {"result": result}
+
+
 # ── Распределение по компаниям по умолчанию (задача 3.11b п.1) ──────────────────
 
 def _shares_response(
@@ -491,9 +670,11 @@ def import_employees(
 @router.get("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
 def get_company_shares(
     emp_id: int,
+    position_id: Optional[int] = Query(default=None),
     db: Session = Depends(get_db),
     current_user: Employee = Depends(get_current_user),
 ):
+    """Проценты распределения РАБОЧЕГО МЕСТА; без `position_id` — основного."""
     if current_user.role not in ("admin", "accountant", "manager"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
     emp = db.get(Employee, emp_id)
@@ -504,7 +685,7 @@ def get_company_shares(
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
 
-    return _shares_response(db, emp)
+    return _shares_response(db, emp, emp.position_by_id(position_id))
 
 
 @router.put("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
