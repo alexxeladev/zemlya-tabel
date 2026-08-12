@@ -383,13 +383,18 @@ export function fmtCoeff(pay?: EmployeePayroll | null): string {
 export function TimesheetPage() {
   const user = useAuthStore((s: any) => s.user);
   const role: string | null = user?.role ?? null;
+  // Табельщик (task_timekeeper_role) ведёт часы, но денег не видит — бэк ему
+  // payroll и не отдаёт, так что колонки было бы нечем заполнить.
   const canSeeMoney = role === 'admin' || role === 'accountant' || role === 'manager';
-  const canExport = role === 'admin' || role === 'accountant' || role === 'manager';
-  // Селектор отделов: admin/accountant всегда, manager — если руководит
-  // несколькими (task_org_structure ч.2). С одним отделом выбирать нечего.
+  // Т-13 — только часы, поэтому выгрузка доступна и табельщику.
+  const canExport =
+    role === 'admin' || role === 'accountant' || role === 'manager' || role === 'timekeeper';
+  // Селектор отделов: admin/accountant всегда, manager и timekeeper — если у них
+  // несколько отделов (task_org_structure ч.2). С одним отделом выбирать нечего.
   const managedDeptCount: number = user?.managed_department_ids?.length ?? 0;
+  const isDeptScoped = role === 'manager' || role === 'timekeeper';
   const canSelectDept =
-    role === 'admin' || role === 'accountant' || (role === 'manager' && managedDeptCount > 1);
+    role === 'admin' || role === 'accountant' || (isDeptScoped && managedDeptCount > 1);
 
   const viewMode = useTimesheetViewStore((s) => s.mode);
   const setViewMode = useTimesheetViewStore((s) => s.setMode);
@@ -1292,7 +1297,7 @@ export function TimesheetPage() {
                 setDepartmentFilter(e.target.value === '' ? null : parseInt(e.target.value, 10))
               }
             >
-              <option value="">{role === 'manager' ? 'Все мои отделы' : 'Все отделы'}</option>
+              <option value="">{isDeptScoped ? 'Все мои отделы' : 'Все отделы'}</option>
               {departments.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}
