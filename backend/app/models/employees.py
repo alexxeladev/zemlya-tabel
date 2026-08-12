@@ -25,6 +25,9 @@ class EmployeeRole(str, enum.Enum):
     admin = "admin"
     manager = "manager"
     accountant = "accountant"
+    # Табельщик (task_timekeeper_role): заполняет время своих отделов, финансов
+    # не видит. Отделы — через ту же связь managed_departments, что у manager.
+    timekeeper = "timekeeper"
     employee = "employee"
 
 
@@ -107,8 +110,9 @@ class Employee(Base):
         foreign_keys="EmployeePosition.employee_id",
     )
 
-    # Отделы, которыми сотрудник РУКОВОДИТ (task_org_structure ч.2). Не путать
-    # с `department` — это отдел, где он числится. Заполняется только у manager.
+    # Отделы, которыми сотрудник РУКОВОДИТ или которые ВЕДЁТ как табельщик
+    # (task_org_structure ч.2, task_timekeeper_role). Не путать с `department` —
+    # это отдел, где он числится. Заполняется у manager и timekeeper.
     # lazy="selectin" — доступ проверяется на каждом запросе, без этого был бы
     # отдельный SELECT на каждого сотрудника в списке.
     managed_departments: Mapped[list[Department]] = relationship(

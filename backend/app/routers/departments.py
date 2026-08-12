@@ -22,7 +22,7 @@ from app.schemas.department import (
 )
 from app.schemas.payroll_statement import CompanyShareInput
 from app.services.company_shares import SharesValidationError, validate_shares
-from app.services.org_access import managed_department_ids
+from app.services.org_access import is_department_scoped, managed_department_ids
 
 router = APIRouter()
 
@@ -56,9 +56,9 @@ def list_departments(
 ):
     if current_user.role == "employee":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
-    if current_user.role == "manager":
-        # Менеджеру — только его отделы: из этого списка строится селектор
-        # отделов, и чужие в нём делать нечего (task_org_structure ч.2).
+    if is_department_scoped(current_user):
+        # Менеджеру и табельщику — только его отделы: из этого списка строится
+        # селектор отделов, и чужие в нём делать нечего (task_org_structure ч.2).
         managed = managed_department_ids(current_user)
         if not managed:
             return []
@@ -148,10 +148,13 @@ def delete_department(
     db.commit()
 
 
-# ── Менеджеры отдела (task_org_structure ч.2) ─────────────────────────────────
+# ── Менеджеры и табельщики отдела (task_org_structure ч.2) ────────────────────
 #
 # Связь many-to-many, управляется СО СТОРОНЫ ОТДЕЛА. Не путать с
-# Employee.department_id: там сотрудник числится, здесь — руководит.
+# Employee.department_id: там сотрудник числится, здесь — руководит или ведёт
+# табель. Табельщик (task_timekeeper_role) сидит в той же связи: по отделам он
+# устроен как менеджер, различие только в доступе к финансам. Роль каждого видна
+# в `DepartmentManagerRead.role`, разделять список на два бэку незачем.
 
 def _managers_response(dept: Department) -> DepartmentManagersRead:
     return DepartmentManagersRead(
@@ -182,8 +185,8 @@ def set_department_managers(
     db: Session = Depends(get_db),
     actor: Employee = Depends(_admin_only),
 ):
-    """Задать полный список менеджеров отдела. Пустой список снимает всех —
-    отдел останется без руководителя (видят только admin/accountant)."""
+    """Задать полный список менеджеров и табельщиков отдела. Пустой список снимает
+    всех — отдел останется без руководителя (видят только admin/accountant)."""
     dept = db.get(Department, dept_id)
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
@@ -197,10 +200,13 @@ def set_department_managers(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=f"Employee {emp_id} not found"
             )
-        if emp.role != "manager":
+        if not is_department_scoped(emp):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"«{emp.full_name}» не руководитель — сначала выдайте роль «Руководитель»",
+                detail=(
+                    f"«{emp.full_name}» не руководитель и не табельщик — сначала "
+                    "выдайте роль «Руководитель» или «Табельщик»"
+                ),
             )
         managers.append(emp)
 
