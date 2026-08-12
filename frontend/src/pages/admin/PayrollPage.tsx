@@ -19,7 +19,12 @@ const num = (v: string | null | undefined): number => {
   return Number.isFinite(n) ? n : 0
 }
 
-type Edits = Record<number, Record<number, string>> // employee_id → company_id → percent
+// Ключ строки — РАБОЧЕЕ МЕСТО (task_positions): у совместителя строк несколько
+// на одного человека, employee_id их не различает.
+type Edits = Record<string, Record<number, string>> // rowKey → company_id → percent
+
+const rowKey = (row: Pick<StatementRow, 'employee_id' | 'position_id'>): string =>
+  `${row.employee_id}:${row.position_id ?? 0}`
 
 // Откуда взято распределение по юрлицам (каскад task_distribution_v2 ч.3):
 // месячная правка > карточка сотрудника > дефолт отдела > авто по часам.
@@ -39,15 +44,32 @@ const SOURCE_STYLE: Record<DistributionSource, string> = {
 function buildEdits(stmt: PayrollStatement): Edits {
   const e: Edits = {}
   for (const row of stmt.rows) {
-    e[row.employee_id] = {}
+    const key = rowKey(row)
+    e[key] = {}
     // Авто-распределённые строки (ручной % не задан) НЕ префиллим — поля остаются
     // пустыми (плейсхолдер), чтобы видна была разница «авто по часам» vs «ручной».
     if (row.is_auto_distributed) continue
     for (const d of row.distribution) {
-      e[row.employee_id][d.company_id] = d.percent
+      e[key][d.company_id] = d.percent
     }
   }
   return e
+}
+
+/**
+ * Сколько подряд идущих строк принадлежат одному человеку — для merge ФИО.
+ * Бэк отдаёт позиции сотрудника подряд, фильтры порядок не меняют.
+ */
+function employeeSpans(rows: StatementRow[]): number[] {
+  const spans = new Array(rows.length).fill(0)
+  let start = 0
+  for (let i = 1; i <= rows.length; i++) {
+    if (i === rows.length || rows[i].employee_id !== rows[start].employee_id) {
+      spans[start] = i - start
+      start = i
+    }
+  }
+  return spans
 }
 
 export function PayrollPage() {
@@ -62,7 +84,7 @@ export function PayrollPage() {
   const [data, setData] = useState<PayrollStatement | null>(null)
   const [edits, setEdits] = useState<Edits>({})
   const [loading, setLoading] = useState(true)
-  const [savingId, setSavingId] = useState<number | null>(null)
+  const [savingKey, setSavingKey] = useState<string | null>(null)
 
   useEffect(() => {
     apiClient.get<Department[]>('/api/departments').then((r) => setDepartments(r.data)).catch(() => {})
@@ -93,22 +115,22 @@ export function PayrollPage() {
   const canEdit = user?.role === 'admin' || user?.role === 'accountant'
   const isManager = user?.role === 'manager'
 
-  const setPercent = (empId: number, companyId: number, value: string) => {
+  const setPercent = (key: string, companyId: number, value: string) => {
     setEdits((prev) => ({
       ...prev,
-      [empId]: { ...(prev[empId] ?? {}), [companyId]: value },
+      [key]: { ...(prev[key] ?? {}), [companyId]: value },
     }))
   }
 
-  const rowPercentSum = (empId: number): number => {
-    const e = edits[empId] ?? {}
+  const rowPercentSum = (key: string): number => {
+    const e = edits[key] ?? {}
     return Object.values(e).reduce((s, v) => s + num(v), 0)
   }
 
   // Авто-строка: бэк распределил по часам (ручной % не задан) и пользователь
   // ещё ничего не ввёл вручную. Ввод любого % перекрывает авто.
   const isAutoRow = (row: StatementRow): boolean =>
-    row.is_auto_distributed && rowPercentSum(row.employee_id) === 0
+    row.is_auto_distributed && rowPercentSum(rowKey(row)) === 0
 
   // Суммы распределения строки. Считаются ТЕМ ЖЕ алгоритмом, что на бэке
   // (utils/distribution ≡ services/distribution.py): сумма долей ровно равна
@@ -121,41 +143,46 @@ export function PayrollPage() {
       return m
     }
     const weights: Record<number, number> = {}
-    for (const [cid, v] of Object.entries(edits[row.employee_id] ?? {})) {
+    for (const [cid, v] of Object.entries(edits[rowKey(row)] ?? {})) {
       if (num(v) > 0) weights[Number(cid)] = num(v)
     }
     return distribute(num(row.accrued_total), weights, row.main_company_id)
   }
 
+  // Проценты сохраняются РАБОЧЕМУ МЕСТУ строки: у совместителя вторая позиция
+  // разносится по своим юрлицам и правку первой не трогает.
   const saveRow = async (row: StatementRow) => {
-    const e = edits[row.employee_id] ?? {}
+    const key = rowKey(row)
+    const e = edits[key] ?? {}
     const shares: CompanyShare[] = Object.entries(e)
       .filter(([, v]) => num(v) > 0)
       .map(([cid, v]) => ({ company_id: Number(cid), percent: String(num(v)) }))
     try {
-      setSavingId(row.employee_id)
+      setSavingKey(key)
       await timesheetApi.setDistributionOverride({
-        employee_id: row.employee_id, year, month, shares,
+        employee_id: row.employee_id, position_id: row.position_id, year, month, shares,
       })
       toast.success('Распределение сохранено на месяц')
       reload()
     } catch {
       toast.error('Не удалось сохранить распределение')
     } finally {
-      setSavingId(null)
+      setSavingKey(null)
     }
   }
 
   const resetRow = async (row: StatementRow) => {
     try {
-      setSavingId(row.employee_id)
-      await timesheetApi.clearDistributionOverride(row.employee_id, year, month)
+      setSavingKey(rowKey(row))
+      await timesheetApi.clearDistributionOverride(
+        row.employee_id, year, month, row.position_id,
+      )
       toast.success('Правка на месяц убрана — вернулся следующий уровень каскада')
       reload()
     } catch {
       toast.error('Не удалось сбросить переопределение')
     } finally {
-      setSavingId(null)
+      setSavingKey(null)
     }
   }
 
@@ -191,6 +218,13 @@ export function PayrollPage() {
       return true
     })
   }, [data, query, companyFilter])
+
+  // merge ФИО по строкам-позициям + сквозная нумерация ЛЮДЕЙ, а не строк
+  const rowSpans = useMemo(() => employeeSpans(visibleRows), [visibleRows])
+  const employeeSeq = useMemo(() => {
+    let n = 0
+    return rowSpans.map((span) => (span > 0 ? ++n : n))
+  }, [rowSpans])
 
   const footer = useMemo(() => {
     const acc = {
@@ -321,11 +355,17 @@ export function PayrollPage() {
                 <tr><td colSpan={23} className="px-4 py-8 text-center text-gray-400">Нет сотрудников</td></tr>
               )}
               {visibleRows.map((row, i) => {
+                const key = rowKey(row)
                 const accrued = num(row.accrued_total)
-                const pctSum = rowPercentSum(row.employee_id)
+                const pctSum = rowPercentSum(key)
                 const pctWarn = pctSum > 0 && Math.abs(pctSum - 100) > 0.5
-                const e = edits[row.employee_id] ?? {}
+                const e = edits[key] ?? {}
                 const auto = isAutoRow(row)
+                // Строка = рабочее место; № / Таб.№ / ФИО объединяются
+                // на все позиции одного человека (task_positions ч.B).
+                const span = rowSpans[i]
+                const isFirstOfEmployee = span > 0
+                const seq = employeeSeq[i]
                 const autoByCompany: Record<number, { percent: string; amount: string }> = {}
                 if (auto) for (const d of row.distribution) autoByCompany[d.company_id] = d
                 const amounts = rowAmounts(row)
@@ -335,20 +375,39 @@ export function PayrollPage() {
                     ? 'month' : row.distribution_source)
                 let liveDistTotal = 0
                 return (
-                  <tr key={row.employee_id} className="border-b border-gray-100 hover:bg-gray-50/60">
-                    <td className="px-2 py-1.5 text-gray-500">{i + 1}</td>
-                    <td className="px-2 py-1.5 text-gray-600">{row.tab_number ?? '—'}</td>
-                    <td className="px-2 py-1.5 font-medium text-gray-800">
-                      {row.employee_name}
-                      {!row.is_calculable && (
-                        <span className="ml-1 text-[10px] text-gray-400 italic" title={row.note ?? ''}>
-                          ({row.note})
-                        </span>
-                      )}
-                    </td>
+                  <tr key={key} className="border-b border-gray-100 hover:bg-gray-50/60">
+                    {isFirstOfEmployee && (
+                      <>
+                        <td rowSpan={span} className="px-2 py-1.5 align-top text-gray-500">{seq}</td>
+                        <td rowSpan={span} className="px-2 py-1.5 align-top text-gray-600">
+                          {row.tab_number ?? '—'}
+                        </td>
+                        <td rowSpan={span} className="px-2 py-1.5 align-top font-medium text-gray-800">
+                          {row.employee_name}
+                          {span > 1 && (
+                            <div
+                              className="text-[10px] font-normal text-gray-400"
+                              title="Совместительство: «к выплате» по позициям не суммируется — платят разные компании"
+                            >
+                              совместительство: {span} места
+                            </div>
+                          )}
+                        </td>
+                      </>
+                    )}
                     <td className="px-2 py-1.5 text-gray-600">{row.main_company_name ?? '—'}</td>
                     <td className="px-2 py-1.5 text-gray-600">{row.department_name ?? '—'}</td>
-                    <td className="px-2 py-1.5 text-gray-600">{row.position ?? '—'}</td>
+                    <td className="px-2 py-1.5 text-gray-600">
+                      {row.position ?? '—'}
+                      {span !== 1 && row.is_primary_position && (
+                        <span className="ml-1 text-[9px] text-gray-400">осн.</span>
+                      )}
+                      {!row.is_calculable && (
+                        <div className="text-[10px] text-gray-400 italic" title={row.note ?? ''}>
+                          ({row.note})
+                        </div>
+                      )}
+                    </td>
                     <td
                       className="px-2 py-1.5 text-center text-gray-700"
                       title={
@@ -436,7 +495,7 @@ export function PayrollPage() {
                               step="0.1"
                               disabled={!canEdit}
                               value={pct}
-                              onChange={(ev) => setPercent(row.employee_id, c.id, ev.target.value)}
+                              onChange={(ev) => setPercent(key, c.id, ev.target.value)}
                               className={`w-12 rounded border px-1 py-0.5 text-right text-[11px] ${pctWarn ? 'border-amber-400 bg-amber-50' : 'border-gray-300'} ${autoEntry ? 'border-dashed text-gray-400 placeholder:text-gray-400' : ''} disabled:bg-gray-100`}
                               placeholder={autoPctLabel}
                               title={autoEntry ? 'Авто по часам — введите % чтобы задать вручную' : undefined}
@@ -457,7 +516,7 @@ export function PayrollPage() {
                       {canEdit && (
                         <div className="flex items-center justify-center gap-1">
                           <button
-                            disabled={savingId === row.employee_id}
+                            disabled={savingKey === key}
                             onClick={() => saveRow(row)}
                             className="rounded bg-blue-600 px-2 py-0.5 text-[10px] text-white hover:bg-blue-700 disabled:opacity-50"
                           >
@@ -465,7 +524,7 @@ export function PayrollPage() {
                           </button>
                           {row.is_overridden && (
                             <button
-                              disabled={savingId === row.employee_id}
+                              disabled={savingKey === key}
                               onClick={() => resetRow(row)}
                               title="Убрать правку на месяц (вернётся карточка → отдел → авто по часам)"
                               className="rounded bg-gray-200 px-1.5 py-0.5 text-[10px] text-gray-700 hover:bg-gray-300 disabled:opacity-50"
