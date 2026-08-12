@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_action
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
-from app.services.org_access import accessible_department_ids
+from app.services.org_access import accessible_department_ids, is_department_scoped
 from app.services.positions import in_department, in_departments, visible_positions
 
 
@@ -45,9 +45,10 @@ def visible_employees_for_actor(
     if actor.role == "employee":
         return q.filter(Employee.id == actor.id).all()
 
-    if actor.role == "manager":
-        # Отделы, которыми менеджер руководит (task_org_structure ч.2) — их может
-        # быть несколько, и это НЕ его собственный department_id.
+    if is_department_scoped(actor):
+        # Отделы, которыми менеджер руководит (или которые ведёт табельщик,
+        # task_timekeeper_role) — их может быть несколько, и это НЕ его
+        # собственный department_id.
         dept_ids = accessible_department_ids(actor, department_id)
         if not dept_ids:
             return []

@@ -35,13 +35,18 @@ class DepartmentUpdate(BaseModel):
 
 
 class DepartmentManagerRead(BaseModel):
-    """Менеджер отдела — краткая карточка для дерева оргструктуры."""
+    """Менеджер или табельщик отдела — краткая карточка для дерева оргструктуры.
+
+    `role` нужна, чтобы отличить руководителя от табельщика: связь у них одна
+    (`managed_departments`), а права разные (task_timekeeper_role).
+    """
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     full_name: str
     position: Optional[str] = None
     email: Optional[str] = None
+    role: Optional[str] = None
 
 
 class DepartmentManagersRead(BaseModel):
@@ -50,7 +55,8 @@ class DepartmentManagersRead(BaseModel):
 
 
 class DepartmentManagersUpdate(BaseModel):
-    """Полный набор менеджеров отдела: что прислали, то и будет (пусто — снять всех)."""
+    """Полный набор менеджеров и табельщиков отдела: что прислали, то и будет
+    (пусто — снять всех)."""
     employee_ids: list[int]
 
 

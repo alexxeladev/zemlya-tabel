@@ -12,7 +12,9 @@ from app.schemas.department import DepartmentRead
 from app.schemas.position import EmployeePositionRead
 from app.schemas.schedule import ScheduleRead
 
-EmployeeRoleType = Literal["admin", "manager", "accountant", "employee"]
+# timekeeper — табельщик (task_timekeeper_role): ведёт время своих отделов,
+# финансов не видит. По правам между employee и manager.
+EmployeeRoleType = Literal["admin", "manager", "accountant", "timekeeper", "employee"]
 WeekendPayType = Literal["coefficient", "fixed_rate"]
 # Тип оплаты позиции: оклад / смены × ставка / часы × ставка за час
 PayType = Literal["salary", "per_shift", "hourly"]

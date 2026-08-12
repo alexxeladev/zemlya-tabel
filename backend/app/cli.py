@@ -291,6 +291,11 @@ def seed_test_data() -> None:
             ("QA Менеджер Охраны", "QA-MGR2", sec_dept, sch52, kft, D("85000"),
              coef, D("1.5"), None, None,
              "qa.manager2@example.com", "manager"),
+            # Табельщик ИТО (task_timekeeper_role): ведёт время отдела, финансов
+            # не видит. Оклад у него свой есть — просто он его не увидит.
+            ("QA Табельщик ИТО", "QA-TK", ito, sch52, zmo, D("55000"),
+             coef, D("1.5"), None, None,
+             "qa.timekeeper@example.com", "timekeeper"),
             ("QA Сотрудник", "QA-EMP", ito, sch52, zmo, D("60000"),
              coef, D("1.5"), None, None,
              "qa.employee@example.com", "employee"),
@@ -370,12 +375,15 @@ def seed_test_data() -> None:
                 company_id=kft.id,
             ))
 
-        # --- Менеджеры отделов (task_org_structure ч.2) ---
+        # --- Менеджеры и табельщики отделов (task_org_structure ч.2) ---
         # Управляемые отделы задаются ОТДЕЛЬНО от department_id: менеджер ИТО
         # ведёт сразу два отдела (проверка мульти-отдела), менеджер охраны — один.
+        # Табельщик сидит в той же связи и на том же ИТО, что менеджер: проверка,
+        # что руководитель и табельщик отдела — разные люди с разными правами.
         managed = {
             "qa.manager@example.com": [ito, buh],
             "qa.manager2@example.com": [sec_dept],
+            "qa.timekeeper@example.com": [ito],
         }
         for email, depts in managed.items():
             mgr = db.query(Employee).filter_by(email=email).first()

@@ -35,7 +35,9 @@ def _can_submit(period: TimesheetPeriod, actor: Employee) -> bool:
         return False
     if actor.role == "admin":
         return True
-    # Менеджер может отправить любой из СВОИХ отделов (task_org_structure ч.2)
+    # Менеджер может отправить любой из СВОИХ отделов (task_org_structure ч.2).
+    # Именно "manager", а не is_department_scoped: табельщик ведёт те же отделы,
+    # но период не отправляет — он только заполняет (task_timekeeper_role).
     return actor.role == "manager" and can_access_department(actor, period.department_id)
 
 
@@ -191,6 +193,7 @@ def submit_for_review(
         raise ValueError("Период без отдела нельзя отправить на проверку")
     if period.status != "draft":
         raise ValueError(f"Ожидается статус draft, текущий: {period.status}")
+    # Табельщик сюда не попадает намеренно: workflow-переход — за руководителем
     if actor.role not in ("admin", "manager"):
         raise PermissionError("Только manager или admin может отправить на проверку")
     if actor.role == "manager" and not can_access_department(actor, period.department_id):

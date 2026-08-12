@@ -21,7 +21,8 @@ class OrgDepartmentRead(BaseModel):
     code: str
     is_active: bool
     head_company_id: Optional[int] = None
-    # Менеджеры отдела: чем руководят, а не где числятся (task_org_structure ч.2)
+    # Менеджеры и табельщики отдела: чем руководят / что ведут, а не где числятся
+    # (task_org_structure ч.2, task_timekeeper_role). Кто есть кто — по `role`.
     managers: list[OrgEmployeeRead]
     # employee_count отдаётся отдельно, чтобы свёрнутый узел показывал количество,
     # не разворачивая список сотрудников.

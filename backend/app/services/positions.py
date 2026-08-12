@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.models.employees import Employee
 from app.models.positions import PAY_TYPE_BASE_FIELD, EmployeePosition
-from app.services.org_access import accessible_department_ids
+from app.services.org_access import accessible_department_ids, is_department_scoped
 
 
 def in_departments(dept_ids: list[int]) -> ColumnElement[bool]:
@@ -55,12 +55,12 @@ def visible_positions(
 ) -> list[EmployeePosition]:
     """Позиции сотрудника, которые вправе видеть actor.
 
-    Менеджеру видны только рабочие места в его отделах: числиться у него в отделе
-    основной позицией и подрабатывать в чужом отделе — разные вещи, и чужую
-    подработку он видеть не должен. Admin/accountant видят все.
+    Менеджеру (и табельщику) видны только рабочие места в его отделах: числиться
+    у него в отделе основной позицией и подрабатывать в чужом отделе — разные
+    вещи, и чужую подработку он видеть не должен. Admin/accountant видят все.
     """
     positions = employee.active_positions
-    if actor.role == "manager":
+    if is_department_scoped(actor):
         allowed = set(accessible_department_ids(actor, department_id))
         positions = [p for p in positions if p.department_id in allowed]
     elif department_id is not None:
