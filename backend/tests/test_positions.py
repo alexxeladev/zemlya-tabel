@@ -949,7 +949,8 @@ class TestPositionCrudApi:
         token = get_token(client, "manager@example.com", "manager123")
         headers = {"Authorization": f"Bearer {token}"}
         # Читать может — карточку он видит
-        assert client.get(f"/api/employees/{employee.id}/positions", headers=headers).status_code == 200
+        read = client.get(f"/api/employees/{employee.id}/positions", headers=headers)
+        assert read.status_code == 200
         resp = client.post(
             f"/api/employees/{employee.id}/positions", headers=headers,
             json={"title": "Электрик", "rate": "30000"},
@@ -1078,3 +1079,81 @@ class TestTimesheetRowsPerPosition:
         # Обе позиции заполняются по СВОЕМУ графику, каждая — 20 рабочих дней мая
         assert sorted(by_position.keys()) == sorted(p.id for p in moonlighter.active_positions)
         assert set(by_position.values()) == {len(MAY_WORKDAYS)}
+
+
+# ── Excel Т-13: категории дней по графику ПОЗИЦИИ (task_positions ч.B) ────────
+
+class TestT13PerPositionSchedule:
+    """Раньше файл размечал дни графиком ОСНОВНОЙ позиции — у совместителя
+    подработка получала чужие выходные. Теперь у каждой позиции свой график."""
+
+    @pytest.fixture
+    def schedule_sat_sun(self, db_session: Session) -> Schedule:
+        """График «сб–вс»: рабочие только выходные обычной пятидневки."""
+        s = Schedule(
+            name="сб/вс", hours_per_shift=8, schedule_type="weekday",
+            work_weekdays=[5, 6],
+        )
+        db_session.add(s)
+        db_session.commit()
+        db_session.refresh(s)
+        return s
+
+    def test_day_categories_follow_each_position_schedule(
+        self, client, admin_user, db_session: Session, schedule_5_2, schedule_sat_sun,
+        companies, department, calendar_2026,
+    ):
+        emp = Employee(
+            full_name="Совместитель", tab_number="T-777", position="Инженер",
+            rate=Decimal("60000"), schedule_id=schedule_5_2.id,
+            department_id=department.id, default_company_id=companies[0].id,
+        )
+        db_session.add(emp)
+        db_session.commit()
+        emp.positions.append(EmployeePosition(
+            title="Сторож", rate=Decimal("20000"), schedule_id=schedule_sat_sun.id,
+            department_id=department.id, company_id=companies[1].id,
+        ))
+        db_session.commit()
+        engineer, guard = emp.active_positions
+
+        # 16 мая 2026 — суббота: для инженера (5/2) это ВНЕ ГРАФИКА,
+        # для сторожа (сб/вс) — обычный рабочий день.
+        db_session.add_all([
+            TimesheetEntry(employee_id=emp.id, position_id=engineer.id,
+                           work_date=date(2026, 5, 16), company_id=companies[0].id, hours=8),
+            TimesheetEntry(employee_id=emp.id, position_id=guard.id,
+                           work_date=date(2026, 5, 16), company_id=companies[1].id, hours=8),
+        ])
+        db_session.commit()
+
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+
+        from app.services.timesheet_export import _COL_POS, _off_hours_col
+
+        token = get_token(client, "admin@example.com", "admin123")
+        resp = client.get(
+            "/api/timesheet/2026/5/export/excel",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        ws = load_workbook(BytesIO(resp.content)).active
+
+        off_col = _off_hours_col(31)
+        off_by_position: dict[str, float] = {}
+        current = None
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+            title = ws.cell(row=row[0].row, column=_COL_POS).value
+            if title in ("Инженер", "Сторож"):
+                current = title
+            if current is None:
+                continue
+            value = ws.cell(row=row[0].row, column=off_col).value
+            if value:
+                off_by_position[current] = off_by_position.get(current, 0) + float(value)
+
+        # Суббота вне графика только у инженера; у сторожа она плановая
+        assert off_by_position.get("Инженер") == 8
+        assert "Сторож" not in off_by_position

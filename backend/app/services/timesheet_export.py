@@ -12,9 +12,11 @@ from sqlalchemy.orm import Session
 from app.models.companies import Company
 from app.models.employee_absences import AbsenceKind
 from app.models.employees import Employee
+from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
 from app.services.absences import absence_code, get_month_absences
 from app.services.calendar import get_month_data, parse_days_string
+from app.services.positions import visible_positions
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 from app.services.work_schedule import (
     DAY_HOLIDAY,
@@ -86,8 +88,14 @@ def _set_cell(ws, row: int, col: int, value=None, *, bold=False, center=False,
 #   НОРМА ч/мес → ФАКТ ч/мес → Итого Ч компании → Сверхур. Ч → Вне граф. Ч →
 #   Празд. Ч → Итого Ч сотруд.
 #
-# Компания, дни, Итого Ч компании, Сверхур. Ч, Вне граф. Ч, Празд. Ч — per-row (на каждую
-# компанию сотрудника). Остальное — employee-level (merge по строкам компаний).
+# Три уровня merge (task_positions ч.B — у совместителя рабочих мест несколько):
+#   employee-level (на ВСЕ строки человека): №, Таб.№, ФИО, дни отпуска и
+#       больничного, Итого Ч сотруд. — отсутствие и общий итог на человека;
+#   position-level (на строки компаний ОДНОГО рабочего места): Подразделение,
+#       Должность, График, Норма дней, Факт дней, НОРМА ч/мес, ФАКТ ч/мес —
+#       у каждой позиции свой график, а значит своя норма и свои категории дней;
+#   row-level (на каждую компанию): Компания, дни, Итого Ч компании,
+#       Сверхур. Ч, Вне граф. Ч, Празд. Ч.
 _COL_NUM = 1
 _COL_TAB = 2
 _COL_NAME = 3
@@ -207,11 +215,26 @@ def generate_t13_excel(
         c.id: c for c in db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
     }
 
-    # Индекс entries: {(employee_id, day): {company_id: hours}}
-    entries_index: dict[tuple[int, int], dict[int, float]] = {}
+    # Рабочие места, видимые актору (task_positions ч.B): в табеле отдела —
+    # только позиции этого отдела. У сотрудника без совместительства позиция
+    # одна, и файл выходит ровно таким же, как до части B.
+    positions_by_emp: dict[int, list[EmployeePosition]] = {}
+    primary_position_id: dict[int, int | None] = {}
+    for emp in employees:
+        visible = visible_positions(emp, actor, department_id)
+        if not visible and emp.primary_position is not None:
+            visible = [emp.primary_position]
+        positions_by_emp[emp.id] = visible
+        primary_position_id[emp.id] = (
+            emp.primary_position.id if emp.primary_position else None
+        )
+
+    # Индекс entries: {(employee_id, position_id, day): {company_id: hours}}.
+    # Строки без position_id заведены до появления позиций и относятся к основной.
+    entries_index: dict[tuple[int, int | None, int], dict[int, float]] = {}
     for e in entries:
-        day = e.work_date.day
-        key = (e.employee_id, day)
+        pid = e.position_id if e.position_id is not None else primary_position_id.get(e.employee_id)
+        key = (e.employee_id, pid, e.work_date.day)
         if key not in entries_index:
             entries_index[key] = {}
         entries_index[key][e.company_id] = float(e.hours)
@@ -227,22 +250,29 @@ def generate_t13_excel(
         bucket = absence_days_by_emp.setdefault(a.employee_id, {})
         bucket[a.kind] = bucket.get(a.kind, 0) + 1
 
-    # Для каждого сотрудника — список компаний, по которым есть entries в этом месяце
-    emp_companies: dict[int, list[int]] = {}
+    # Блоки строк сотрудника: по одному на РАБОЧЕЕ МЕСТО, внутри — его компании.
+    # Компании берутся из часов ЭТОЙ позиции: подработка обычно оплачивается
+    # другим юрлицом, и мешать их в одну строку нельзя.
+    emp_blocks: dict[int, list[tuple[EmployeePosition | None, list[int | None]]]] = {}
     for emp in employees:
-        used: set[int] = set()
-        for e in entries:
-            if e.employee_id == emp.id:
-                used.add(e.company_id)
-        if not used:
+        blocks: list[tuple[EmployeePosition | None, list[int | None]]] = []
+        for position in positions_by_emp.get(emp.id, []):
+            used = sorted({
+                cid
+                for (eid, pid, _day), by_company in entries_index.items()
+                if eid == emp.id and pid == position.id
+                for cid in by_company
+            })
+            if used:
+                blocks.append((position, list(used)))
+        if not blocks and emp.id in absence_days_by_emp:
             # Часов нет, но есть коды отсутствий — сотрудника всё равно показываем
-            # (месяц в отпуске/на больничном обязан попасть в табель).
-            if emp.id in absence_days_by_emp:
-                # None — «компания не определена», строка всё равно нужна ради кодов
-                emp_companies[emp.id] = [emp.default_company_id]
-            continue  # сотрудник без entries и без отсутствий — пропускаем
-        # Сортируем по id для детерминизма
-        emp_companies[emp.id] = sorted(used)
+            # (месяц в отпуске/на больничном обязан попасть в табель). Отсутствие
+            # отмечено на человеке, поэтому строка одна — по основной позиции.
+            primary = emp.primary_position
+            blocks.append((primary, [primary.company_id if primary else None]))
+        if blocks:
+            emp_blocks[emp.id] = blocks
 
     total_days = _cal.monthrange(year, month)[1]
 
@@ -291,25 +321,15 @@ def generate_t13_excel(
     # ── Строки сотрудников ──────────────────────────────────────────────────
     seq = 0
     for emp in employees:
-        if emp.id not in emp_companies:
+        blocks = emp_blocks.get(emp.id)
+        if not blocks:
             continue
-        company_ids = emp_companies[emp.id]
         seq += 1
-        # Категория каждого дня по графику сотрудника — считаем один раз на
-        # сотрудника (у каждого свой график) через тот же day_category, что и
-        # payroll: цифры в файле и на экране обязаны совпадать.
-        day_cats = {
-            d: day_category(emp.schedule, date(year, month, d), calendar_data)
-            for d in range(1, total_days + 1)
-        }
-        off_schedule_days = {d for d, c in day_cats.items() if c == DAY_OFF_SCHEDULE}
-        holiday_days = {d for d, c in day_cats.items() if c == DAY_HOLIDAY}
         cur_row = _write_employee_rows(
-            ws, cur_row, seq, emp, company_ids, companies_by_id,
+            ws, cur_row, seq, emp, blocks, companies_by_id,
             entries_index, total_days,
             non_working, short_days, weekends,
             absence_index, absence_days_by_emp.get(emp.id, {}),
-            off_schedule_days, holiday_days,
             year, month, calendar_data,
         )
 
@@ -487,96 +507,193 @@ def _write_table_header(
 
 # ── Employee rows ─────────────────────────────────────────────────────────────
 
+def _merged_cell(ws, first_row: int, last_row: int, col: int, value,
+                 *, bold=False, left=False) -> None:
+    """Ячейка, объединённая по диапазону строк (rowspan таблицы)."""
+    if last_row > first_row:
+        ws.merge_cells(start_row=first_row, start_column=col,
+                       end_row=last_row, end_column=col)
+    c = ws.cell(row=first_row, column=col)
+    if value is not None and value != "":
+        c.value = value
+    c.font = _header_font(bold=bold)
+    horizontal = "left" if left else "center"
+    c.alignment = Alignment(horizontal=horizontal, vertical="center", wrap_text=left)
+    c.border = _thin_border()
+    for rr in range(first_row + 1, last_row + 1):
+        ws.cell(row=rr, column=col).border = _thin_border()
+
+
 def _write_employee_rows(
     ws,
     start_row: int,
     seq: int,
     emp: Employee,
-    company_ids: list[int | None],
+    blocks: list[tuple[EmployeePosition | None, list[int | None]]],
     companies_by_id: dict[int, Company],
-    entries_index: dict[tuple[int, int], dict[int, float]],
+    entries_index: dict[tuple[int, int | None, int], dict[int, float]],
     total_days: int,
     non_working: set[int] | None = None,
     short_days: set[int] | None = None,
     weekends: set[int] | None = None,
     absence_index: dict[tuple[int, int], str] | None = None,
     absence_days: dict[str, int] | None = None,
-    off_schedule_days: set[int] | None = None,
-    holiday_days: set[int] | None = None,
     year: int | None = None,
     month: int | None = None,
     calendar_data: dict | None = None,
 ) -> int:
+    """Блок строк одного сотрудника: по строке на (рабочее место × компания).
+
+    Категории дней, норма и переработка считаются по графику КАЖДОЙ ПОЗИЦИИ
+    (task_positions ч.B): у совместителя графики разные, и брать один на всех
+    значило бы разметить его подработку чужими выходными.
+    """
     non_working = non_working or set()
     short_days = short_days or set()
     weekends = weekends or set()
     absence_index = absence_index or {}
     absence_days = absence_days or {}
-    # Дни ВНЕ ГРАФИКА сотрудника (task_schedule_based_pay) — только они дают
-    # часы «вне графика»; календарный праздник в рабочий день графика — обычный
-    # рабочий день (часы по окладу, превышение смены — переработка).
-    off_schedule_days = off_schedule_days if off_schedule_days is not None else set()
-    holiday_days = holiday_days if holiday_days is not None else set()
 
-    n = len(company_ids)
-    end_row = start_row + n - 1
-
-    # Помесячные итоги/праздничные часы по компаниям этого сотрудника
-    comp_totals: dict[int, float] = {}
-    comp_off_schedule: dict[int, float] = {}
-    comp_holiday: dict[int, float] = {}
+    total_rows = sum(len(company_ids) for _, company_ids in blocks)
+    emp_end_row = start_row + total_rows - 1
 
     def _fmt(v: float):
         return int(v) if v == int(v) else round(v, 2)
 
-    # ── Employee-level колонки (merge по всем строкам сотрудника) ─────────────
-    schedule = emp.schedule
-    # Норма — по ГРАФИКУ сотрудника (task_shift_schedules): у weekday-графика
-    # по производственному календарю и его дням недели, у сменного — по циклу.
-    # Тот же источник, что и в payroll: цифры в Excel и на экране обязаны совпасть.
+    # ── Employee-level колонки: merge по ВСЕМ строкам человека ────────────────
+    # Отсутствия отмечены на человеке (он отсутствует на всех работах), общий
+    # итог часов — тоже по нему.
+    _merged_cell(ws, start_row, emp_end_row, _COL_NUM, seq)
+    _merged_cell(ws, start_row, emp_end_row, _COL_TAB, emp.tab_number or "")
+    _merged_cell(ws, start_row, emp_end_row, _COL_NAME, emp.full_name, left=True)
+    vac_days = absence_days.get(AbsenceKind.vacation.value, 0)
+    sick_days = absence_days.get(AbsenceKind.sick.value, 0)
+    _merged_cell(ws, start_row, emp_end_row, _vac_col(total_days), vac_days or None)
+    _merged_cell(ws, start_row, emp_end_row, _sick_col(total_days), sick_days or None)
+
+    grand_total = 0.0
+    row = start_row
+    for position, company_ids in blocks:
+        row = _write_position_rows(
+            ws, row, emp, position, company_ids, companies_by_id, entries_index,
+            total_days, absence_index, absence_first_row=start_row,
+            year=year, month=month, calendar_data=calendar_data,
+        )
+        for comp_id in company_ids:
+            grand_total += sum(
+                entries_index.get(
+                    (emp.id, position.id if position else None, d), {}
+                ).get(comp_id, 0.0)
+                for d in range(1, total_days + 1)
+            )
+
+    _merged_cell(ws, start_row, emp_end_row, _grand_total_col(total_days),
+                 _fmt(grand_total) if grand_total > 0 else None, bold=True)
+
+    # ── Подсветка блока сотрудника (задача 3.11a п.6) ─────────────────────────
+    # Чередующаяся заливка инфо/итоговых колонок для читаемости. Дни не трогаем,
+    # чтобы не перекрывать подсветку праздников/сокращённых.
+    if seq % 2 == 0:
+        fill = _zebra_fill()
+        info_cols = [
+            _COL_NUM, _COL_TAB, _COL_NAME, _COL_COMPANY, _COL_DEPT,
+            _COL_POS, _COL_SCHED,
+            _vac_col(total_days), _sick_col(total_days),
+            _norm_days_col(total_days), _fact_days_col(total_days),
+            _norm_col(total_days), _fact_hours_col(total_days),
+            _total_col(total_days), _ot_hours_col(total_days),
+            _off_hours_col(total_days), _hol_hours_col(total_days),
+            _grand_total_col(total_days),
+        ]
+        for rr in range(start_row, emp_end_row + 1):
+            for col in info_cols:
+                c = ws.cell(row=rr, column=col)
+                if c.fill is None or c.fill.fgColor.rgb in (None, "00000000"):
+                    c.fill = fill
+
+    return emp_end_row + 1
+
+
+def _write_position_rows(
+    ws,
+    start_row: int,
+    emp: Employee,
+    position: EmployeePosition | None,
+    company_ids: list[int | None],
+    companies_by_id: dict[int, Company],
+    entries_index: dict[tuple[int, int | None, int], dict[int, float]],
+    total_days: int,
+    absence_index: dict[tuple[int, int], str],
+    absence_first_row: int,
+    year: int | None,
+    month: int | None,
+    calendar_data: dict | None,
+) -> int:
+    """Строки одного рабочего места: по строке на компанию. Возвращает
+    следующую свободную строку."""
+    position_id = position.id if position is not None else None
+    n = len(company_ids)
+    end_row = start_row + n - 1
+
+    def _fmt(v: float):
+        return int(v) if v == int(v) else round(v, 2)
+
+    def _hours(day: int, comp_id: int | None) -> float:
+        return entries_index.get((emp.id, position_id, day), {}).get(comp_id, 0.0)
+
+    def _day_hours(day: int) -> float:
+        return sum(
+            h for h in entries_index.get((emp.id, position_id, day), {}).values() if h > 0
+        )
+
+    # ── Категории дней — по графику ЭТОЙ позиции ──────────────────────────────
+    # Тот же day_category, что и в payroll: цифры в файле и на экране обязаны
+    # совпадать. Праздник в рабочий день графика остаётся рабочим днём.
+    schedule = position.schedule if position is not None else None
     schedule_ok = schedule is not None and schedule_issue(schedule) is None
+    day_cats = (
+        {
+            d: day_category(schedule, date(year, month, d), calendar_data)
+            for d in range(1, total_days + 1)
+        }
+        if year is not None and month is not None
+        else {}
+    )
+    off_schedule_days = {d for d, c in day_cats.items() if c == DAY_OFF_SCHEDULE}
+    holiday_days = {d for d, c in day_cats.items() if c == DAY_HOLIDAY}
+
+    # Норма — по ГРАФИКУ позиции (task_shift_schedules): weekday считает по
+    # производственному календарю и своим дням недели, cyclic — по циклу.
     norm_days = (
         norm_days_for_schedule(schedule, year, month, calendar_data)
         if schedule_ok and year is not None and month is not None
         else None
-    )
-    fact_days = sum(
-        1 for d in range(1, total_days + 1)
-        if any(h > 0 for h in entries_index.get((emp.id, d), {}).values())
     )
     norm_hours = (
         float(norm_hours_for_schedule(schedule, year, month, calendar_data) or 0)
         if schedule_ok and year is not None and month is not None
         else 0.0
     )
+    fact_days = sum(1 for d in range(1, total_days + 1) if _day_hours(d) > 0)
 
-    def _emp_cell(col: int, value, *, bold=False, left=False):
-        if n > 1:
-            ws.merge_cells(start_row=start_row, start_column=col,
-                           end_row=end_row, end_column=col)
-        c = ws.cell(row=start_row, column=col)
-        if value is not None and value != "":
-            c.value = value
-        c.font = _header_font(bold=bold)
-        horizontal = "left" if left else "center"
-        c.alignment = Alignment(horizontal=horizontal, vertical="center", wrap_text=left)
-        c.border = _thin_border()
-        for rr in range(start_row + 1, end_row + 1):
-            ws.cell(row=rr, column=col).border = _thin_border()
+    # ── Position-level колонки: merge по строкам компаний этого места ─────────
+    _merged_cell(ws, start_row, end_row, _COL_DEPT,
+                 position.department.name if position and position.department else "",
+                 left=True)
+    _merged_cell(ws, start_row, end_row, _COL_POS,
+                 position.display_title if position is not None else (emp.position or ""),
+                 left=True)
+    _merged_cell(ws, start_row, end_row, _COL_SCHED, schedule.name if schedule else "")
+    _merged_cell(ws, start_row, end_row, _norm_days_col(total_days),
+                 norm_days if norm_days else None)
+    _merged_cell(ws, start_row, end_row, _fact_days_col(total_days),
+                 fact_days if fact_days else None)
+    _merged_cell(ws, start_row, end_row, _norm_col(total_days),
+                 _fmt(norm_hours) if norm_hours else None)
 
-    _emp_cell(_COL_NUM, seq)
-    _emp_cell(_COL_TAB, emp.tab_number or "")
-    _emp_cell(_COL_NAME, emp.full_name, left=True)
-    _emp_cell(_COL_DEPT, emp.department.name if emp.department else "", left=True)
-    _emp_cell(_COL_POS, emp.position or "", left=True)
-    _emp_cell(_COL_SCHED, emp.schedule.name if emp.schedule else "")
-    vac_days = absence_days.get(AbsenceKind.vacation.value, 0)
-    sick_days = absence_days.get(AbsenceKind.sick.value, 0)
-    _emp_cell(_vac_col(total_days), vac_days or None)
-    _emp_cell(_sick_col(total_days), sick_days or None)
-    _emp_cell(_norm_days_col(total_days), norm_days if norm_days else None)
-    _emp_cell(_fact_days_col(total_days), fact_days if fact_days else None)
-    _emp_cell(_norm_col(total_days), _fmt(norm_hours) if norm_hours else None)
+    comp_totals: dict[int | None, float] = {}
+    comp_off_schedule: dict[int | None, float] = {}
+    comp_holiday: dict[int | None, float] = {}
 
     # Строки по компаниям (per-row): Компания, дни, Итого Ч компании
     for i, comp_id in enumerate(company_ids):
@@ -600,20 +717,20 @@ def _write_employee_rows(
 
         for d in range(1, total_days + 1):
             col = _day_col(d, total_days)
-            hours = entries_index.get((emp.id, d), {}).get(comp_id)
+            hours = _hours(d, comp_id)
             kind = absence_index.get((emp.id, d))
             c = ws.cell(row=row, column=col)
             c.border = _thin_border()
             c.alignment = Alignment(horizontal="center", vertical="center")
             c.font = Font(name="Arial", size=9)
             if kind is not None:
-                # День отсутствия: буквенный код Т-13 вместо часов. Часов в этом
-                # дне нет по инварианту взаимоисключения; код пишем один раз —
-                # на первой строке сотрудника, он не привязан к юрлицу.
-                if i == 0:
+                # День отсутствия: буквенный код Т-13 вместо часов. Отсутствие
+                # отмечено на ЧЕЛОВЕКЕ (он отсутствует на всех работах), поэтому
+                # код пишем один раз — на самой первой его строке.
+                if row == absence_first_row:
                     c.value = absence_code(kind)
                     c.font = Font(name="Arial", size=9, bold=True, color="1F4E79")
-            elif hours is not None and hours > 0:
+            elif hours > 0:
                 c.value = int(hours) if hours == int(hours) else hours
                 total_hours += hours
                 if d in holiday_days:
@@ -632,8 +749,8 @@ def _write_employee_rows(
         comp_off_schedule[comp_id] = off_schedule_hours
         comp_holiday[comp_id] = holiday_hours
 
-    # ── Переработка (employee-level): ПО ДНЯМ (task_overtime_daily) ────────────
-    # Для каждого рабочего дня ГРАФИКА max(0, факт_дня_по_всем_компаниям −
+    # ── Переработка позиции: ПО ДНЯМ (task_overtime_daily) ────────────────────
+    # Для каждого планового дня графика max(0, факт_дня_по_всем_компаниям −
     # дневная норма), сумма за месяц. Дневная норма = смена, у сокращённого
     # дня — смена − 1. Часы вне графика и праздничные — отдельные категории,
     # в переработку не входят.
@@ -642,12 +759,10 @@ def _write_employee_rows(
         for d in range(1, total_days + 1):
             if d in off_schedule_days or d in holiday_days:
                 continue
-            day_hours = sum(
-                h for h in entries_index.get((emp.id, d), {}).values() if h > 0
-            )
             day_norm = float(
                 shift_hours_for_date(schedule, date(year, month, d), calendar_data)
             )
+            day_hours = _day_hours(d)
             if day_norm > 0 and day_hours > day_norm:
                 overtime += day_hours - day_norm
     # Часы в табеле целые, поэтому переработка тоже целая — _distribute_int ждёт int.
@@ -681,33 +796,10 @@ def _write_employee_rows(
         c.alignment = Alignment(horizontal="center", vertical="center")
         c.border = _thin_border()
 
-    # ── Employee-level (merge): ФАКТ ч/мес и Итого Ч сотрудника ───────────────
-    grand_total = sum(comp_totals.values())
-    _emp_cell(_fact_hours_col(total_days),
-              _fmt(grand_total) if grand_total > 0 else None)
-    _emp_cell(_grand_total_col(total_days),
-              _fmt(grand_total) if grand_total > 0 else None, bold=True)
-
-    # ── Подсветка блока сотрудника (задача 3.11a п.6) ─────────────────────────
-    # Чередующаяся заливка инфо/итоговых колонок для читаемости. Дни не трогаем,
-    # чтобы не перекрывать подсветку праздников/сокращённых.
-    if seq % 2 == 0:
-        fill = _zebra_fill()
-        info_cols = [
-            _COL_NUM, _COL_TAB, _COL_NAME, _COL_COMPANY, _COL_DEPT,
-            _COL_POS, _COL_SCHED,
-            _vac_col(total_days), _sick_col(total_days),
-            _norm_days_col(total_days), _fact_days_col(total_days),
-            _norm_col(total_days), _fact_hours_col(total_days),
-            _total_col(total_days), _ot_hours_col(total_days),
-            _off_hours_col(total_days), _hol_hours_col(total_days),
-            _grand_total_col(total_days),
-        ]
-        for rr in range(start_row, end_row + 1):
-            for col in info_cols:
-                c = ws.cell(row=rr, column=col)
-                if c.fill is None or c.fill.fgColor.rgb in (None, "00000000"):
-                    c.fill = fill
+    # ── ФАКТ ч/мес этого рабочего места (merge по его строкам) ────────────────
+    position_total = sum(comp_totals.values())
+    _merged_cell(ws, start_row, end_row, _fact_hours_col(total_days),
+                 _fmt(position_total) if position_total > 0 else None)
 
     return end_row + 1
 
