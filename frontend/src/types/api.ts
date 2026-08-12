@@ -24,6 +24,9 @@ export interface EmployeePayroll {
   shift_rate: string | null
   worked_shifts: number
   norm_shifts: number | null
+  // Смены в базе посменного: плановые дни графика (выходные/праздники
+  // оплачены по коэффициенту, в базу не входят)
+  base_shifts: number
   total_hours: string
   norm_hours: string | null
   delta_hours: string | null
@@ -151,6 +154,9 @@ export interface StatementRow {
   shift_rate: string | null
   worked_shifts: number
   norm_shifts: number | null
+  // Смены в базе посменного: плановые дни графика (выходные/праздники
+  // оплачены по коэффициенту, в базу не входят)
+  base_shifts: number
   norm_hours: string | null
   fact_hours: string
   overtime_coefficient: string

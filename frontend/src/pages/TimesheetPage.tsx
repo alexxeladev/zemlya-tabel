@@ -104,6 +104,8 @@ export type EmployeePayroll = {
   shift_rate?: string | null;
   worked_shifts?: number;
   norm_shifts?: number | null;
+  /** смены в базе посменного: плановые дни графика (выходные/праздники — по коэффициенту) */
+  base_shifts?: number;
   base_amount: string;
   overtime_amount: string;
   /** выход в свой выходной по графику */
@@ -855,14 +857,15 @@ export function TimesheetPage() {
               className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
               title={
                 pay?.pay_type === 'per_shift'
-                  ? `Посменно: ${pay.worked_shifts ?? 0} смен × ${fmtMoney(pay.shift_rate ?? null)}`
+                  ? `Посменно: ${pay.base_shifts ?? 0} смен × ${fmtMoney(pay.shift_rate ?? null)}` +
+                    `; смены в выходные/праздники — в отдельных колонках, по коэффициенту`
                   : undefined
               }
             >
               {fmtMoney(pay?.base_amount ?? null)}
               {pay?.pay_type === 'per_shift' && (
                 <div className="text-[10px] font-sans text-gray-400 leading-tight">
-                  {pay.worked_shifts ?? 0} см. × {fmtMoney(pay.shift_rate ?? null)}
+                  {pay.base_shifts ?? 0} см. × {fmtMoney(pay.shift_rate ?? null)}
                 </div>
               )}
             </td>
