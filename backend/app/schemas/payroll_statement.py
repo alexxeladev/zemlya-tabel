@@ -80,6 +80,7 @@ class StatementRow(BaseModel):
     hour_rate: Decimal | None = None
     worked_shifts: int = 0
     norm_shifts: int | None = None
+    base_shifts: int = 0
     norm_hours: Decimal | None
     fact_hours: Decimal
     overtime_coefficient: Decimal

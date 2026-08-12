@@ -46,6 +46,9 @@ class EmployeePayrollRead(BaseModel):
     hour_rate: Decimal | None = None
     worked_shifts: int = 0
     norm_shifts: int | None = None
+    # Смены в базе посменного (плановые дни графика). Смены в выходной/праздник
+    # сюда не входят — они оплачены по коэффициенту (task_shiftpay_addons).
+    base_shifts: int = 0
 
     total_hours: Decimal
     norm_hours: Decimal | None
