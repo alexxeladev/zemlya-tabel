@@ -48,7 +48,14 @@ from app.services.employee_import import (
     parse_import_file,
 )
 from app.services.employees import build_employee
-from app.services.org_access import accessible_department_ids, can_access_department
+from app.services.finance_masking import mask_employee, mask_employees, mask_position
+from app.services.org_access import (
+    accessible_department_ids,
+    can_access_department,
+    can_see_finances,
+    hides_finances,
+    is_department_scoped,
+)
 from app.services.positions import (
     PositionError,
     apply_position_fields,
@@ -103,10 +110,12 @@ def _gen_temp_password() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(12))
 
 
-def _drop_managed_departments_if_not_manager(emp: Employee) -> list[int]:
-    """Управляемые отделы имеют смысл только у роли manager (task_org_structure ч.2).
-    Возвращает id отделов, с которых сотрудник снят, — для audit log."""
-    if emp.role == "manager" or not emp.managed_departments:
+def _drop_managed_departments_if_not_scoped(emp: Employee) -> list[int]:
+    """Привязка к отделам имеет смысл только у manager и timekeeper
+    (task_org_structure ч.2, task_timekeeper_role): первый отделом руководит,
+    второй ведёт его табель. Возвращает id отделов, с которых сотрудник снят, —
+    для audit log."""
+    if is_department_scoped(emp) or not emp.managed_departments:
         return []
     dropped = emp.managed_department_ids
     emp.managed_departments = []
@@ -129,8 +138,9 @@ def list_employees(
 
     q = db.query(Employee)
 
-    if current_user.role == "manager":
-        # Сотрудники всех отделов, которыми руководит менеджер (task_org_structure ч.2)
+    if is_department_scoped(current_user):
+        # Сотрудники всех отделов, которыми руководит менеджер (task_org_structure
+        # ч.2) или которые ведёт табельщик (task_timekeeper_role)
         dept_ids = accessible_department_ids(current_user, department_id)
         if not dept_ids:
             return []
@@ -147,7 +157,11 @@ def list_employees(
             Employee.full_name.ilike(pattern) | Employee.tab_number.ilike(pattern)
         )
 
-    return q.all()
+    rows = q.all()
+    if hides_finances(current_user):
+        # Табельщику список сотрудников отдела виден, оклады в нём — нет
+        return mask_employees([EmployeeRead.model_validate(e) for e in rows])
+    return rows
 
 
 @router.get("/{emp_id}", response_model=EmployeeRead)
@@ -164,10 +178,12 @@ def get_employee(
         if current_user.id != emp_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-    if current_user.role == "manager":
+    if is_department_scoped(current_user):
         if not can_access_department(current_user, emp.department_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
+    if hides_finances(current_user):
+        return mask_employee(EmployeeRead.model_validate(emp))
     return emp
 
 
@@ -350,7 +366,7 @@ def update_access_role(
     emp.role = payload.role
     # Роль сменили с «руководителя» — снимаем его со всех отделов, иначе он
     # остаётся в списке менеджеров отдела, уже ничем не руководя.
-    dropped = _drop_managed_departments_if_not_manager(emp)
+    dropped = _drop_managed_departments_if_not_scoped(emp)
     db.flush()
     log_action(db, actor, "employee", emp.id, "role_changed",
                before={"role": before_role, "managed_department_ids": dropped},
@@ -405,7 +421,7 @@ def revoke_access(
     emp.role = None
     emp.must_change_password = False
     # Без доступа в систему руководить отделами не может — связь снимаем.
-    _drop_managed_departments_if_not_manager(emp)
+    _drop_managed_departments_if_not_scoped(emp)
     db.flush()
     log_action(db, actor, "employee", emp.id, "access_revoked", before=before)
     db.commit()
@@ -455,7 +471,7 @@ def _employee_for_read(db: Session, emp_id: int, actor: Employee) -> Employee:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     if actor.role == "employee" and actor.id != emp_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    if actor.role == "manager" and not any(
+    if is_department_scoped(actor) and not any(
         can_access_department(actor, pos.department_id) for pos in emp.positions
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
@@ -479,7 +495,13 @@ def list_positions(
     список — в карточке он видит, где ещё числится его сотрудник; скрывать чужие
     отделы имеет смысл в табеле, где по ним вводят часы."""
     emp = _employee_for_read(db, emp_id, current_user)
-    return _sorted_positions(emp)
+    positions = _sorted_positions(emp)
+    if hides_finances(current_user):
+        # Табельщику — должность/график/отдел рабочего места, но без ставок
+        return [
+            mask_position(EmployeePositionRead.model_validate(p)) for p in positions
+        ]
+    return positions
 
 
 @router.post(
@@ -675,12 +697,13 @@ def get_company_shares(
     current_user: Employee = Depends(get_current_user),
 ):
     """Проценты распределения РАБОЧЕГО МЕСТА; без `position_id` — основного."""
-    if current_user.role not in ("admin", "accountant", "manager"):
+    # Распределение по юрлицам — деньги: табельщику 403 (task_timekeeper_role)
+    if not can_see_finances(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
     emp = db.get(Employee, emp_id)
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
-    if current_user.role == "manager" and not can_access_department(
+    if is_department_scoped(current_user) and not can_access_department(
         current_user, emp.department_id
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
