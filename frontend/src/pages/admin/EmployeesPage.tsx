@@ -35,15 +35,19 @@ const ROLE_LABELS: Record<string, string> = {
   admin: 'Администратор',
   manager: 'Руководитель',
   accountant: 'Бухгалтер',
+  timekeeper: 'Табельщик',
   employee: 'Сотрудник',
 }
 
 const MANAGER_LOCK_TIP = 'Только администратор может изменить'
 
+// Табельщик (task_timekeeper_role) заполняет время своих отделов и не видит
+// финансов; отделы ему привязывают в «Оргструктуре», как и руководителю.
 const ROLE_OPTIONS = [
   { value: 'admin', label: 'Администратор' },
   { value: 'manager', label: 'Руководитель' },
   { value: 'accountant', label: 'Бухгалтер' },
+  { value: 'timekeeper', label: 'Табельщик' },
   { value: 'employee', label: 'Сотрудник' },
 ]
 
