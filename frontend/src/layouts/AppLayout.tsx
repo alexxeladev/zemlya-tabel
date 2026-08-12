@@ -6,6 +6,7 @@ const ROLE_LABELS: Record<string, string> = {
   admin: 'Администратор',
   manager: 'Руководитель',
   accountant: 'Бухгалтер',
+  timekeeper: 'Табельщик',
   employee: 'Сотрудник',
 }
 
@@ -76,6 +77,9 @@ export function AppLayout() {
         </div>
 
         <nav className="flex flex-1 flex-col gap-4 overflow-y-auto p-3">
+          {/* Табельщику (task_timekeeper_role) остаются только «Дашборд» и «Табель»:
+              «Расчёт ЗП» — финансы, «Задачи» — workflow периодов, справочники —
+              управление структурой. Бэк те же эндпойнты отдаёт с 403. */}
           <SidebarGroup title="Учёт" items={[
             { to: '/dashboard', label: 'Дашборд' },
             ...((role === 'admin' || role === 'accountant') ? [{ to: '/tasks', label: 'Задачи' }] : []),

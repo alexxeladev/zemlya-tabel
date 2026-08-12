@@ -72,6 +72,7 @@ function EmployeeRow({ emp, onOpen }: { emp: OrgEmployee; onOpen: (id: number) =
       {emp.tab_number && <span className="font-mono text-xs text-gray-400">{emp.tab_number}</span>}
       {emp.position && <span className="text-xs text-gray-500">{emp.position}</span>}
       {emp.role === 'manager' && <Badge variant="blue">рук.</Badge>}
+      {emp.role === 'timekeeper' && <Badge variant="gray">таб.</Badge>}
     </button>
   )
 }
@@ -106,7 +107,7 @@ function DepartmentNode({ dept, onEdit, onDelete, onManagers, onOpenEmployee }: 
 
         <div className="ml-auto flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
           <Button size="sm" variant="ghost" onClick={() => onManagers(dept)}>
-            Менеджеры
+            Ответственные
           </Button>
           <Button size="sm" variant="ghost" onClick={() => onEdit(dept)}>
             Изменить
@@ -117,9 +118,11 @@ function DepartmentNode({ dept, onEdit, onDelete, onManagers, onOpenEmployee }: 
         </div>
       </div>
 
-      {/* Менеджеры видны всегда: это ответ на вопрос «кто ведёт отдел» */}
+      {/* Ответственные видны всегда: это ответ на вопрос «кто ведёт отдел».
+          Руководитель и табельщик сидят в одной связи, различает их роль
+          (task_timekeeper_role), поэтому чипы подписаны. */}
       <div className="flex flex-wrap items-center gap-1 pl-5 pb-1 text-xs">
-        <span className="text-gray-400">Менеджеры отдела:</span>
+        <span className="text-gray-400">Ответственные:</span>
         {dept.managers.length === 0 ? (
           <button
             type="button"
@@ -129,11 +132,17 @@ function DepartmentNode({ dept, onEdit, onDelete, onManagers, onOpenEmployee }: 
             не назначены
           </button>
         ) : (
-          dept.managers.map((m) => (
-            <span key={m.id} className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">
-              {m.full_name}
-            </span>
-          ))
+          dept.managers.map((m) =>
+            m.role === 'timekeeper' ? (
+              <span key={m.id} className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-700">
+                {m.full_name} · табельщик
+              </span>
+            ) : (
+              <span key={m.id} className="rounded bg-blue-50 px-1.5 py-0.5 text-blue-700">
+                {m.full_name}
+              </span>
+            ),
+          )
         )}
       </div>
 
@@ -594,10 +603,15 @@ function ManagersModal({
   const [selected, setSelected] = useState<number[]>(dept.managers.map((m) => m.id))
   const [saving, setSaving] = useState(false)
 
-  // Руководителем можно назначить только сотрудника с ролью manager — бэк
-  // отвергает остальных, поэтому и в списке их нет.
+  // Привязать к отделу можно только руководителя или табельщика — бэк отвергает
+  // остальных, поэтому и в списке их нет. Связь у обоих одна и та же
+  // (managed_departments), разница в правах: табельщик не видит финансов и не
+  // отправляет период на проверку (task_timekeeper_role).
   const candidates = useMemo(
-    () => (employees ?? []).filter((e) => e.role === 'manager' && e.is_active),
+    () =>
+      (employees ?? []).filter(
+        (e) => (e.role === 'manager' || e.role === 'timekeeper') && e.is_active,
+      ),
     [employees],
   )
 
@@ -621,7 +635,7 @@ function ManagersModal({
     <Modal
       isOpen
       onClose={onClose}
-      title={`Менеджеры отдела «${dept.name}»`}
+      title={`Руководители и табельщики отдела «${dept.name}»`}
       actions={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -634,14 +648,17 @@ function ManagersModal({
       }
     >
       <p className="mb-3 text-xs text-gray-500">
-        Менеджер видит табель, расчёт ЗП и сотрудников всех отделов, которыми руководит.
-        Отдел, где он сам числится, к этому отношения не имеет.
+        Руководитель видит табель, расчёт ЗП и сотрудников всех отделов, которыми
+        руководит, и отправляет период на проверку. Табельщик ведёт время тех же
+        отделов, но не видит финансов и период не отправляет. Отдел, где они сами
+        числятся, к этому отношения не имеет.
       </p>
 
       {isLoading && <p className="text-sm text-gray-500">Загрузка…</p>}
       {!isLoading && candidates.length === 0 && (
         <p className="text-sm text-gray-500">
-          Нет сотрудников с ролью «Руководитель». Выдайте роль в карточке сотрудника.
+          Нет сотрудников с ролью «Руководитель» или «Табельщик». Выдайте роль в карточке
+          сотрудника.
         </p>
       )}
 
@@ -657,6 +674,11 @@ function ManagersModal({
               onChange={() => toggle(e.id)}
             />
             <span className="text-gray-800">{e.full_name}</span>
+            {e.role === 'timekeeper' ? (
+              <Badge variant="gray">табельщик</Badge>
+            ) : (
+              <Badge variant="blue">руководитель</Badge>
+            )}
             {e.position && <span className="text-xs text-gray-500">{e.position}</span>}
             {e.department && (
               <span className="ml-auto text-xs text-gray-400">числится: {e.department.name}</span>
