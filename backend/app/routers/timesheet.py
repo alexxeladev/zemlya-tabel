@@ -55,7 +55,16 @@ from app.services.payroll_statement import (
     build_payroll_statement,
     build_payroll_summary,
 )
-from app.services.org_access import can_access_department
+from app.services.finance_masking import (
+    mask_employees,
+    mask_positions_by_employee,
+)
+from app.services.org_access import (
+    can_access_department,
+    can_see_finances,
+    hides_finances,
+    is_department_scoped,
+)
 from app.services.positions import department_ids_of, visible_positions
 from app.services.timesheet import (
     apply_autofill,
@@ -83,9 +92,10 @@ router = APIRouter()
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _require_dept_access(actor: Employee, department_id: int | None) -> None:
-    """Менеджер получает данные только своих отделов (task_org_structure ч.2).
+    """Менеджер и табельщик получают данные только своих отделов
+    (task_org_structure ч.2, task_timekeeper_role).
     `department_id is None` — фильтр не задан, отдавать все его отделы."""
-    if actor.role != "manager" or department_id is None:
+    if not is_department_scoped(actor) or department_id is None:
         return
     if not can_access_department(actor, department_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
@@ -103,6 +113,10 @@ def _check_cell_access(
     трогать не должен. Позиция не указана — достаточно доступа к любому её
     рабочему месту, иначе менеджер не смог бы править сотрудника, который
     числится основной позицией в другом отделе.
+
+    Табельщик по отделам устроен так же, как менеджер (task_timekeeper_role):
+    часы и отсутствия своих отделов он ведёт, а до финансовых эндпойнтов, которые
+    тоже вызывают этот хелпер, его не пускает `_require_finance_role` выше.
     """
     target = db.get(Employee, target_employee_id)
     if not target:
@@ -110,7 +124,7 @@ def _check_cell_access(
 
     if actor.role in ("admin", "accountant"):
         return target
-    if actor.role == "manager":
+    if is_department_scoped(actor):
         if position_id is not None:
             position = target.position_by_id(position_id)
             allowed = can_access_department(
@@ -135,8 +149,17 @@ def _check_company_exists(db: Session, company_id: int) -> None:
 
 
 def _require_finance_role(actor: Employee) -> None:
-    """Премии/KPI/удержания/займ видят и правят только admin/accountant/manager."""
-    if actor.role not in ("admin", "accountant", "manager"):
+    """Деньги (расчёт, ведомость, премии/KPI/удержания/займ, распределение) видят и
+    правят только admin/accountant/manager — см. `can_see_finances`. Табельщик
+    получает 403: он ведёт время, а не зарплату (task_timekeeper_role)."""
+    if not can_see_finances(actor):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+
+
+def _require_timesheet_role(actor: Employee) -> None:
+    """Работа с табелем отдела: часы, автозаполнение, выгрузка Т-13 (только часы,
+    без денег). Здесь табельщик есть, employee — нет."""
+    if actor.role not in ("admin", "accountant", "manager", "timekeeper"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
 
 
@@ -246,8 +269,7 @@ def get_payroll(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    if actor.role not in ("admin", "accountant", "manager"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    _require_finance_role(actor)
     if not (1 <= month <= 12) or not (2000 <= year <= 2100):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
@@ -462,14 +484,16 @@ def get_month(
 
     payroll = None
     adjustments: list[AdjustmentRead] = []
-    if actor.role in ("admin", "accountant", "manager"):
+    if can_see_finances(actor):
         adjustments = _load_adjustments(db, employees, year, month)
         if include_payroll:
+            # include_payroll от роли без доступа к деньгам игнорируем молча —
+            # проверка принудительная на бэке, а не «по просьбе» фронта.
             payroll = _build_payroll_summary(
                 db, employees, entries, year, month, actor, department_id
             )
 
-    return TimesheetMonthResponse(
+    response = TimesheetMonthResponse(
         year=year,
         month=month,
         employees=employees,
@@ -482,6 +506,15 @@ def get_month(
         payroll=payroll,
         adjustments=adjustments,
     )
+    if hides_finances(actor):
+        # Табельщику table приходит целиком, но без денег: оклад и ставки живут в
+        # карточке сотрудника и его позициях, а они часть этого же ответа
+        # (task_timekeeper_role). Скрывать это только в UI недостаточно.
+        response.employees = mask_employees(response.employees)
+        response.positions_by_employee = mask_positions_by_employee(
+            response.positions_by_employee
+        )
+    return response
 
 
 # ── Cell mutations ────────────────────────────────────────────────────────────
@@ -646,8 +679,7 @@ def autofill_preview(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    if actor.role not in ("admin", "accountant", "manager"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    _require_timesheet_role(actor)
     _require_dept_access(actor, payload.department_id)
     try:
         return build_autofill_preview(db, actor, payload.year, payload.month, payload.department_id)
@@ -661,8 +693,7 @@ def autofill_apply(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    if actor.role not in ("admin", "accountant", "manager"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    _require_timesheet_role(actor)
     _require_dept_access(actor, payload.department_id)
     try:
         preview = build_autofill_preview(db, actor, payload.year, payload.month, payload.department_id)
@@ -734,8 +765,8 @@ def export_excel(
     actor: Employee = Depends(get_current_user),
 ):
     """Экспорт табеля в Excel формата Т-13."""
-    if actor.role not in ("admin", "accountant", "manager"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Доступ запрещён")
+    # Т-13 — только часы, рублей в файле нет, поэтому табельщику он доступен.
+    _require_timesheet_role(actor)
     if not (1 <= month <= 12) or not (2000 <= year <= 2100):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
