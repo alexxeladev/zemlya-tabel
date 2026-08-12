@@ -9,6 +9,7 @@ from app.schemas.company import CompanyRead
 from app.schemas.employee import EmployeeRead
 from app.schemas.payout import AdjustmentRead
 from app.schemas.payroll import PayrollSummaryRead
+from app.schemas.position import EmployeePositionRead
 from app.schemas.timesheet_period import TimesheetPeriodRead
 
 
@@ -48,6 +49,10 @@ class TimesheetMonthResponse(BaseModel):
     entries: list[TimesheetEntryRead]
     periods: list[TimesheetPeriodRead]
     extra_companies_by_employee: dict[int, list[int]] = {}
+    # Рабочие места, ВИДИМЫЕ актору в этом отделе (task_positions ч.B): табель
+    # строит по строке на позицию. У совместителя с работой в двух отделах в
+    # табеле отдела видна только его позиция; менеджеру — только его отделы.
+    positions_by_employee: dict[int, list[EmployeePositionRead]] = {}
     # Коды отсутствий (ОТ/ДО/Б/Н) — видны всем, включая employee (свои дни)
     absences: list[AbsenceRead] = []
     payroll: PayrollSummaryRead | None = None

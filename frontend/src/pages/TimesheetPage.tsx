@@ -49,9 +49,39 @@ export type Employee = {
   loan_start_date?: string | null;
 };
 
+/**
+ * Рабочее место сотрудника (task_positions ч.B). Совместитель = несколько
+ * позиций, у каждой свои должность, график, отдел, компания и расчёт.
+ * `id === 0` — синтетическая позиция для сотрудника, которому бэк ничего не
+ * отдал: строка всё равно нужна, часы уйдут на основную (position_id не шлём).
+ */
+export type Position = {
+  id: number;
+  employee_id: number;
+  title: string | null;
+  display_title: string;
+  is_primary: boolean;
+  department_id: number | null;
+  department?: { id: number; name: string } | null;
+  schedule_id: number | null;
+  schedule?: { id: number; name: string; hours_per_shift: number } | null;
+  company_id: number | null;
+};
+
+/** Строка табеля = сотрудник × его позиция; ФИО объединяется через rowspan. */
+export type PositionRow = {
+  emp: Employee;
+  position: Position;
+  /** индекс позиции внутри сотрудника и общее их число — для rowspan */
+  index: number;
+  count: number;
+};
+
 export type Adjustment = {
   id: number;
   employee_id: number;
+  /** к какому рабочему месту относится премия/KPI/аванс */
+  position_id: number | null;
   year: number;
   month: number;
   kind: 'premium' | 'kpi' | 'advance';
@@ -71,6 +101,8 @@ export type Absence = {
 
 export type TimesheetEntry = {
   employee_id: number;
+  /** рабочее место, на которое отработаны часы; null — заведено до позиций */
+  position_id?: number | null;
   work_date: string; // 'YYYY-MM-DD'
   company_id: number;
   hours: number | string; // decimal на бэке -> может прилететь строкой
@@ -96,6 +128,10 @@ export type CompanyBreakdown = {
 
 export type EmployeePayroll = {
   employee_id: number;
+  /** строка расчёта = ПОЗИЦИЯ: employee_id у совместителя повторяется */
+  position_id?: number | null;
+  position_title?: string | null;
+  is_primary_position?: boolean;
   total_hours: string;
   norm_hours: string | null;
   delta_hours: string | null;
@@ -183,6 +219,8 @@ export type MonthResponse = {
   employees: Employee[];
   companies: Company[];
   entries: TimesheetEntry[];
+  /** видимые актору рабочие места по сотрудникам (табель отдела — только его) */
+  positions_by_employee?: Record<number, Position[]>;
   absences?: Absence[];
   payroll: PayrollSummary | null;
   periods: Period[];
@@ -192,6 +230,59 @@ export type MonthResponse = {
 type CalendarSummary = {
   days: Array<{ day: number; type: DayType; weekday: number }>;
 };
+
+// ──────────────────────────────────────────────────────────────
+// Позиции: ключи индексов и запасной вариант
+//
+// Строка табеля = сотрудник × позиция. Ключи часов/расчёта/премий содержат
+// position_id, поэтому у совместителя данные одного рабочего места не текут
+// в другое. Всё, что связано с позициями, собрано здесь — иначе формулу ключа
+// пришлось бы держать в голове в трёх файлах.
+// ──────────────────────────────────────────────────────────────
+
+/**
+ * Пересчитать index/count для rowspan ФИО внутри уже отобранного списка строк.
+ * Считать их заранее нельзя: позиции одного человека в разных отделах попадают
+ * в разные группы, и объединять их одной ячейкой не получится.
+ */
+export function withSpans(rows: PositionRow[]): PositionRow[] {
+  const counts = new Map<number, number>();
+  for (const r of rows) counts.set(r.emp.id, (counts.get(r.emp.id) ?? 0) + 1);
+  const seen = new Map<number, number>();
+  return rows.map((r) => {
+    const index = seen.get(r.emp.id) ?? 0;
+    seen.set(r.emp.id, index + 1);
+    return { ...r, index, count: counts.get(r.emp.id) ?? 1 };
+  });
+}
+
+/** Позиция, которую можно отправить на бэк; 0 — синтетическая (основная). */
+export function positionIdParam(position: Position | null | undefined): number | undefined {
+  return position && position.id > 0 ? position.id : undefined;
+}
+
+export function posKey(employeeId: number, positionId: number | null | undefined): string {
+  return `${employeeId}:${positionId ?? 0}`;
+}
+
+/**
+ * Позиция для сотрудника, которому бэк её не отдал (старый ответ, employee-роль):
+ * строка всё равно нужна, а часы уходят на основную — ровно как до части B.
+ */
+function syntheticPosition(emp: Employee): Position {
+  return {
+    id: 0,
+    employee_id: emp.id,
+    title: null,
+    display_title: '—',
+    is_primary: true,
+    department_id: emp.department_id,
+    department: emp.department ?? null,
+    schedule_id: emp.schedule_id,
+    schedule: emp.schedule ?? null,
+    company_id: emp.default_company_id,
+  };
+}
 
 // ──────────────────────────────────────────────────────────────
 // Палитра цветов компаний — общая с дашбордом (utils/colors.ts)
@@ -375,19 +466,51 @@ export function TimesheetPage() {
     return map;
   }, [calendar, year, month]);
 
-  // ── Индекс entries для быстрого доступа ──
-  const entriesByEmpDay = useMemo(() => {
+  // ── Позиции сотрудников (task_positions ч.B) ──
+  // Бэк отдаёт только ВИДИМЫЕ актору рабочие места: в табеле отдела — позиции
+  // этого отдела, менеджеру — только его отделов. Сотрудник с одной позицией
+  // даёт одну строку, как и раньше.
+  const positionsByEmp = useMemo(() => {
+    const map = new Map<number, Position[]>();
+    if (!data) return map;
+    const raw = data.positions_by_employee ?? {};
+    for (const emp of data.employees) {
+      const list = raw[emp.id] ?? [];
+      map.set(emp.id, list.length > 0 ? list : [syntheticPosition(emp)]);
+    }
+    return map;
+  }, [data]);
+
+  // Позиция, к которой относятся часы: строки без position_id заведены до
+  // появления позиций и принадлежат основной (иначе они бы просто исчезли).
+  const primaryPositionIdByEmp = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const [empId, list] of positionsByEmp) {
+      const primary = list.find((p) => p.is_primary) ?? list[0];
+      if (primary) map.set(empId, primary.id);
+    }
+    return map;
+  }, [positionsByEmp]);
+
+  const entryPositionId = useCallback(
+    (e: TimesheetEntry): number | undefined =>
+      e.position_id ?? primaryPositionIdByEmp.get(e.employee_id),
+    [primaryPositionIdByEmp]
+  );
+
+  // ── Индекс entries: `empId:posId:day` → слоты компаний этого дня ──
+  const entriesByPosDay = useMemo(() => {
     const map = new Map<string, TimesheetEntry[]>();
     if (!data) return map;
     for (const e of data.entries) {
       const day = parseInt(e.work_date.slice(-2), 10);
-      const key = `${e.employee_id}:${day}`;
+      const key = `${posKey(e.employee_id, entryPositionId(e))}:${day}`;
       const arr = map.get(key);
       if (arr) arr.push(e);
       else map.set(key, [e]);
     }
     return map;
-  }, [data]);
+  }, [data, entryPositionId]);
 
   // ── Индекс отсутствий: `empId:day` → код дня (в дне либо часы, либо код) ──
   const absenceByEmpDay = useMemo(() => {
@@ -399,25 +522,43 @@ export function TimesheetPage() {
     return map;
   }, [data]);
 
-  const payrollByEmp = useMemo(() => {
-    const map = new Map<number, EmployeePayroll>();
+  // Расчёт — строка на ПОЗИЦИЮ: ключ `empId:posId`, иначе у совместителя
+  // вторая позиция затёрла бы первую.
+  const payrollByPos = useMemo(() => {
+    const map = new Map<string, EmployeePayroll>();
     if (!data?.payroll) return map;
-    for (const p of data.payroll.employees) map.set(p.employee_id, p);
-    return map;
-  }, [data]);
-
-  // Премии/KPI/авансы по сотруднику (задача 3.11a)
-  const adjByEmp = useMemo(() => {
-    const map = new Map<number, Adjustment[]>();
-    for (const a of data?.adjustments ?? []) {
-      if (!map.has(a.employee_id)) map.set(a.employee_id, []);
-      map.get(a.employee_id)!.push(a);
+    for (const p of data.payroll.employees) {
+      map.set(posKey(p.employee_id, p.position_id), p);
     }
     return map;
   }, [data]);
 
-  // Открытый модал: сотрудник + категория (своя кнопка в каждом столбце)
-  const [adjModal, setAdjModal] = useState<{ emp: Employee; category: 'premium' | 'kpi' | 'deduction' } | null>(null);
+  const payrollFor = useCallback(
+    (emp: Employee, position: Position): EmployeePayroll | undefined =>
+      payrollByPos.get(posKey(emp.id, positionIdParam(position)))
+      // Синтетическая позиция: расчёт пришёл на основную, id которой мы не знаем
+      ?? (position.id === 0
+        ? data?.payroll?.employees.find((p) => p.employee_id === emp.id)
+        : undefined),
+    [payrollByPos, data]
+  );
+
+  // Премии/KPI/авансы адресованы конкретному рабочему месту (задача 3.11a + позиции)
+  const adjByPos = useMemo(() => {
+    const map = new Map<string, Adjustment[]>();
+    for (const a of data?.adjustments ?? []) {
+      const pid = a.position_id ?? primaryPositionIdByEmp.get(a.employee_id);
+      const key = posKey(a.employee_id, pid);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(a);
+    }
+    return map;
+  }, [data, primaryPositionIdByEmp]);
+
+  // Открытый модал: рабочее место + категория (своя кнопка в каждом столбце)
+  const [adjModal, setAdjModal] = useState<
+    { emp: Employee; position: Position; category: 'premium' | 'kpi' | 'deduction' } | null
+  >(null);
 
   // ── Видимые сотрудники (бэк уже исключил системных админов и применил видимость) ──
   const visibleEmployees = useMemo(() => {
@@ -465,30 +606,51 @@ export function TimesheetPage() {
     });
   }, [visibleEmployees, searchNeedle, companyFilter, companiesByEmp, filtersActive]);
 
+  // ── Строки табеля: сотрудник × позиция (task_positions ч.B) ──
+  // Одна позиция = одна строка, как было до совместительства.
+  const shownRows = useMemo(() => {
+    const rows: PositionRow[] = [];
+    for (const emp of shownEmployees) {
+      const list = positionsByEmp.get(emp.id) ?? [];
+      list.forEach((position, index) => {
+        rows.push({ emp, position, index, count: list.length });
+      });
+    }
+    return rows;
+  }, [shownEmployees, positionsByEmp]);
+
   // ── Группировка по отделам (Bug 5): только при «Все отделы» для admin/accountant ──
+  // Отдел — свойство ПОЗИЦИИ, поэтому группируем строки, а не сотрудников:
+  // подработка в другом отделе попадает в свою группу (и под свой период).
   const grouped = canSelectDept && departmentFilter === null;
   const groups = useMemo(() => {
-    const byDept = new Map<number | null, Employee[]>();
-    for (const e of shownEmployees) {
-      const k = e.department_id ?? null;
+    const byDept = new Map<number | null, PositionRow[]>();
+    for (const row of shownRows) {
+      const k = row.position.department_id ?? null;
       if (!byDept.has(k)) byDept.set(k, []);
-      byDept.get(k)!.push(e);
+      byDept.get(k)!.push(row);
     }
     const entries = Array.from(byDept.entries());
     entries.sort((a, b) => {
       if (a[0] === null) return 1; // «Без отдела» — в самый низ
       if (b[0] === null) return -1;
-      const na = a[1][0]?.department?.name ?? '';
-      const nb = b[1][0]?.department?.name ?? '';
+      const na = a[1][0]?.position.department?.name ?? '';
+      const nb = b[1][0]?.position.department?.name ?? '';
       return na.localeCompare(nb, 'ru');
     });
-    return entries.map(([deptId, emps]) => ({
+    return entries.map(([deptId, rows]) => ({
       deptId,
-      name: deptId === null ? 'Без отдела' : emps[0]?.department?.name ?? `Отдел ${deptId}`,
-      employees: emps,
+      name: deptId === null
+        ? 'Без отдела'
+        : rows[0]?.position.department?.name ?? `Отдел ${deptId}`,
+      // rowspan считаем внутри группы: позиции одного человека в разных
+      // отделах попадают в разные группы, объединить их одной ячейкой нельзя.
+      rows: withSpans(rows),
       period: data?.periods.find((p) => p.department_id === deptId) ?? null,
     }));
-  }, [shownEmployees, data]);
+  }, [shownRows, data]);
+
+  const flatRows = useMemo(() => withSpans(shownRows), [shownRows]);
 
   // ── Видны ли все периоды в draft? Для autofill / submit ──
   const allEditable = useMemo(() => {
@@ -508,11 +670,18 @@ export function TimesheetPage() {
   }, [canSelectDept]);
 
   // ── Действия со слотами ──
+  // Часы всегда пишутся на КОНКРЕТНОЕ рабочее место: у совместителя это
+  // разные графики, нормы и юрлица (task_positions ч.B). positionId не задан
+  // — бэк отнесёт часы к основной позиции, как было до части B.
   const saveSlot = useCallback(
-    async (employeeId: number, day: number, companyId: number, hours: number) => {
+    async (
+      employeeId: number, day: number, companyId: number, hours: number,
+      positionId?: number,
+    ) => {
       try {
         await timesheetApi.saveCell({
           employee_id: employeeId,
+          position_id: positionId ?? null,
           work_date: dateStr(year, month, day),
           company_id: companyId,
           hours,
@@ -544,16 +713,21 @@ export function TimesheetPage() {
   );
 
   const changeSlotCompany = useCallback(
-    async (employeeId: number, day: number, oldCompanyId: number, newCompanyId: number, hours: number) => {
+    async (
+      employeeId: number, day: number, oldCompanyId: number, newCompanyId: number,
+      hours: number, positionId?: number,
+    ) => {
       try {
         await timesheetApi.saveCell({
           employee_id: employeeId,
+          position_id: positionId ?? null,
           work_date: dateStr(year, month, day),
           company_id: oldCompanyId,
           hours: 0,
         });
         await timesheetApi.saveCell({
           employee_id: employeeId,
+          position_id: positionId ?? null,
           work_date: dateStr(year, month, day),
           company_id: newCompanyId,
           hours,
@@ -567,15 +741,17 @@ export function TimesheetPage() {
   );
 
   const addSlot = useCallback(
-    (employeeId: number, day: number) => {
+    (emp: Employee, position: Position, day: number) => {
       if (!data) return;
-      const existing = entriesByEmpDay.get(`${employeeId}:${day}`) ?? [];
+      const positionId = positionIdParam(position);
+      const existing = entriesByPosDay.get(`${posKey(emp.id, position.id)}:${day}`) ?? [];
       const used = new Set(existing.map((e) => e.company_id));
-      // выбираем первую доступную компанию (default если свободна, иначе любую свободную)
-      const emp = data.employees.find((e) => e.id === employeeId);
+      // Компания по умолчанию — основная компания ЭТОГО рабочего места:
+      // у совместителя подработку обычно оплачивает другое юрлицо.
       let chosen: Company | undefined;
-      if (emp?.default_company_id && !used.has(emp.default_company_id)) {
-        chosen = data.companies.find((c) => c.id === emp.default_company_id);
+      const defaultCompanyId = position.company_id ?? emp.default_company_id;
+      if (defaultCompanyId && !used.has(defaultCompanyId)) {
+        chosen = data.companies.find((c) => c.id === defaultCompanyId);
       }
       if (!chosen) {
         chosen = data.companies.find((c) => !used.has(c.id));
@@ -584,11 +760,11 @@ export function TimesheetPage() {
         toast.info('Нет свободных компаний');
         return;
       }
-      // дефолтное значение часов — длительность смены сотрудника или 8
-      const def = emp?.schedule?.hours_per_shift ?? 8;
-      saveSlot(employeeId, day, chosen.id, def);
+      // Часы по умолчанию — длительность смены графика ЭТОЙ позиции
+      const def = position.schedule?.hours_per_shift ?? emp.schedule?.hours_per_shift ?? 8;
+      saveSlot(emp.id, day, chosen.id, def, positionId);
     },
-    [data, entriesByEmpDay, saveSlot]
+    [data, entriesByPosDay, saveSlot]
   );
 
   // ── Excel export ──
@@ -721,45 +897,68 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // Денежный блок: Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Праздн.,Отпуск,Больн,Премия,KPI,
+  // ФИО,Должность,Отдел,График(4) + дни + Итого ч + денежный блок:
+  // Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Праздн.,Отпуск,Больн,Премия,KPI,
   // Итого₽,Удержано,К выплате
-  const totalCols = 3 + numDays + (canSeeMoney ? 15 : 1);
+  const totalCols = 4 + numDays + (canSeeMoney ? 15 : 1);
 
-  const renderEmployeeRow = (emp: Employee) => {
-    const pay = payrollByEmp.get(emp.id);
-    const empTotal = num(pay?.total_hours, 0) || sumEmployeeHours(emp.id, data.entries);
-    const periodEditable = periodForDept(emp.department_id)?.can_edit ?? false;
-    const noSchedule = !emp.schedule;
+  // Одна строка = одно рабочее место. У сотрудника с единственной позицией
+  // строка ровно одна, как было до совместительства; у совместителя ФИО
+  // объединяется по его строкам через rowspan.
+  const renderPositionRow = ({ emp, position, index, count }: PositionRow) => {
+    const positionId = positionIdParam(position);
+    const pay = payrollFor(emp, position);
+    const rowTotal = num(pay?.total_hours, 0)
+      || sumPositionHours(emp.id, positionId, data.entries, primaryPositionIdByEmp);
+    const periodEditable = periodForDept(position.department_id)?.can_edit ?? false;
+    const schedule = position.schedule ?? null;
+    const noSchedule = !schedule;
+    const isFirst = index === 0;
 
     return (
       <tr
-        key={emp.id}
+        key={`${emp.id}-${position.id}`}
         className="hover:bg-blue-50/30"
         title={noSchedule ? 'График не задан, автозаполнение по графику недоступно' : undefined}
       >
-        {/* ── Sticky-колонка сотрудника ── */}
-        <td
-          className="sticky left-0 bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900"
-          style={{ minWidth: 200, zIndex: 10 }}
-          title={emp.full_name}
-        >
-          <div className="truncate max-w-[200px]">{emp.full_name}</div>
+        {/* ── Sticky-колонка сотрудника: merge на все его позиции ── */}
+        {isFirst && (
+          <td
+            rowSpan={count}
+            className="sticky left-0 bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
+            style={{ minWidth: 200, zIndex: 10 }}
+            title={emp.full_name}
+          >
+            <div className="truncate max-w-[200px]">{emp.full_name}</div>
+            {count > 1 && (
+              <div className="text-[10px] font-normal text-gray-400">
+                совместительство: {count} места
+              </div>
+            )}
+          </td>
+        )}
+        {/* Должность / отдел / график — у КАЖДОГО рабочего места свои */}
+        <td className="border border-gray-200 px-2 py-2 text-xs text-gray-700">
+          <span className="truncate">{position.display_title}</span>
+          {position.is_primary && count > 1 && (
+            <span className="ml-1 text-[9px] text-gray-400">осн.</span>
+          )}
         </td>
         <td className="border border-gray-200 px-2 py-2 text-xs text-gray-600">
-          {emp.department?.name ?? '—'}
+          {position.department?.name ?? '—'}
         </td>
         <td className="border border-gray-200 px-2 py-2 text-xs text-center font-mono text-gray-600">
           {noSchedule ? (
             <span className="italic text-gray-400 font-sans">не задан</span>
           ) : (
-            emp.schedule?.name
+            schedule?.name
           )}
         </td>
 
         {/* ── Дни ── */}
         {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => {
           const t = dayTypes[d];
-          const slots = entriesByEmpDay.get(`${emp.id}:${d}`) ?? [];
+          const slots = entriesByPosDay.get(`${posKey(emp.id, position.id)}:${d}`) ?? [];
           const absence = absenceByEmpDay.get(`${emp.id}:${d}`);
           const isOff = t === 'weekend' || t === 'holiday';
 
@@ -781,13 +980,17 @@ export function TimesheetPage() {
               style={{ minWidth: 84 }}
             >
               <div className="flex flex-col gap-1">
-                {/* День с кодом отсутствия: часов в нём нет по определению */}
+                {/* День с кодом отсутствия: часов в нём нет по определению.
+                    Код ставится на ВЕСЬ день человека (он отсутствует на всех
+                    работах), поэтому рисуем и снимаем его на первой строке. */}
                 {absence ? (
-                  <AbsenceChip
-                    absence={absence}
-                    disabled={!periodEditable}
-                    onClear={() => setAbsence(emp.id, d, null)}
-                  />
+                  isFirst ? (
+                    <AbsenceChip
+                      absence={absence}
+                      disabled={!periodEditable}
+                      onClear={() => setAbsence(emp.id, d, null)}
+                    />
+                  ) : null
                 ) : (
                   <>
                     {slots.map((slot) => (
@@ -796,11 +999,13 @@ export function TimesheetPage() {
                         slot={slot}
                         companies={data.companies}
                         disabled={!periodEditable}
-                        onHoursChange={(h) => saveSlot(emp.id, d, slot.company_id, h)}
+                        onHoursChange={(h) => saveSlot(emp.id, d, slot.company_id, h, positionId)}
                         onCompanyChange={(newCompId) =>
-                          changeSlotCompany(emp.id, d, slot.company_id, newCompId, num(slot.hours))
+                          changeSlotCompany(
+                            emp.id, d, slot.company_id, newCompId, num(slot.hours), positionId,
+                          )
                         }
-                        onDelete={() => saveSlot(emp.id, d, slot.company_id, 0)}
+                        onDelete={() => saveSlot(emp.id, d, slot.company_id, 0, positionId)}
                       />
                     ))}
                     {periodEditable && (
@@ -809,7 +1014,7 @@ export function TimesheetPage() {
                       <div className="flex items-center gap-1 h-[22px]">
                         <button
                           type="button"
-                          onClick={() => addSlot(emp.id, d)}
+                          onClick={() => addSlot(emp, position, d)}
                           className={
                             'flex-1 min-w-0 h-full text-[10px] leading-none border border-dashed rounded ' +
                             (isOff
@@ -820,7 +1025,8 @@ export function TimesheetPage() {
                         >
                           +
                         </button>
-                        <AbsencePicker onPick={(kind) => setAbsence(emp.id, d, kind)} />
+                        {/* Код отсутствия — на человека целиком, ставится с первой строки */}
+                        {isFirst && <AbsencePicker onPick={(kind) => setAbsence(emp.id, d, kind)} />}
                       </div>
                     )}
                   </>
@@ -830,9 +1036,9 @@ export function TimesheetPage() {
           );
         })}
 
-        {/* ── Итого часов ── */}
+        {/* ── Итого часов по этому рабочему месту ── */}
         <td className="border border-gray-200 px-3 py-2 text-center font-mono font-semibold bg-gray-50">
-          {fmtHours(empTotal)}
+          {fmtHours(rowTotal)}
         </td>
 
         {/* ── Финансы ── */}
@@ -912,7 +1118,7 @@ export function TimesheetPage() {
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
               <button
                 type="button"
-                onClick={() => setAdjModal({ emp, category: 'premium' })}
+                onClick={() => setAdjModal({ emp, position, category: 'premium' })}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-blue-50 text-gray-700"
                 title="Премии"
               >
@@ -924,7 +1130,7 @@ export function TimesheetPage() {
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
               <button
                 type="button"
-                onClick={() => setAdjModal({ emp, category: 'kpi' })}
+                onClick={() => setAdjModal({ emp, position, category: 'kpi' })}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-blue-50 text-gray-700"
                 title="KPI"
               >
@@ -939,7 +1145,7 @@ export function TimesheetPage() {
             <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs text-red-600">
               <button
                 type="button"
-                onClick={() => setAdjModal({ emp, category: 'deduction' })}
+                onClick={() => setAdjModal({ emp, position, category: 'deduction' })}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-red-50 text-red-600"
                 title="Аванс и займ"
               >
@@ -1215,10 +1421,11 @@ export function TimesheetPage() {
             month={month}
             numDays={numDays}
             dayTypes={dayTypes}
-            visibleEmployees={shownEmployees}
+            rows={flatRows}
             grouped={grouped}
             groups={groups}
-            payrollByEmp={payrollByEmp}
+            payrollFor={payrollFor}
+            entryPositionId={entryPositionId}
             absenceByEmpDay={absenceByEmpDay}
             canSeeMoney={canSeeMoney}
             saveSlot={saveSlot}
@@ -1243,6 +1450,13 @@ export function TimesheetPage() {
                 style={{ minWidth: 200, zIndex: 30 }}
               >
                 Сотрудник
+              </th>
+              <th
+                className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
+                style={{ minWidth: 110, zIndex: 20 }}
+                title="Рабочее место: у совместителя строка на каждое, со своим графиком и расчётом"
+              >
+                Должность
               </th>
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
@@ -1393,7 +1607,7 @@ export function TimesheetPage() {
             {shownEmployees.length === 0 && (
               <tr>
                 <td
-                  colSpan={3 + numDays + (canSeeMoney ? 8 : 1)}
+                  colSpan={totalCols}
                   className="text-center text-gray-500 py-10"
                 >
                   {filtersActive ? 'Никто не найден по этим фильтрам' : 'Нет сотрудников'}
@@ -1405,10 +1619,10 @@ export function TimesheetPage() {
               ? groups.map((g) => (
                   <Fragment key={`grp-${g.deptId ?? 'null'}`}>
                     {renderGroupDivider(g.deptId, g.name, g.period)}
-                    {g.employees.map((emp) => renderEmployeeRow(emp))}
+                    {g.rows.map((row) => renderPositionRow(row))}
                   </Fragment>
                 ))
-              : shownEmployees.map((emp) => renderEmployeeRow(emp))}
+              : flatRows.map((row) => renderPositionRow(row))}
 
             {/* ===== ИТОГО строка ===== */}
             {visibleEmployees.length > 0 && (
@@ -1419,7 +1633,7 @@ export function TimesheetPage() {
                 >
                   ИТОГО
                 </td>
-                <td className="border border-gray-300 px-2 py-2" colSpan={2}></td>
+                <td className="border border-gray-300 px-2 py-2" colSpan={3}></td>
                 {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => (
                   <td
                     key={d}
@@ -1536,11 +1750,12 @@ export function TimesheetPage() {
       {adjModal && (
         <AdjustmentsModal
           employee={adjModal.emp}
+          position={adjModal.position}
           category={adjModal.category}
           year={year}
           month={month}
-          payroll={payrollByEmp.get(adjModal.emp.id) ?? null}
-          adjustments={adjByEmp.get(adjModal.emp.id) ?? []}
+          payroll={payrollFor(adjModal.emp, adjModal.position) ?? null}
+          adjustments={adjByPos.get(posKey(adjModal.emp.id, adjModal.position.id)) ?? []}
           onClose={() => setAdjModal(null)}
           onChanged={() => reload()}
         />
@@ -1666,10 +1881,22 @@ function dayTypeLabel(t: DayType): string {
   }[t];
 }
 
-function sumEmployeeHours(empId: number, entries: TimesheetEntry[]): number {
+/**
+ * Часы ОДНОГО рабочего места — запасной итог, если расчёт не пришёл.
+ * Строки без position_id заведены до появления позиций и относятся к основной.
+ */
+function sumPositionHours(
+  empId: number,
+  positionId: number | undefined,
+  entries: TimesheetEntry[],
+  primaryByEmp: Map<number, number>,
+): number {
   let s = 0;
   for (const e of entries) {
-    if (e.employee_id === empId) s += num(e.hours);
+    if (e.employee_id !== empId) continue;
+    const pid = e.position_id ?? primaryByEmp.get(e.employee_id);
+    // Синтетическая позиция (id не знаем) собирает все часы сотрудника.
+    if (positionId === undefined || pid === positionId) s += num(e.hours);
   }
   return s;
 }
@@ -2021,6 +2248,7 @@ const CATEGORY_TITLE: Record<string, string> = {
 
 function AdjustmentsModal({
   employee,
+  position,
   category,
   year,
   month,
@@ -2030,6 +2258,8 @@ function AdjustmentsModal({
   onChanged,
 }: {
   employee: Employee;
+  /** премия/KPI/аванс адресуются рабочему месту, на котором заработаны */
+  position: Position;
   category: 'premium' | 'kpi' | 'deduction';
   year: number;
   month: number;
@@ -2063,7 +2293,8 @@ function AdjustmentsModal({
     setBusy(true);
     try {
       await timesheetApi.createAdjustment({
-        employee_id: employee.id, year, month, kind,
+        employee_id: employee.id, position_id: positionIdParam(position) ?? null,
+        year, month, kind,
         amount: String(amt), reason: reason.trim(),
       });
       setAmount('');
@@ -2132,7 +2363,11 @@ function AdjustmentsModal({
           </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-xl leading-none">×</button>
         </div>
-        <p className="text-xs text-gray-500 mb-4">{MONTH_NAMES_RU[month - 1]} {year}</p>
+        <p className="text-xs text-gray-500 mb-4">
+          {MONTH_NAMES_RU[month - 1]} {year}
+          {/* Начисление попадает в «к выплате» ЭТОГО рабочего места */}
+          {position.id > 0 && <> · рабочее место: <strong>{position.display_title}</strong></>}
+        </p>
 
         {/* Существующие записи этой категории */}
         <div className="mb-4">

@@ -1,18 +1,23 @@
 // frontend/src/pages/TimesheetCompanyView.tsx
-// Альтернативный вид табеля: каждый сотрудник = N строк по компаниям.
+// Альтернативный вид табеля: сотрудник = N строк по РАБОЧИМ МЕСТАМ × компаниям.
 // Делается РЯДОМ с классическим видом (TimesheetPage), не вместо. Переключается
 // тумблером в шапке (store/timesheetView). Данные — те же, что у классического
 // вида (передаются пропсами из TimesheetPage), отличается только рендеринг.
 //
-// Структура строки:
-//   ФИО | Отдел | График  (merge через rowspan на все строки сотрудника)
+// Структура строки (task_positions ч.B — уровней merge стало два):
+//   ФИО                                     (rowspan на ВСЕ строки сотрудника)
+//   Должность | Отдел | График              (rowspan на строки этой позиции)
 //   Компания | дни 1..N | Итого Ч компании |
 //   [Оклад | Сверхур.Ч | Вне граф.Ч | Празд.Ч | Сверхур.₽ | Вне граф.₽ | Празд.₽]
-//   Итого Ч | [Итого ₽ | Δ] | Норма  (merge через rowspan)
+//   Итого Ч | [Итого ₽ | Δ] | Норма         (rowspan на строки этой позиции)
+//
+// Итоги и расчёт — у ПОЗИЦИИ: у совместителя каждое рабочее место со своим
+// окладом, графиком и нормой, «к выплате» между ними не суммируется.
 //
 // Каждая строка компании редактируется как одна ячейка в день (часы по этой
-// компании). Кнопка «+ комп.» добавляет строку компании (draft), «×» убирает
-// дополнительную строку с 0 часов. Родительская (default_company) — всегда, без «×».
+// компании этого рабочего места). Кнопка «+ комп.» добавляет строку компании
+// (draft), «×» убирает дополнительную строку с 0 часов. Родительская
+// (основная компания позиции) — всегда, без «×».
 
 import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { companyColorByIndex } from '../utils/colors';
@@ -21,6 +26,8 @@ import type { AbsenceKind } from '../types/api';
 import {
   PeriodBadge,
   DeltaCell,
+  posKey,
+  positionIdParam,
   type Absence,
   type Employee,
   type Company,
@@ -29,12 +36,15 @@ import {
   type CompanyBreakdown,
   type MonthResponse,
   type Period,
+  type Position,
+  type PositionRow,
+  type TimesheetEntry,
 } from './TimesheetPage';
 
 type Group = {
   deptId: number | null;
   name: string;
-  employees: Employee[];
+  rows: PositionRow[];
   period: Period | null;
 };
 
@@ -44,14 +54,19 @@ type Props = {
   month: number;
   numDays: number;
   dayTypes: Record<number, DayType>;
-  visibleEmployees: Employee[];
+  /** строки «сотрудник × рабочее место», уже отфильтрованные и со span-ами */
+  rows: PositionRow[];
   grouped: boolean;
   groups: Group[];
-  payrollByEmp: Map<number, EmployeePayroll>;
+  payrollFor: (emp: Employee, position: Position) => EmployeePayroll | undefined;
+  /** позиция часов: строки без position_id принадлежат основной */
+  entryPositionId: (entry: TimesheetEntry) => number | undefined;
   // Коды отсутствий: `empId:day` → отметка. День с кодом часов не имеет.
   absenceByEmpDay: Map<string, Absence>;
   canSeeMoney: boolean;
-  saveSlot: (employeeId: number, day: number, companyId: number, hours: number) => void;
+  saveSlot: (
+    employeeId: number, day: number, companyId: number, hours: number, positionId?: number,
+  ) => void;
   setAbsence: (employeeId: number, day: number, kind: AbsenceKind | null) => void;
   periodForDept: (deptId: number | null) => Period | undefined;
   dayTotals: number[];
@@ -65,12 +80,13 @@ const WEEKDAY_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
 // Закреплённые слева колонки: фиксированные ширины + накопленные смещения.
 // Фикс. ширина обязательна, иначе sticky-смещения «разъезжаются».
-const COL_W = { name: 190, dept: 110, sched: 64, company: 150 };
+const COL_W = { name: 170, position: 120, dept: 100, sched: 60, company: 140 };
 const COL_LEFT = {
   name: 0,
-  dept: COL_W.name,
-  sched: COL_W.name + COL_W.dept,
-  company: COL_W.name + COL_W.dept + COL_W.sched,
+  position: COL_W.name,
+  dept: COL_W.name + COL_W.position,
+  sched: COL_W.name + COL_W.position + COL_W.dept,
+  company: COL_W.name + COL_W.position + COL_W.dept + COL_W.sched,
 };
 function stickyLeft(left: number, width: number, z = 10): CSSProperties {
   return { position: 'sticky', left, width, minWidth: width, maxWidth: width, zIndex: z };
@@ -113,7 +129,7 @@ function dayTypeLabel(t: DayType): string {
   }[t];
 }
 
-// Описание одной строки-компании сотрудника
+// Описание одной строки-компании внутри рабочего места
 type CompanyRow = {
   companyId: number | null;
   isParent: boolean;
@@ -122,33 +138,35 @@ type CompanyRow = {
 
 export function TimesheetCompanyView(props: Props) {
   const {
-    data, year, month, numDays, dayTypes, visibleEmployees, grouped, groups,
-    payrollByEmp, absenceByEmpDay, canSeeMoney, saveSlot, setAbsence,
+    data, year, month, numDays, dayTypes, rows, grouped, groups,
+    payrollFor, entryPositionId, absenceByEmpDay, canSeeMoney, saveSlot, setAbsence,
     periodForDept, dayTotals,
     onSubmit, onClose, onReturn, onReopen,
   } = props;
 
-  // Локальные «добавленные вручную» компании (без zustand — как expanded в классике)
-  const [addedByEmp, setAddedByEmp] = useState<Map<number, number[]>>(new Map());
-  // Какому сотруднику открыт выпадающий список «+ комп.»
-  const [adderOpenFor, setAdderOpenFor] = useState<number | null>(null);
+  // Локальные «добавленные вручную» компании (без zustand — как expanded в классике).
+  // Ключ — рабочее место: у совместителя компании подработки свои.
+  const [addedByPos, setAddedByPos] = useState<Map<string, number[]>>(new Map());
+  // Какому рабочему месту открыт выпадающий список «+ комп.»
+  const [adderOpenFor, setAdderOpenFor] = useState<string | null>(null);
 
-  // ── Индексы по entries ──
-  const { cellHours, compHours, hoursCompaniesByEmp } = useMemo(() => {
-    const cellHours = new Map<string, number>(); // emp:comp:day -> hours
-    const compHours = new Map<string, number>(); // emp:comp -> total
-    const hoursCompaniesByEmp = new Map<number, Set<number>>();
+  // ── Индексы по entries: всё с разрезом по позиции ──
+  const { cellHours, compHours, hoursCompaniesByPos } = useMemo(() => {
+    const cellHours = new Map<string, number>(); // emp:pos:comp:day -> hours
+    const compHours = new Map<string, number>(); // emp:pos:comp -> total
+    const hoursCompaniesByPos = new Map<string, Set<number>>();
     for (const e of data.entries) {
       const day = parseInt(e.work_date.slice(-2), 10);
       const h = num(e.hours);
-      cellHours.set(`${e.employee_id}:${e.company_id}:${day}`, h);
-      const ck = `${e.employee_id}:${e.company_id}`;
+      const pk = posKey(e.employee_id, entryPositionId(e));
+      cellHours.set(`${pk}:${e.company_id}:${day}`, h);
+      const ck = `${pk}:${e.company_id}`;
       compHours.set(ck, (compHours.get(ck) ?? 0) + h);
-      if (!hoursCompaniesByEmp.has(e.employee_id)) hoursCompaniesByEmp.set(e.employee_id, new Set());
-      if (h > 0) hoursCompaniesByEmp.get(e.employee_id)!.add(e.company_id);
+      if (!hoursCompaniesByPos.has(pk)) hoursCompaniesByPos.set(pk, new Set());
+      if (h > 0) hoursCompaniesByPos.get(pk)!.add(e.company_id);
     }
-    return { cellHours, compHours, hoursCompaniesByEmp };
-  }, [data.entries]);
+    return { cellHours, compHours, hoursCompaniesByPos };
+  }, [data.entries, entryPositionId]);
 
   // Порядок компаний (для стабильной сортировки строк) — по data.companies
   const companyOrder = useMemo(() => {
@@ -163,112 +181,153 @@ export function TimesheetCompanyView(props: Props) {
     return m;
   }, [data.companies]);
 
-  // Строки-компании сотрудника (родительская + где есть часы + добавленные вручную)
-  const rowsForEmp = (emp: Employee): CompanyRow[] => {
-    const parentId = emp.default_company_id;
-    const withHours = hoursCompaniesByEmp.get(emp.id) ?? new Set<number>();
-    const added = addedByEmp.get(emp.id) ?? [];
+  // Строки-компании рабочего места: основная компания позиции + где есть часы
+  // + добавленные вручную.
+  const rowsForPosition = (emp: Employee, position: Position): CompanyRow[] => {
+    const pk = posKey(emp.id, position.id);
+    const parentId = position.company_id ?? emp.default_company_id;
+    const withHours = hoursCompaniesByPos.get(pk) ?? new Set<number>();
+    const added = addedByPos.get(pk) ?? [];
     const seen = new Set<number>();
-    const rows: CompanyRow[] = [];
+    const result: CompanyRow[] = [];
 
     if (parentId != null) {
-      rows.push({ companyId: parentId, isParent: true, removable: false });
+      result.push({ companyId: parentId, isParent: true, removable: false });
       seen.add(parentId);
     }
     const others = Array.from(new Set<number>([...withHours, ...added]))
       .filter((cid) => !seen.has(cid))
       .sort((a, b) => (companyOrder.get(a) ?? 0) - (companyOrder.get(b) ?? 0));
     for (const cid of others) {
-      const total = compHours.get(`${emp.id}:${cid}`) ?? 0;
-      rows.push({ companyId: cid, isParent: false, removable: total === 0 });
+      const total = compHours.get(`${pk}:${cid}`) ?? 0;
+      result.push({ companyId: cid, isParent: false, removable: total === 0 });
       seen.add(cid);
     }
-    if (rows.length === 0) {
-      // нет ни родительской, ни часов — плейсхолдер-строка
-      rows.push({ companyId: null, isParent: true, removable: false });
+    if (result.length === 0) {
+      // нет ни основной компании, ни часов — плейсхолдер-строка
+      result.push({ companyId: null, isParent: true, removable: false });
     }
-    return rows;
+    return result;
   };
 
-  const breakdownFor = (emp: Employee, companyId: number | null): CompanyBreakdown | undefined => {
-    if (companyId == null) return undefined;
-    const pay = payrollByEmp.get(emp.id);
-    return pay?.breakdown_by_company?.find((b) => b.company_id === companyId);
-  };
-
-  const availableCompanies = (rows: CompanyRow[]): Company[] => {
-    const shown = new Set(rows.map((r) => r.companyId).filter((x): x is number => x != null));
+  const availableCompanies = (companyRows: CompanyRow[]): Company[] => {
+    const shown = new Set(
+      companyRows.map((r) => r.companyId).filter((x): x is number => x != null),
+    );
     return data.companies.filter((c) => !shown.has(c.id));
   };
 
-  const addCompany = (empId: number, companyId: number) => {
-    setAddedByEmp((prev) => {
+  const addCompany = (pk: string, companyId: number) => {
+    setAddedByPos((prev) => {
       const next = new Map(prev);
-      const arr = next.get(empId) ?? [];
-      if (!arr.includes(companyId)) next.set(empId, [...arr, companyId]);
+      const arr = next.get(pk) ?? [];
+      if (!arr.includes(companyId)) next.set(pk, [...arr, companyId]);
       return next;
     });
     setAdderOpenFor(null);
   };
 
-  const removeCompany = (empId: number, companyId: number) => {
-    setAddedByEmp((prev) => {
+  const removeCompany = (pk: string, companyId: number) => {
+    setAddedByPos((prev) => {
       const next = new Map(prev);
-      const arr = (next.get(empId) ?? []).filter((c) => c !== companyId);
-      next.set(empId, arr);
+      next.set(pk, (next.get(pk) ?? []).filter((c) => c !== companyId));
       return next;
     });
   };
 
-  // Кол-во денежных колонок по компании и emp-level (для colSpan строки ИТОГО)
+  // Кол-во денежных колонок по компании и position-level (для colSpan строки ИТОГО)
   const companyMoneyCols = canSeeMoney ? 7 : 0; // Оклад, Сверхур.Ч, Вне граф.Ч, Празд.Ч, Сверхур.₽, Вне граф.₽, Празд.₽
-  const empMoneyCols = canSeeMoney ? 2 : 0; // Итого ₽, Δ
+  const posMoneyCols = canSeeMoney ? 2 : 0; // Итого ₽, Δ
   const normCols = canSeeMoney ? 1 : 0; // Норма
-  // ФИО,Отдел,График(3) + Компания(1) + дни + ИтогоЧ компании(1) + companyMoney + ИтогоЧ emp(1) + empMoney + Норма
-  const totalCols = 3 + 1 + numDays + 1 + companyMoneyCols + 1 + empMoneyCols + normCols;
+  // ФИО,Должность,Отдел,График(4) + Компания(1) + дни + ИтогоЧ компании(1)
+  // + companyMoney + ИтогоЧ позиции(1) + posMoney + Норма
+  const totalCols = 4 + 1 + numDays + 1 + companyMoneyCols + 1 + posMoneyCols + normCols;
 
-  // ── Рендер строк одного сотрудника ──
-  const renderEmployee = (emp: Employee) => {
-    const rows = rowsForEmp(emp);
-    const n = rows.length;
-    const pay = payrollByEmp.get(emp.id);
-    const periodEditable = periodForDept(emp.department_id)?.can_edit ?? false;
-    const noSchedule = !emp.schedule;
-    const empTotal = num(pay?.total_hours, 0)
-      || rows.reduce((s, r) => s + (r.companyId != null ? (compHours.get(`${emp.id}:${r.companyId}`) ?? 0) : 0), 0);
+  // ── Рендер строк одного рабочего места ──
+  // `index`/`count` — место позиции среди позиций сотрудника: ФИО объединяется
+  // по ВСЕМ его строкам, поэтому его высоту надо знать заранее.
+  const renderPosition = (
+    { emp, position, index, count }: PositionRow,
+    nameSpan: number,
+  ) => {
+    const pk = posKey(emp.id, position.id);
+    const positionId = positionIdParam(position);
+    const companyRows = rowsForPosition(emp, position);
+    const n = companyRows.length;
+    const pay = payrollFor(emp, position);
+    const periodEditable = periodForDept(position.department_id)?.can_edit ?? false;
+    const schedule = position.schedule ?? null;
+    const noSchedule = !schedule;
+    const posTotal = num(pay?.total_hours, 0)
+      || companyRows.reduce(
+        (s, r) => s + (r.companyId != null ? (compHours.get(`${pk}:${r.companyId}`) ?? 0) : 0),
+        0,
+      );
 
-    const avail = availableCompanies(rows);
+    const avail = availableCompanies(companyRows);
+
+    const breakdownFor = (companyId: number | null): CompanyBreakdown | undefined =>
+      companyId == null
+        ? undefined
+        : pay?.breakdown_by_company?.find((b) => b.company_id === companyId);
 
     return (
-      <Fragment key={emp.id}>
-        {rows.map((row, ri) => {
+      <Fragment key={pk}>
+        {companyRows.map((row, ri) => {
           const first = ri === 0;
           const last = ri === n - 1;
           const cid = row.companyId;
           const col = cid != null ? getCompanyColor(cid, data.companies) : null;
           const company = cid != null ? companyById.get(cid) : undefined;
-          const bd = breakdownFor(emp, cid);
-          const compTotalHours = cid != null ? (compHours.get(`${emp.id}:${cid}`) ?? 0) : 0;
+          const bd = breakdownFor(cid);
+          const compTotalHours = cid != null ? (compHours.get(`${pk}:${cid}`) ?? 0) : 0;
+          // Код отсутствия — на человека целиком (он отсутствует на всех
+          // работах), поэтому рисуем его на самой первой строке сотрудника.
+          const isEmployeeFirstRow = index === 0 && first;
 
           return (
-            <tr key={`${emp.id}-${cid ?? 'none'}-${ri}`} className="hover:bg-blue-50/20">
-              {/* ── Sticky emp-level (merge через rowspan) ── */}
+            <tr key={`${pk}-${cid ?? 'none'}-${ri}`} className="hover:bg-blue-50/20">
+              {/* ── ФИО: merge на ВСЕ строки сотрудника (все его позиции) ── */}
+              {index === 0 && first && (
+                <td
+                  rowSpan={nameSpan}
+                  className="bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
+                  style={stickyLeft(COL_LEFT.name, COL_W.name)}
+                  title={emp.full_name}
+                >
+                  <div className="truncate" style={{ maxWidth: COL_W.name - 24 }}>
+                    {emp.full_name}
+                  </div>
+                  {count > 1 && (
+                    <div className="text-[10px] font-normal text-gray-400">
+                      совместительство: {count}
+                    </div>
+                  )}
+                </td>
+              )}
+
+              {/* ── Должность / Отдел / График: merge на строки ЭТОЙ позиции ── */}
               {first && (
                 <>
                   <td
                     rowSpan={n}
-                    className="bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
-                    style={stickyLeft(COL_LEFT.name, COL_W.name)}
-                    title={noSchedule ? 'График не задан' : emp.full_name}
+                    className="border border-gray-200 px-2 py-2 text-xs text-gray-700 align-top bg-white"
+                    style={stickyLeft(COL_LEFT.position, COL_W.position)}
+                    title={position.display_title}
                   >
-                    <div className="truncate" style={{ maxWidth: COL_W.name - 24 }}>{emp.full_name}</div>
+                    <div className="truncate" style={{ maxWidth: COL_W.position - 16 }}>
+                      {position.display_title}
+                    </div>
+                    {position.is_primary && count > 1 && (
+                      <span className="text-[9px] text-gray-400">осн.</span>
+                    )}
                   </td>
                   <td
                     rowSpan={n}
                     className="border border-gray-200 px-2 py-2 text-xs text-gray-600 align-top bg-white"
                     style={stickyLeft(COL_LEFT.dept, COL_W.dept)}
                   >
-                    {emp.department?.name ?? '—'}
+                    {position.department?.name ?? '—'}
                   </td>
                   <td
                     rowSpan={n}
@@ -278,7 +337,7 @@ export function TimesheetCompanyView(props: Props) {
                     {noSchedule ? (
                       <span className="italic text-gray-400 font-sans">не задан</span>
                     ) : (
-                      emp.schedule?.name
+                      schedule?.name
                     )}
                   </td>
                 </>
@@ -304,7 +363,7 @@ export function TimesheetCompanyView(props: Props) {
                     {row.isParent && cid != null && (
                       <span
                         className="text-[9px] px-1 rounded bg-gray-100 text-gray-500 leading-4"
-                        title="Основная (родительская) компания"
+                        title="Основная компания этого рабочего места"
                       >
                         осн.
                       </span>
@@ -313,7 +372,7 @@ export function TimesheetCompanyView(props: Props) {
                     {row.removable && periodEditable && cid != null && (
                       <button
                         type="button"
-                        onClick={() => removeCompany(emp.id, cid)}
+                        onClick={() => removeCompany(pk, cid)}
                         className="text-gray-400 hover:text-red-600 leading-none text-base px-0.5"
                         title="Убрать строку компании (0 часов)"
                       >
@@ -321,10 +380,10 @@ export function TimesheetCompanyView(props: Props) {
                       </button>
                     )}
                     {/* «+» — справа на последней строке компаний, только draft */}
-                    {last && periodEditable && avail.length > 0 && adderOpenFor !== emp.id && (
+                    {last && periodEditable && avail.length > 0 && adderOpenFor !== pk && (
                       <button
                         type="button"
-                        onClick={() => setAdderOpenFor(emp.id)}
+                        onClick={() => setAdderOpenFor(pk)}
                         className="inline-flex items-center justify-center h-5 px-1.5 rounded border border-dashed border-blue-300 text-blue-500 text-sm font-bold leading-none hover:bg-blue-50 hover:border-blue-400"
                         title="Добавить компанию"
                       >
@@ -338,14 +397,14 @@ export function TimesheetCompanyView(props: Props) {
                     </span>
                   )}
                   {/* Выпадающий список выбора компании — снизу при клике на «+» */}
-                  {last && periodEditable && avail.length > 0 && adderOpenFor === emp.id && (
+                  {last && periodEditable && avail.length > 0 && adderOpenFor === pk && (
                     <select
                       autoFocus
                       className="text-[11px] border border-blue-300 rounded px-1 py-1 w-full mt-0.5"
                       defaultValue=""
                       onChange={(e) => {
                         const v = parseInt(e.target.value, 10);
-                        if (Number.isFinite(v)) addCompany(emp.id, v);
+                        if (Number.isFinite(v)) addCompany(pk, v);
                       }}
                       onBlur={() => setAdderOpenFor(null)}
                     >
@@ -371,14 +430,12 @@ export function TimesheetCompanyView(props: Props) {
                   : t === 'short' ? 'bg-yellow-50/40'
                   : t === 'weekend' ? 'bg-gray-50/60'
                   : '';
-                const h = cid != null ? (cellHours.get(`${emp.id}:${cid}:${d}`) ?? 0) : 0;
+                const h = cid != null ? (cellHours.get(`${pk}:${cid}:${d}`) ?? 0) : 0;
                 const absence = absenceByEmpDay.get(`${emp.id}:${d}`);
                 return (
                   <td key={d} className={`border border-gray-200 p-0.5 text-center ${bgClass}`} style={{ minWidth: 44 }}>
                     {absence ? (
-                      // Код отсутствия — на весь день сотрудника, поэтому рисуем
-                      // его один раз, на первой строке компаний. Часов в этом дне нет.
-                      first ? (
+                      isEmployeeFirstRow ? (
                         <AbsenceCodeCell
                           absence={absence}
                           disabled={!periodEditable}
@@ -391,7 +448,7 @@ export function TimesheetCompanyView(props: Props) {
                         disabled={!periodEditable}
                         dim={isOff}
                         color={col?.color}
-                        onChange={(nh) => saveSlot(emp.id, d, cid, nh)}
+                        onChange={(nh) => saveSlot(emp.id, d, cid, nh, positionId)}
                       />
                     ) : null}
                   </td>
@@ -430,14 +487,16 @@ export function TimesheetCompanyView(props: Props) {
                 </>
               )}
 
-              {/* ── Emp-level (merge через rowspan) ── */}
+              {/* ── Итоги ПОЗИЦИИ (merge на её строки компаний) ──
+                  «К выплате» между позициями не суммируется — платят разные
+                  компании, поэтому и итоги здесь позиционные, а не по человеку. */}
               {first && (
                 <>
                   <td
                     rowSpan={n}
                     className="border border-gray-200 px-3 py-2 text-center font-mono font-bold bg-gray-100 align-top"
                   >
-                    {fmtHours(empTotal)}
+                    {fmtHours(posTotal)}
                   </td>
                   {canSeeMoney && (
                     <>
@@ -470,6 +529,18 @@ export function TimesheetCompanyView(props: Props) {
     );
   };
 
+  // Высота ФИО = сумма строк-компаний по ВСЕМ позициям сотрудника в этом блоке.
+  // Считаем заранее: rowspan указывается на первой строке, а сколько их будет,
+  // известно только после разбора всех позиций.
+  const renderRows = (list: PositionRow[]) => {
+    const nameSpans = new Map<number, number>();
+    for (const row of list) {
+      const n = rowsForPosition(row.emp, row.position).length;
+      nameSpans.set(row.emp.id, (nameSpans.get(row.emp.id) ?? 0) + n);
+    }
+    return list.map((row) => renderPosition(row, nameSpans.get(row.emp.id) ?? 1));
+  };
+
   const renderGroupDivider = (g: Group) => (
     <tr key={`group-${g.deptId ?? 'null'}`}>
       <td colSpan={totalCols} className="bg-slate-100 border border-gray-300 p-0">
@@ -496,6 +567,13 @@ export function TimesheetCompanyView(props: Props) {
         <tr>
           <th className="sticky top-0 bg-gray-50 border border-gray-200 px-3 py-2 text-left font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.name, COL_W.name, 30), top: 0 }}>
             Сотрудник
+          </th>
+          <th
+            className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
+            style={{ ...stickyLeft(COL_LEFT.position, COL_W.position, 30), top: 0 }}
+            title="Рабочее место: у совместителя строки на каждое, со своим графиком и расчётом"
+          >
+            Должность
           </th>
           <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.dept, COL_W.dept, 30), top: 0 }}>
             Отдел
@@ -550,7 +628,7 @@ export function TimesheetCompanyView(props: Props) {
 
       {/* ===== ТЕЛО ===== */}
       <tbody>
-        {visibleEmployees.length === 0 && (
+        {rows.length === 0 && (
           <tr>
             <td colSpan={totalCols} className="text-center text-gray-500 py-10">
               Нет сотрудников
@@ -562,21 +640,24 @@ export function TimesheetCompanyView(props: Props) {
           ? groups.map((g) => (
               <Fragment key={`grp-${g.deptId ?? 'null'}`}>
                 {renderGroupDivider(g)}
-                {g.employees.map((emp) => renderEmployee(emp))}
+                {renderRows(g.rows)}
               </Fragment>
             ))
-          : visibleEmployees.map((emp) => renderEmployee(emp))}
+          : renderRows(rows)}
 
         {/* ===== ИТОГО строка ===== */}
-        {visibleEmployees.length > 0 && (
+        {rows.length > 0 && (
           <tr className="bg-gray-100 font-semibold">
             <td className="bg-gray-200 border border-gray-300 px-3 py-2" style={stickyLeft(COL_LEFT.name, COL_W.name)}>
               ИТОГО
             </td>
             <td
               className="bg-gray-200 border border-gray-300 px-2 py-2"
-              colSpan={3}
-              style={stickyLeft(COL_LEFT.dept, COL_W.dept + COL_W.sched + COL_W.company)}
+              colSpan={4}
+              style={stickyLeft(
+                COL_LEFT.position,
+                COL_W.position + COL_W.dept + COL_W.sched + COL_W.company,
+              )}
             ></td>
             {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => (
               <td key={d} className="border border-gray-300 px-1 py-2 text-center font-mono text-xs text-gray-700">

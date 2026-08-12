@@ -95,7 +95,10 @@ export const timesheetApi = {
 
   // ── Премии / KPI / аванс (задача 3.11a) ──
   async createAdjustment(input: {
-    employee_id: number; year: number; month: number
+    employee_id: number
+    /** рабочее место, на котором заработано; не задано — основное */
+    position_id?: number | null
+    year: number; month: number
     kind: 'premium' | 'kpi' | 'advance'; amount: string; reason: string
   }): Promise<unknown> {
     const { data } = await apiClient.post('/api/timesheet/adjustments', input)
@@ -128,15 +131,22 @@ export const timesheetApi = {
     return data
   },
 
+  // Распределение задаётся РАБОЧЕМУ МЕСТУ: у совместителя каждое разносится
+  // по юрлицам отдельно. Без position_id — основное (как было до позиций).
   async setDistributionOverride(input: {
-    employee_id: number; year: number; month: number; shares: CompanyShare[]
+    employee_id: number; position_id?: number | null
+    year: number; month: number; shares: CompanyShare[]
   }): Promise<unknown> {
     const { data } = await apiClient.put('/api/timesheet/distribution', input)
     return data
   },
 
-  async clearDistributionOverride(employeeId: number, year: number, month: number): Promise<void> {
-    await apiClient.delete(`/api/timesheet/distribution/${employeeId}/${year}/${month}`)
+  async clearDistributionOverride(
+    employeeId: number, year: number, month: number, positionId?: number | null,
+  ): Promise<void> {
+    await apiClient.delete(`/api/timesheet/distribution/${employeeId}/${year}/${month}`, {
+      params: positionId != null ? { position_id: positionId } : undefined,
+    })
   },
 
   async exportStatementExcel(year: number, month: number, departmentId?: number): Promise<Blob> {
