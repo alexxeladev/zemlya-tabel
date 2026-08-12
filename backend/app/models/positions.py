@@ -50,6 +50,15 @@ PAY_TYPE_HOURLY = "hourly"        # ставка за час `hour_rate`, баз
 
 PAY_TYPES: tuple[str, ...] = (PAY_TYPE_SALARY, PAY_TYPE_PER_SHIFT, PAY_TYPE_HOURLY)
 
+# Тип оплаты → поле, где лежит его база. Поля взаимоисключающие: при смене типа
+# чужие гасятся, иначе в карточке остаётся мусор от прошлого типа и расчёт молча
+# возьмёт не ту базу. Единый источник для роутера сотрудников и CRUD позиций.
+PAY_TYPE_BASE_FIELD: dict[str, str] = {
+    PAY_TYPE_SALARY: "rate",
+    PAY_TYPE_PER_SHIFT: "shift_rate",
+    PAY_TYPE_HOURLY: "hour_rate",
+}
+
 # Значения, которые в старой модели стояли server_default-ами на employees.
 # Дублируются в __init__, иначе до flush-а поля были бы None и compat-аксессоры
 # отдавали бы не то, что отдавала колонка с дефолтом.

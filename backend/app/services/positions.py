@@ -12,10 +12,13 @@
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from sqlalchemy import ColumnElement
+from sqlalchemy.orm import Session
 
 from app.models.employees import Employee
-from app.models.positions import EmployeePosition
+from app.models.positions import PAY_TYPE_BASE_FIELD, EmployeePosition
 from app.services.org_access import accessible_department_ids
 
 
@@ -78,6 +81,107 @@ def positions_for_payroll(
         for pos in visible_positions(emp, actor, department_id):
             result.append((emp, pos))
     return result
+
+
+# ── CRUD позиций из карточки сотрудника (task_positions ч.B) ──────────────────
+
+
+class PositionError(ValueError):
+    """Позицию нельзя изменить/удалить — текст показывается пользователю."""
+
+
+def _normalize_pay_base(position: EmployeePosition) -> None:
+    """Погасить базы чужих типов оплаты: у окладника не должно остаться ставки за
+    смену или за час, у посменного — оклада."""
+    for pay_type, base_field in PAY_TYPE_BASE_FIELD.items():
+        if position.pay_type != pay_type:
+            setattr(position, base_field, None)
+
+
+def _apply_coefficient_defaults(position: EmployeePosition) -> None:
+    """Дефолт 1.5 у коэффициентов — как в `build_employee`, чтобы карточка и
+    импорт заводили позицию одинаково (NULL читается расчётом как 1.5, но хранить
+    его — значит показывать в UI пустое поле вместо реальной ставки)."""
+    if position.weekend_pay_type == "coefficient" and position.weekend_coefficient is None:
+        position.weekend_coefficient = Decimal("1.5")
+    if position.holiday_pay_type == "coefficient" and position.holiday_coefficient is None:
+        position.holiday_coefficient = Decimal("1.5")
+    if position.overtime_coefficient is None:
+        position.overtime_coefficient = Decimal("1.5")
+
+
+def apply_position_fields(position: EmployeePosition, data: dict) -> None:
+    """Записать поля из payload-а и привести карточку рабочего места в порядок."""
+    for field, value in data.items():
+        setattr(position, field, value)
+    _normalize_pay_base(position)
+    _apply_coefficient_defaults(position)
+
+
+def create_position(employee: Employee, data: dict) -> EmployeePosition:
+    """Добавить рабочее место. `is_primary=True` переносит признак основной."""
+    make_it_primary = bool(data.pop("is_primary", False))
+    position = EmployeePosition(employee_id=employee.id)
+    apply_position_fields(position, data)
+    employee.positions.append(position)
+    if make_it_primary or employee.primary_position is None:
+        set_primary(employee, position)
+    else:
+        position.is_primary = False
+    return position
+
+
+def set_primary(employee: Employee, position: EmployeePosition) -> None:
+    """Основная позиция ровно одна: назначая новую, снимаем признак с остальных."""
+    if not position.is_active:
+        raise PositionError("Основной можно сделать только активную позицию")
+    for p in employee.positions:
+        p.is_primary = p is position
+
+
+def position_usage(db: Session, position: EmployeePosition) -> dict[str, int]:
+    """Сколько данных завязано на позицию — от этого зависит, можно ли её удалить
+    физически или остаётся только деактивировать (часы и начисления терять нельзя).
+    """
+    from app.models.company_shares import CompanyShareOverride, EmployeeCompanyShare
+    from app.models.employee_adjustments import EmployeeAdjustment
+    from app.models.timesheet_entries import TimesheetEntry
+
+    return {
+        "entries": db.query(TimesheetEntry)
+        .filter(TimesheetEntry.position_id == position.id).count(),
+        "adjustments": db.query(EmployeeAdjustment)
+        .filter(EmployeeAdjustment.position_id == position.id).count(),
+        "shares": db.query(EmployeeCompanyShare)
+        .filter(EmployeeCompanyShare.position_id == position.id).count()
+        + db.query(CompanyShareOverride)
+        .filter(CompanyShareOverride.position_id == position.id).count(),
+        "loan": 1 if position.employee.loan_position_id == position.id else 0,
+    }
+
+
+def delete_position(db: Session, employee: Employee, position: EmployeePosition) -> str:
+    """Убрать рабочее место. Возвращает «deleted» или «deactivated».
+
+    Основную удалить нельзя — у сотрудника всегда есть хотя бы одно рабочее место
+    (сначала назначьте основной другую). Позиция, на которой уже есть часы или
+    начисления, не удаляется физически, а деактивируется: иначе история табеля и
+    расчётов прошлых месяцев осталась бы без рабочего места.
+    """
+    if position.is_primary:
+        raise PositionError(
+            "Нельзя удалить основную позицию — сначала назначьте основной другую"
+        )
+    if len([p for p in employee.positions if p.is_active]) <= 1:
+        raise PositionError("У сотрудника должна остаться хотя бы одна позиция")
+
+    if any(position_usage(db, position).values()):
+        position.is_active = False
+        return "deactivated"
+
+    employee.positions.remove(position)
+    db.delete(position)
+    return "deleted"
 
 
 def entries_by_position(

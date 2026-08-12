@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_val
 
 from app.schemas.company import CompanyRead
 from app.schemas.department import DepartmentRead
+from app.schemas.position import EmployeePositionRead
 from app.schemas.schedule import ScheduleRead
 
 EmployeeRoleType = Literal["admin", "manager", "accountant", "employee"]
@@ -81,6 +82,11 @@ class EmployeeRead(EmployeeBase):
     department: Optional[DepartmentRead] = None
     schedule: Optional[ScheduleRead] = None
     default_company: Optional[CompanyRead] = None
+
+    # Рабочие места (task_positions ч.B). Плоские поля выше — это ОСНОВНАЯ
+    # позиция через compat-аксессоры; здесь виден весь список, включая
+    # совместительство. У сотрудника без совместительства ровно один элемент.
+    positions: list[EmployeePositionRead] = []
 
     # Чем менеджер РУКОВОДИТ (task_org_structure ч.2) — не путать с `department`,
     # где он числится. Фронт по этому полю строит селектор отделов менеджера.
