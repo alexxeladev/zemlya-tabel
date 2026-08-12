@@ -56,7 +56,7 @@ from app.services.payroll_statement import (
     build_payroll_summary,
 )
 from app.services.org_access import can_access_department
-from app.services.positions import department_ids_of
+from app.services.positions import department_ids_of, visible_positions
 from app.services.timesheet import (
     apply_autofill,
     build_autofill_preview,
@@ -91,7 +91,19 @@ def _require_dept_access(actor: Employee, department_id: int | None) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
 
 
-def _check_cell_access(actor: Employee, target_employee_id: int, db: Session) -> Employee:
+def _check_cell_access(
+    actor: Employee,
+    target_employee_id: int,
+    db: Session,
+    position_id: int | None = None,
+) -> Employee:
+    """Доступ к данным сотрудника; отдел берётся у ПОЗИЦИИ (task_positions).
+
+    Указана позиция — проверяем её отдел: подработку в чужом отделе менеджер
+    трогать не должен. Позиция не указана — достаточно доступа к любому её
+    рабочему месту, иначе менеджер не смог бы править сотрудника, который
+    числится основной позицией в другом отделе.
+    """
     target = db.get(Employee, target_employee_id)
     if not target:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
@@ -99,7 +111,17 @@ def _check_cell_access(actor: Employee, target_employee_id: int, db: Session) ->
     if actor.role in ("admin", "accountant"):
         return target
     if actor.role == "manager":
-        if not can_access_department(actor, target.department_id):
+        if position_id is not None:
+            position = target.position_by_id(position_id)
+            allowed = can_access_department(
+                actor, position.department_id if position else None
+            )
+        else:
+            allowed = any(
+                can_access_department(actor, pos.department_id)
+                for pos in (target.active_positions or target.positions)
+            )
+        if not allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
         return target
     if actor.id != target_employee_id:
@@ -269,7 +291,7 @@ def set_distribution_override(
     """Переопределить распределение по компаниям на конкретный месяц (правка в
     ведомости). Заменяет весь набор процентов сотрудника за этот период."""
     _require_finance_role(actor)
-    target = _check_cell_access(actor, payload.employee_id, db)
+    target = _check_cell_access(actor, payload.employee_id, db, payload.position_id)
     if not (1 <= payload.month <= 12) or not (2000 <= payload.year <= 2100):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month")
     for s in payload.shares:
@@ -319,21 +341,39 @@ def delete_distribution_override(
     employee_id: int,
     year: int,
     month: int,
+    position_id: Optional[int] = Query(default=None),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    """Убрать переопределение — вернуть проценты по умолчанию из карточки."""
+    """Убрать переопределение — вернуть проценты по умолчанию из карточки.
+
+    Правка задаётся РАБОЧЕМУ МЕСТУ, поэтому и снимается по нему: без
+    `position_id` у совместителя сбросились бы обе позиции разом.
+    """
     _require_finance_role(actor)
-    _check_cell_access(actor, employee_id, db)
-    deleted = db.query(CompanyShareOverride).filter(
+    target = _check_cell_access(actor, employee_id, db, position_id)
+    q = db.query(CompanyShareOverride).filter(
         CompanyShareOverride.employee_id == employee_id,
         CompanyShareOverride.year == year,
         CompanyShareOverride.month == month,
-    ).delete(synchronize_session=False)
+    )
+    if position_id is not None:
+        position = target.position_by_id(position_id)
+        pid = position.id if position else position_id
+        q = q.filter(
+            or_(
+                CompanyShareOverride.position_id == pid,
+                # Строки без позиции заведены до неё и относятся к основной.
+                CompanyShareOverride.position_id.is_(None)
+                if position is not None and position.is_primary
+                else False,
+            )
+        )
+    deleted = q.delete(synchronize_session=False)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Переопределение не найдено")
     log_action(db, actor, "company_share_override", employee_id, "delete",
-               before={"year": year, "month": month})
+               before={"year": year, "month": month, "position_id": position_id})
     db.commit()
 
 
@@ -413,6 +453,13 @@ def get_month(
         for a in get_month_absences(db, employees, year, month)
     ]
 
+    # Рабочие места, по которым в этом табеле вводят часы. Совместитель даёт
+    # строку на позицию; в табеле отдела видна только позиция ЭТОГО отдела
+    # (task_positions ч.B), у менеджера — только его отделы.
+    positions_by_employee = {
+        emp.id: visible_positions(emp, actor, department_id) for emp in employees
+    }
+
     payroll = None
     adjustments: list[AdjustmentRead] = []
     if actor.role in ("admin", "accountant", "manager"):
@@ -430,6 +477,7 @@ def get_month(
         entries=entries,
         periods=periods,
         extra_companies_by_employee=extra_companies,
+        positions_by_employee=positions_by_employee,
         absences=absences,
         payroll=payroll,
         adjustments=adjustments,
@@ -444,7 +492,7 @@ def save_cell(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    _check_cell_access(actor, payload.employee_id, db)
+    _check_cell_access(actor, payload.employee_id, db, payload.position_id)
     _check_company_exists(db, payload.company_id)
     try:
         result = upsert_cell(
@@ -467,7 +515,7 @@ def save_cells_batch(
     actor: Employee = Depends(get_current_user),
 ):
     for cell in payload.entries:
-        _check_cell_access(actor, cell.employee_id, db)
+        _check_cell_access(actor, cell.employee_id, db, cell.position_id)
         _check_company_exists(db, cell.company_id)
 
     cells = [
@@ -739,7 +787,7 @@ def create_adjustment(
 ):
     _require_finance_role(actor)
     # _check_cell_access проверяет видимость сотрудника по роли (manager — свой отдел)
-    target = _check_cell_access(actor, payload.employee_id, db)
+    target = _check_cell_access(actor, payload.employee_id, db, payload.position_id)
     if not (2000 <= payload.year <= 2100):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year")
 

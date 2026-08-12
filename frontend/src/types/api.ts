@@ -17,6 +17,10 @@ export interface CompanyBreakdown {
 export interface EmployeePayroll {
   employee_id: number
   employee_name: string
+  /** строка расчёта = ПОЗИЦИЯ: employee_id у совместителя повторяется */
+  position_id: number | null
+  position_title: string | null
+  is_primary_position: boolean
   /** у посменного здесь условный оклад = ставка × норма смен */
   rate: string | null
   schedule_name: string | null
@@ -143,6 +147,13 @@ export interface StatementCompanyAmount {
 
 export interface StatementRow {
   employee_id: number
+  /**
+   * Строка ведомости = РАБОЧЕЕ МЕСТО (task_positions). У совместителя строк
+   * столько, сколько позиций; employee_id повторяется, «к выплате» между
+   * ними не суммируется — платят разные компании.
+   */
+  position_id: number | null
+  is_primary_position: boolean
   tab_number: string | null
   employee_name: string
   main_company_id: number | null
@@ -216,6 +227,8 @@ export type AdjustmentKind = 'premium' | 'kpi' | 'advance'
 export interface Adjustment {
   id: number
   employee_id: number
+  /** рабочее место, на котором заработано (task_positions); null — основное */
+  position_id: number | null
   year: number
   month: number
   kind: AdjustmentKind
@@ -227,6 +240,8 @@ export interface Adjustment {
 
 export interface TimesheetEntry {
   employee_id: number
+  /** рабочее место, на которое отработаны часы; null — заведено до позиций */
+  position_id: number | null
   work_date: string  // YYYY-MM-DD
   company_id: number
   hours: number  // decimal as number
@@ -252,6 +267,8 @@ export interface TimesheetMonthResponse {
   entries: TimesheetEntry[]
   periods: TimesheetPeriod[]
   extra_companies_by_employee: Record<string, number[]>
+  /** видимые актору рабочие места по сотрудникам: табель строит строку на позицию */
+  positions_by_employee: Record<string, EmployeePosition[]>
   absences: Absence[]
   payroll: PayrollSummary | null
   adjustments: Adjustment[]
@@ -274,6 +291,8 @@ export interface AutofillPreview {
 
 export interface TimesheetCellInput {
   employee_id: number
+  /** на какое рабочее место идут часы; не задано — на основное */
+  position_id?: number | null
   work_date: string  // YYYY-MM-DD
   company_id: number
   hours: number

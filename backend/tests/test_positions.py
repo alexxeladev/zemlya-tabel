@@ -965,3 +965,116 @@ class TestPositionCrudApi:
         assert resp.status_code == 200
         titles = [p["display_title"] for p in resp.json()["positions"]]
         assert set(titles) == {"Инженер", "Электрик"}
+
+
+# ── Табель: строки по позициям (task_positions ч.B) ──────────────────────────
+
+class TestTimesheetRowsPerPosition:
+    """Месячная выдача отдаёт ВИДИМЫЕ рабочие места, часы пишутся на конкретное."""
+
+    @pytest.fixture
+    def other_department(self, db_session: Session) -> Department:
+        d = Department(name="Охрана", code="SEC")
+        db_session.add(d)
+        db_session.commit()
+        db_session.refresh(d)
+        return d
+
+    @pytest.fixture
+    def moonlighter(
+        self, db_session: Session, schedule_5_2, companies, department, other_department
+    ) -> Employee:
+        emp = Employee(
+            full_name="Совместитель", tab_number="T-011", position="Инженер",
+            rate=Decimal("60000"), schedule_id=schedule_5_2.id,
+            department_id=department.id, default_company_id=companies[0].id,
+        )
+        db_session.add(emp)
+        db_session.commit()
+        emp.positions.append(EmployeePosition(
+            title="Электрик", rate=Decimal("30000"), schedule_id=schedule_5_2.id,
+            department_id=other_department.id, company_id=companies[1].id,
+        ))
+        db_session.commit()
+        db_session.refresh(emp)
+        return emp
+
+    def test_month_returns_visible_positions(
+        self, client, admin_user, moonlighter, calendar_2026
+    ):
+        token = get_token(client, "admin@example.com", "admin123")
+        resp = client.get("/api/timesheet/2026/5", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        positions = resp.json()["positions_by_employee"][str(moonlighter.id)]
+        assert [p["display_title"] for p in positions] == ["Инженер", "Электрик"]
+
+    def test_department_filter_shows_only_its_position(
+        self, client, admin_user, moonlighter, department, calendar_2026
+    ):
+        """В табеле отдела видна только позиция ЭТОГО отдела."""
+        token = get_token(client, "admin@example.com", "admin123")
+        resp = client.get(
+            f"/api/timesheet/2026/5?department_id={department.id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        positions = resp.json()["positions_by_employee"][str(moonlighter.id)]
+        assert [p["display_title"] for p in positions] == ["Инженер"]
+
+    def test_manager_sees_only_his_department_position(
+        self, client, db_session: Session, moonlighter, other_department, calendar_2026
+    ):
+        manager = Employee(
+            full_name="Начальник охраны", email="sec.mgr@example.com",
+            hashed_password=hash_password("manager123"), role="manager",
+            department_id=other_department.id,
+        )
+        manager.managed_departments = [other_department]
+        db_session.add(manager)
+        db_session.commit()
+
+        token = get_token(client, "sec.mgr@example.com", "manager123")
+        resp = client.get("/api/timesheet/2026/5", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        positions = resp.json()["positions_by_employee"][str(moonlighter.id)]
+        assert [p["display_title"] for p in positions] == ["Электрик"]
+
+    def test_hours_land_on_the_requested_position(
+        self, client, admin_user, db_session: Session, moonlighter, companies, calendar_2026
+    ):
+        token = get_token(client, "admin@example.com", "admin123")
+        engineer, electrician = moonlighter.active_positions
+        resp = client.put(
+            "/api/timesheet/cell",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "employee_id": moonlighter.id, "position_id": electrician.id,
+                "work_date": "2026-05-12", "company_id": companies[1].id, "hours": 8,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["position_id"] == electrician.id
+
+        # Часы одного рабочего места не попадают в другое
+        entries = db_session.query(TimesheetEntry).all()
+        assert [e.position_id for e in entries] == [electrician.id]
+        assert engineer.id != electrician.id
+
+    def test_autofill_uses_each_position_schedule(
+        self, client, admin_user, db_session: Session, moonlighter, calendar_2026
+    ):
+        token = get_token(client, "admin@example.com", "admin123")
+        resp = client.post(
+            "/api/timesheet/autofill/preview",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"year": 2026, "month": 5},
+        )
+        assert resp.status_code == 200, resp.text
+        by_position: dict[int, int] = {}
+        for cell in resp.json()["entries_to_create"]:
+            if cell["employee_id"] != moonlighter.id:
+                continue
+            by_position[cell["position_id"]] = by_position.get(cell["position_id"], 0) + 1
+        # Обе позиции заполняются по СВОЕМУ графику, каждая — 20 рабочих дней мая
+        assert sorted(by_position.keys()) == sorted(p.id for p in moonlighter.active_positions)
+        assert set(by_position.values()) == {len(MAY_WORKDAYS)}
