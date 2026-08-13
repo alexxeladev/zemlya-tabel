@@ -512,11 +512,14 @@ export function TimesheetPage() {
   // Часы и деньги грузятся раздельно: расчёт ЗП — самая дорогая часть ответа, а
   // при вводе часов он не нужен немедленно. Поэтому правка ячейки перечитывает
   // только часы (быстро), а суммы пересчитываются с задержкой — см. afterEdit.
+  // Возвращает признак успеха: по нему решается, снимать ли пометку «суммы
+  // пересчитываются». Если запрос упал, суммы так и остались старыми — гасить
+  // индикатор нельзя, иначе устаревшие цифры выглядят как актуальные.
   const fetchMonth = useCallback(
-    async (withPayroll: boolean) => {
+    async (withPayroll: boolean): Promise<boolean> => {
       if (!deptChosen) {
         setData(null);
-        return;
+        return false;
       }
       setLoading(true);
       try {
@@ -538,8 +541,10 @@ export function TimesheetPage() {
             : { ...monthData, payroll: prev.payroll }
         );
         setCalendar(cal);
+        return true;
       } catch (err: any) {
         toast.error('Ошибка загрузки табеля: ' + (err?.message ?? err));
+        return false;
       } finally {
         setLoading(false);
       }
@@ -562,7 +567,8 @@ export function TimesheetPage() {
     setPayrollStale(true);
     if (payrollTimer.current) clearTimeout(payrollTimer.current);
     payrollTimer.current = setTimeout(() => {
-      fetchMonth(true).then(() => setPayrollStale(false));
+      // Пометку снимаем только при успехе: после ошибки суммы остались старыми
+      fetchMonth(true).then((ok) => { if (ok) setPayrollStale(false); });
     }, PAYROLL_REFRESH_DELAY_MS);
   }, [fetchMonth, canSeeMoney]);
 
@@ -793,6 +799,17 @@ export function TimesheetPage() {
       )
       .catch(() => setDepartments([]));
   }, [canSelectDept]);
+
+  // Выбор отдела живёт в сторе и переживает не только смену месяца, но и смену
+  // пользователя в той же вкладке. Чужой (или удалённый) отдел дал бы 403 и
+  // пустой экран — возвращаем к выбору. Пустой список отделов не трогаем: это
+  // может быть неудавшаяся загрузка справочника, а не отсутствие доступа.
+  useEffect(() => {
+    if (!canSelectDept || departments.length === 0) return;
+    if (typeof deptChoice === 'number' && !departments.some((d) => d.id === deptChoice)) {
+      setDeptChoice(null);
+    }
+  }, [departments, canSelectDept, deptChoice, setDeptChoice]);
 
   // ── Действия со слотами ──
   // Часы всегда пишутся на КОНКРЕТНОЕ рабочее место: у совместителя это
