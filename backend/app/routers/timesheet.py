@@ -78,7 +78,7 @@ from app.services.timesheet import (
 from app.services.timesheet_periods import (
     PeriodLockedException,
     close_period,
-    get_or_create_period,
+    get_or_create_periods,
     list_review_tasks,
     make_period_read,
     reopen_period,
@@ -215,16 +215,19 @@ def _build_periods_for_response(
     Отдел — у ПОЗИЦИИ (task_positions ч.A), поэтому у совместителя, работающего
     в двух отделах, нужны периоды обоих: иначе его часы во втором отделе не за
     что было бы закрыть.
+
+    Коммитим ТОЛЬКО если период действительно создан (обычно это первый заход в
+    месяц). Безусловный `commit` на GET обесценивал уже загруженные объекты, и
+    сотрудники с часами перезагружались по одной строке. Вызывать эту функцию
+    надо ДО загрузки часов — тогда даже первый заход ничего не обесценивает.
     """
     dept_ids: set[int | None] = {
         dept_id for e in employees for dept_id in department_ids_of(e)
     }
-    periods = []
-    for dept_id in dept_ids:
-        period = get_or_create_period(db, dept_id, year, month)
-        periods.append(make_period_read(period, actor))
-    db.commit()  # commit any newly created periods
-    return periods
+    by_dept, created = get_or_create_periods(db, dept_ids, year, month)
+    if created:
+        db.commit()
+    return [make_period_read(by_dept[dept_id], actor) for dept_id in dept_ids]
 
 
 # ── Payroll helper ────────────────────────────────────────────────────────────
@@ -455,8 +458,11 @@ def get_month(
 
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
     companies = db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
-    entries = get_month_entries(db, employees, year, month)
+    # Периоды — ДО загрузки часов: они могут коммитить (lazy-создание при первом
+    # заходе в месяц), а коммит обесценил бы уже загруженные ячейки, и каждая
+    # перезагружалась бы отдельным запросом.
     periods = _build_periods_for_response(db, employees, year, month, actor)
+    entries = get_month_entries(db, employees, year, month)
     extra_companies = compute_extra_companies_by_employee(employees, entries)
     # Больничные сверх годового лимита помечаем сразу в выдаче: лимит считается
     # хронологически по всему году, ячейка сама этого знать не может.

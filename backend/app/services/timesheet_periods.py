@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar as _cal
 from datetime import date, datetime
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -119,6 +120,49 @@ def get_or_create_period(
         db.add(period)
         db.flush()
     return period
+
+
+def get_or_create_periods(
+    db: Session,
+    department_ids: set[int | None],
+    year: int,
+    month: int,
+) -> tuple[dict[int | None, TimesheetPeriod], bool]:
+    """Периоды сразу для набора отделов: `{department_id: период}` + признак
+    «что-то создали».
+
+    Отличия от `get_or_create_period` в цикле — два, и оба про производительность
+    ответа табеля:
+      * существующие периоды берутся ОДНИМ запросом, а не по одному на отдел;
+      * вызывающий узнаёт, создавалось ли что-нибудь, и может не коммитить
+        зря. Лишний `commit` на GET обесценивал (`expire_on_commit`) уже
+        загруженные часы и сотрудников, и они перезагружались по одной строке —
+        на 200 сотрудниках это давало 6 тысяч лишних запросов.
+
+    Флашит, но НЕ коммитит: транзакцией владеет вызывающий (созданный период
+    обязан быть закоммичен — его id уходит клиенту, и по нему шлют submit).
+    """
+    q = db.query(TimesheetPeriod).filter(
+        TimesheetPeriod.year == year,
+        TimesheetPeriod.month == month,
+    )
+    known_ids = {d for d in department_ids if d is not None}
+    conditions = []
+    if known_ids:
+        conditions.append(TimesheetPeriod.department_id.in_(known_ids))
+    if None in department_ids:
+        conditions.append(TimesheetPeriod.department_id.is_(None))
+    if not conditions:
+        return {}, False
+    q = q.filter(or_(*conditions))
+
+    by_dept: dict[int | None, TimesheetPeriod] = {p.department_id: p for p in q.all()}
+    created = False
+    for dept_id in department_ids:
+        if dept_id not in by_dept:
+            by_dept[dept_id] = get_or_create_period(db, dept_id, year, month)
+            created = True
+    return by_dept, created
 
 
 def can_edit_cells(period: TimesheetPeriod) -> bool:
