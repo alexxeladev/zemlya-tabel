@@ -5,6 +5,7 @@ Usage:
     python -m app.cli reset-password --email admin@example.com --new-password newpass
     python -m app.cli reset-data [--yes]
     python -m app.cli seed-test-data
+    python -m app.cli seed-demo-data [--employees 200] [--from ДД.ММ.ГГГГ] [--to ДД.ММ.ГГГГ]
 """
 import argparse
 import sys
@@ -400,6 +401,40 @@ def seed_test_data() -> None:
     print("Пароль всех QA-учёток: Test1234!")
 
 
+def seed_demo_data(employees: int, date_from: str | None, date_to: str | None) -> None:
+    """Реалистичная демо-база: 6 юрлиц, ~20 отделов, N сотрудников, заполненный
+    табель за период. Только dev; перед запуском обычно `reset-data --yes`."""
+    import datetime
+
+    from app.database import SessionLocal
+    from app.services.demo_data import QA_PASSWORD, generate_demo_data
+
+    def parse(value: str | None) -> datetime.date | None:
+        if not value:
+            return None
+        for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
+            try:
+                return datetime.datetime.strptime(value, fmt).date()
+            except ValueError:
+                continue
+        print(f"Error: дату '{value}' не разобрать (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД)", file=sys.stderr)
+        sys.exit(1)
+
+    db = SessionLocal()
+    try:
+        stats = generate_demo_data(db, employees, parse(date_from), parse(date_to))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        db.close()
+
+    print("Создано:")
+    for key, value in stats.items():
+        print(f"  {key:20} {value}")
+    print(f"Пароль всех QA-учёток: {QA_PASSWORD}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="zemlya-tabel CLI")
     subparsers = parser.add_subparsers(dest="command")
@@ -420,6 +455,16 @@ def main() -> None:
 
     subparsers.add_parser("seed-test-data", help="Populate DB with test data")
 
+    cmd5 = subparsers.add_parser(
+        "seed-demo-data",
+        help="Populate DB with a realistic dataset (200 employees, filled timesheet)",
+    )
+    cmd5.add_argument("--employees", type=int, default=200, dest="employees")
+    cmd5.add_argument("--from", dest="date_from",
+                      help="ДД.ММ.ГГГГ или ГГГГ-ММ-ДД (по умолчанию 1 января)")
+    cmd5.add_argument("--to", dest="date_to",
+                      help="ДД.ММ.ГГГГ или ГГГГ-ММ-ДД (по умолчанию сегодня)")
+
     args = parser.parse_args()
     if args.command == "create-admin":
         create_admin(args.email, args.password, args.full_name)
@@ -429,6 +474,8 @@ def main() -> None:
         reset_data(assume_yes=args.yes)
     elif args.command == "seed-test-data":
         seed_test_data()
+    elif args.command == "seed-demo-data":
+        seed_demo_data(args.employees, args.date_from, args.date_to)
     else:
         parser.print_help()
         sys.exit(1)
