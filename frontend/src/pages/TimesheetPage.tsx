@@ -16,7 +16,7 @@
 // При смене компании в слоте — два запроса (удалить старый, создать новый).
 // При hours=0 — слот удаляется (бэк удаляет запись).
 
-import { Fragment, useEffect, useMemo, useState, useCallback } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toasts';
@@ -25,7 +25,7 @@ import { apiClient } from '../api/client';
 import { listDepartments } from '../api/departments';
 import { companyColorByIndex } from '../utils/colors';
 import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
-import { useTimesheetViewStore } from '../store/timesheetView';
+import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
 import { TimesheetCompanyView } from './TimesheetCompanyView';
 import type { AbsenceKind, AutofillPreview } from '../types/api';
 
@@ -301,6 +301,64 @@ const MONTH_NAMES_RU = [
 
 const WEEKDAY_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
+// Через сколько после последней правки часов пересчитывать суммы. Серия правок
+// подряд (обычный ввод табеля) должна гонять расчёт один раз, а не на каждую цифру.
+const PAYROLL_REFRESH_DELAY_MS = 1200;
+
+// ──────────────────────────────────────────────────────────────
+// DepartmentGate — выбор отдела перед загрузкой табеля
+// ──────────────────────────────────────────────────────────────
+// Табель отдела — это десятки строк и расчёт по ним; табель всех отделов при 200
+// сотрудниках — сотни строк и полный расчёт ЗП. Поэтому отдел выбирается явно,
+// а «все отделы» остаются отдельным пунктом для сводных итогов.
+function DepartmentGate({
+  departments,
+  allLabel,
+  onPick,
+}: {
+  departments: { id: number; name: string }[];
+  allLabel: string;
+  onPick: (choice: DeptChoice) => void;
+}) {
+  return (
+    <div className="p-8">
+      <h2 className="text-lg font-semibold text-gray-800">Выберите отдел</h2>
+      <p className="mt-1 text-sm text-gray-500">
+        Табель открывается по одному отделу — так он грузится быстро и в нём
+        удобнее вводить часы.
+      </p>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {departments.map((d) => (
+          <button
+            key={d.id}
+            type="button"
+            onClick={() => onPick(d.id)}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-800 hover:border-blue-500 hover:bg-blue-50"
+          >
+            {d.name}
+          </button>
+        ))}
+      </div>
+
+      {departments.length === 0 && (
+        <p className="mt-4 text-sm text-gray-500">
+          Отделы не заведены — откройте табель целиком.
+        </p>
+      )}
+
+      <button
+        type="button"
+        onClick={() => onPick('all')}
+        className="mt-6 block text-sm text-gray-500 underline decoration-dotted hover:text-blue-600"
+        title="Все сотрудники сразу: строк больше, загрузка дольше. Нужно для сводных итогов."
+      >
+        {allLabel} — со сводными итогами
+      </button>
+    </div>
+  );
+}
+
 function daysInMonth(year: number, month: number): number {
   return new Date(year, month, 0).getDate();
 }
@@ -410,10 +468,26 @@ export function TimesheetPage() {
     const m = parseInt(searchParams.get('month') ?? '', 10);
     return m >= 1 && m <= 12 ? m : now.getMonth() + 1;
   });
-  const [departmentFilter, setDepartmentFilter] = useState<number | null>(() => {
-    const d = parseInt(searchParams.get('department_id') ?? '', 10);
-    return Number.isFinite(d) ? d : null;
-  });
+  // ── Выбор отдела: при 200 сотрудниках «все отделы» по умолчанию не грузим ──
+  // deptChoice: id | 'all' | null(не выбрано). Тем, у кого выбора нет (employee,
+  // руководитель/табельщик одного отдела), сразу ставим 'all' — бэк и так отдаёт
+  // только их людей, спрашивать нечего. Ссылка из «Задач»/дашборда с
+  // ?department_id=N считается выбором.
+  const deptChoice = useTimesheetViewStore((s) => s.deptChoice);
+  const setDeptChoice = useTimesheetViewStore((s) => s.setDeptChoice);
+  useEffect(() => {
+    const fromUrl = parseInt(searchParams.get('department_id') ?? '', 10);
+    if (Number.isFinite(fromUrl)) setDeptChoice(fromUrl);
+    // Только на монтировании: дальше выбор живёт в сторе и переживает смену месяца.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Параметр для бэка: 'all' и «не выбрано» — это отсутствие фильтра.
+  const departmentFilter = typeof deptChoice === 'number' ? deptChoice : null;
+  // Спрашиваем отдел только у того, у кого есть из чего выбирать: employee видит
+  // себя, руководитель/табельщик одного отдела — свой отдел, спрашивать нечего.
+  const needsDeptChoice = canSelectDept && deptChoice === null;
+  const deptChosen = !needsDeptChoice;
   // Поиск по ФИО/таб.№ и фильтр компании — как на «Расчёт ЗП»: фильтруют строки
   // поверх фильтра отдела, на бэк не ходят.
   const [search, setSearch] = useState('');
@@ -428,32 +502,78 @@ export function TimesheetPage() {
   const [companySummaryOpen, setCompanySummaryOpen] = useState(false);
   const [autofillPreview, setAutofillPreview] = useState<AutofillPreview | null>(null);
   const [autofillLoading, setAutofillLoading] = useState(false);
+  // Суммы на экране относятся к состоянию ДО последней правки часов и ждут
+  // пересчёта (см. afterEdit). Показываем это явно, чтобы бухгалтер не сверял
+  // несходящиеся цифры.
+  const [payrollStale, setPayrollStale] = useState(false);
+  const payrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Загрузка данных ──
+  // Часы и деньги грузятся раздельно: расчёт ЗП — самая дорогая часть ответа, а
+  // при вводе часов он не нужен немедленно. Поэтому правка ячейки перечитывает
+  // только часы (быстро), а суммы пересчитываются с задержкой — см. afterEdit.
+  const fetchMonth = useCallback(
+    async (withPayroll: boolean) => {
+      if (!deptChosen) {
+        setData(null);
+        return;
+      }
+      setLoading(true);
+      try {
+        const [monthData, cal] = await Promise.all([
+          timesheetApi.getMonth(year, month, {
+            department_id: departmentFilter ?? undefined,
+            include_payroll: withPayroll && canSeeMoney,
+          }) as Promise<MonthResponse>,
+          apiClient.get<CalendarSummary>(`/api/calendar/${year}/${month}/summary`)
+            .then(r => r.data)
+            .catch(() => ({ days: [] } as CalendarSummary)),
+        ]);
+        // Без расчёта бэк присылает payroll=null — оставляем прежние суммы, иначе
+        // денежные колонки мигали бы пустотой на каждую введённую цифру. Что они
+        // пока не пересчитаны, показывает индикатор payrollStale.
+        setData((prev) =>
+          withPayroll || !prev
+            ? monthData
+            : { ...monthData, payroll: prev.payroll }
+        );
+        setCalendar(cal);
+      } catch (err: any) {
+        toast.error('Ошибка загрузки табеля: ' + (err?.message ?? err));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [year, month, departmentFilter, canSeeMoney, deptChosen]
+  );
+
+  // Полная перезагрузка (смена месяца/отдела, workflow периода).
   const reload = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [monthData, cal] = await Promise.all([
-        timesheetApi.getMonth(year, month, {
-          department_id: departmentFilter ?? undefined,
-          include_payroll: canSeeMoney,
-        }) as Promise<MonthResponse>,
-        apiClient.get<CalendarSummary>(`/api/calendar/${year}/${month}/summary`)
-          .then(r => r.data)
-          .catch(() => ({ days: [] } as CalendarSummary)),
-      ]);
-      setData(monthData);
-      setCalendar(cal);
-    } catch (err: any) {
-      toast.error('Ошибка загрузки табеля: ' + (err?.message ?? err));
-    } finally {
-      setLoading(false);
-    }
-  }, [year, month, departmentFilter, canSeeMoney]);
+    if (payrollTimer.current) clearTimeout(payrollTimer.current);
+    setPayrollStale(false);
+    await fetchMonth(true);
+  }, [fetchMonth]);
+
+  // После правки часов: сразу перечитываем часы, суммы — через паузу, чтобы
+  // серия правок не гоняла расчёт по всему отделу на каждую цифру.
+  const afterEdit = useCallback(async () => {
+    await fetchMonth(false);
+    if (!canSeeMoney) return;
+    setPayrollStale(true);
+    if (payrollTimer.current) clearTimeout(payrollTimer.current);
+    payrollTimer.current = setTimeout(() => {
+      fetchMonth(true).then(() => setPayrollStale(false));
+    }, PAYROLL_REFRESH_DELAY_MS);
+  }, [fetchMonth, canSeeMoney]);
 
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // Таймер пересчёта не должен пережить уход с экрана
+  useEffect(() => () => {
+    if (payrollTimer.current) clearTimeout(payrollTimer.current);
+  }, []);
 
   // ── Тип дня (рабочий/праздник/сокращённый/выходной) ──
   const dayTypes = useMemo(() => {
@@ -691,12 +811,12 @@ export function TimesheetPage() {
           company_id: companyId,
           hours,
         });
-        await reload();
+        await afterEdit();
       } catch (err: any) {
         toast.error('Не удалось сохранить: ' + (err?.message ?? err));
       }
     },
-    [year, month, reload]
+    [year, month, afterEdit]
   );
 
   // Поставить/снять код отсутствия. Бэк сам удалит часы этого дня —
@@ -709,12 +829,12 @@ export function TimesheetPage() {
           work_date: dateStr(year, month, day),
           kind,
         });
-        await reload();
+        await afterEdit();
       } catch (err: any) {
         toast.error('Не удалось сохранить отметку: ' + (err?.message ?? err));
       }
     },
-    [year, month, reload]
+    [year, month, afterEdit]
   );
 
   const changeSlotCompany = useCallback(
@@ -737,12 +857,12 @@ export function TimesheetPage() {
           company_id: newCompanyId,
           hours,
         });
-        await reload();
+        await afterEdit();
       } catch (err: any) {
         toast.error('Не удалось сменить компанию: ' + (err?.message ?? err));
       }
     },
-    [year, month, reload]
+    [year, month, afterEdit]
   );
 
   const addSlot = useCallback(
@@ -892,6 +1012,17 @@ export function TimesheetPage() {
   // ── Render ──
   const numDays = daysInMonth(year, month);
 
+  // Отдел ещё не выбран — не грузим табель и говорим об этом прямо, иначе пустой
+  // экран читается как «сломалось». «Все отделы» рядом, отдельной кнопкой.
+  if (needsDeptChoice) {
+    return (
+      <DepartmentGate
+        departments={departments}
+        allLabel={isDeptScoped ? 'Все мои отделы' : 'Все отделы'}
+        onPick={setDeptChoice}
+      />
+    );
+  }
   if (loading && !data) {
     return <div className="p-8 text-gray-500">Загрузка…</div>;
   }
@@ -913,8 +1044,14 @@ export function TimesheetPage() {
   const renderPositionRow = ({ emp, position, index, count }: PositionRow) => {
     const positionId = positionIdParam(position);
     const pay = payrollFor(emp, position);
-    const rowTotal = num(pay?.total_hours, 0)
-      || sumPositionHours(emp.id, positionId, data.entries, primaryPositionIdByEmp);
+    // Пока суммы ждут пересчёта, часы берём из ячеек: они уже перечитаны, а
+    // payroll.total_hours относится к состоянию до правки — иначе введённая
+    // цифра появлялась бы в дне, но «Итого Ч» секунду стояло на месте.
+    const hoursFromEntries = () =>
+      sumPositionHours(emp.id, positionId, data.entries, primaryPositionIdByEmp);
+    const rowTotal = payrollStale
+      ? hoursFromEntries()
+      : num(pay?.total_hours, 0) || hoursFromEntries();
     const periodEditable = periodForDept(position.department_id)?.can_edit ?? false;
     const schedule = position.schedule ?? null;
     const noSchedule = !schedule;
@@ -1292,18 +1429,31 @@ export function TimesheetPage() {
           {canSelectDept && departments.length > 0 && (
             <select
               className="border border-gray-300 rounded px-2 py-1 text-sm"
-              value={departmentFilter ?? ''}
+              value={deptChoice === 'all' ? 'all' : String(deptChoice ?? '')}
               onChange={(e) =>
-                setDepartmentFilter(e.target.value === '' ? null : parseInt(e.target.value, 10))
+                setDeptChoice(
+                  e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10)
+                )
               }
             >
-              <option value="">{isDeptScoped ? 'Все мои отделы' : 'Все отделы'}</option>
+              {/* «Все отделы» — осознанный выбор, а не дефолт: на всех отделах это
+                  сотни строк и полный расчёт ЗП по всем. */}
+              <option value="all">{isDeptScoped ? 'Все мои отделы' : 'Все отделы'}</option>
               {departments.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}
                 </option>
               ))}
             </select>
+          )}
+
+          {payrollStale && (
+            <span
+              className="text-xs text-amber-600"
+              title="Часы сохранены. Суммы (оклад, переработка, к выплате) пересчитываются."
+            >
+              суммы пересчитываются…
+            </span>
           )}
 
           {filtersActive && (
