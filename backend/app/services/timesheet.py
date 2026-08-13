@@ -87,9 +87,24 @@ def compute_extra_companies_by_employee(
     employees: list[Employee],
     entries: list[TimesheetEntry],
 ) -> dict[int, list[int]]:
+    """Юрлица сотрудника помимо основного — по одному проходу по ячейкам.
+
+    Раньше на каждого сотрудника сканировался ВЕСЬ список ячеек месяца, то есть
+    O(сотрудники × ячейки): на 200 сотрудниках это 1,2 млн итераций и ~10 с из
+    13 с всего запроса табеля. Результат тот же: ключ есть у каждого сотрудника
+    (в том числе без часов), основная компания из списка исключена, порядок
+    возрастающий.
+    """
+    companies_by_emp: dict[int, set[int]] = {emp.id: set() for emp in employees}
+    for entry in entries:
+        bucket = companies_by_emp.get(entry.employee_id)
+        # Ячейка сотрудника, которого нет в выборке (другой отдел), нас не касается
+        if bucket is not None:
+            bucket.add(entry.company_id)
+
     result: dict[int, list[int]] = {}
     for emp in employees:
-        emp_company_ids = {e.company_id for e in entries if e.employee_id == emp.id}
+        emp_company_ids = companies_by_emp[emp.id]
         if emp.default_company_id is not None:
             emp_company_ids.discard(emp.default_company_id)
         result[emp.id] = sorted(emp_company_ids)

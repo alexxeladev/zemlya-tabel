@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import calendar as _cal
 from datetime import date, datetime
+from functools import lru_cache
 
 import httpx
 from sqlalchemy.orm import Session
@@ -17,13 +18,24 @@ class CalendarFetchError(Exception):
 
 # ── Pure parsing functions ────────────────────────────────────────────────────
 
-def parse_days_string(days: str) -> tuple[set[int], set[int]]:
+@lru_cache(maxsize=512)
+def parse_days_string(days: str) -> tuple[frozenset[int], frozenset[int]]:
     """
     Парсит строку '1,2,3,8*,9+,10' →
       ({1,2,3,9,10}, {8})  # (нерабочие_дни, сокращённые_дни)
+
+    Кэшируется: `is_workday` / `is_short_day` / `is_holiday` зовутся на каждый
+    день каждого сотрудника, и при 200 сотрудниках эта строка разбиралась
+    десятки тысяч раз за один запрос табеля (профиль показал здесь ~2 с).
+    Ключ кэша — сама строка, поэтому устареть он не может: правка календаря
+    даёт другую строку и другой ключ.
+
+    Результат ИММУТАБЕЛЬНЫЙ (frozenset) — его нельзя менять на месте, иначе
+    правка расползётся по всем, кто получил тот же кэшированный объект.
+    Сравнение с обычным set-ом при этом работает как раньше.
     """
     if not days.strip():
-        return set(), set()
+        return frozenset(), frozenset()
     non_working: set[int] = set()
     short_days: set[int] = set()
     for token in days.split(","):
@@ -36,7 +48,7 @@ def parse_days_string(days: str) -> tuple[set[int], set[int]]:
             non_working.add(int(token[:-1]))
         else:
             non_working.add(int(token))
-    return non_working, short_days
+    return frozenset(non_working), frozenset(short_days)
 
 
 def get_month_data(calendar_data: dict, month: int) -> dict | None:
