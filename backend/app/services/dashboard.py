@@ -51,6 +51,11 @@ _PERCENT_Q = Decimal("0.1")
 
 TREND_MONTHS = 6
 
+# Потолок длины диапазона (task_ux_improvements ч.2). Каждый месяц — полный
+# расчёт ЗП всех видимых сотрудников, то есть цена запроса линейна по месяцам;
+# год — разумный максимум, который и просили (квартал/год/произвольно).
+MAX_RANGE_MONTHS = 12
+
 # (employee, payroll-результат) за один месяц
 # Строка результата — (сотрудник, ПОЗИЦИЯ, расчёт): у совместителя человек
 # встречается столько раз, сколько у него рабочих мест (task_positions ч.A).
@@ -70,6 +75,27 @@ def _last_n_months(year: int, month: int, n: int) -> list[tuple[int, int]]:
         year, month = _prev_month(year, month)
         out.append((year, month))
     return list(reversed(out))
+
+
+def _next_month(year: int, month: int) -> tuple[int, int]:
+    return (year + 1, 1) if month == 12 else (year, month + 1)
+
+
+def months_in_range(
+    year: int, month: int, to_year: int, to_month: int
+) -> list[tuple[int, int]]:
+    """Месяцы диапазона включительно, по возрастанию.
+
+    Каждый месяц диапазона считается отдельно (ЗП помесячная — нормы, лимит
+    больничного и статусы периодов месячные), поэтому длина диапазона напрямую
+    определяет стоимость запроса: см. `MAX_RANGE_MONTHS`.
+    """
+    out: list[tuple[int, int]] = []
+    y, m = year, month
+    while (y, m) <= (to_year, to_month):
+        out.append((y, m))
+        y, m = _next_month(y, m)
+    return out
 
 
 def _month_payrolls(
@@ -182,6 +208,14 @@ def _hours_by_department(db: Session, results: _MonthResults) -> list[Department
 # ── Блок 2: ФОТ ───────────────────────────────────────────────────────────────
 
 def _payroll_totals(results: _MonthResults, rounding_effect: Decimal) -> PayrollTotalsRead:
+    # Не вошедшие в расчёт считаются по РАЗНЫМ рабочим местам, а не по строкам:
+    # в диапазоне месяцев один и тот же сотрудник без графика встречается
+    # столько раз, сколько месяцев выбрано, и счётчик бы врал.
+    non_calculable = {
+        (emp.id, position.id if position is not None else None)
+        for emp, position, p in results
+        if not p.is_calculable
+    }
     return PayrollTotalsRead(
         total=sum((p.total_amount for *_, p in results), _ZERO),
         base=sum((p.base_amount for *_, p in results), _ZERO),
@@ -189,7 +223,7 @@ def _payroll_totals(results: _MonthResults, rounding_effect: Decimal) -> Payroll
         off_schedule=sum((p.off_schedule_amount for *_, p in results), _ZERO),
         holiday=sum((p.holiday_amount for *_, p in results), _ZERO),
         rounding_effect=rounding_effect,
-        non_calculable_employees=sum(1 for *_, p in results if not p.is_calculable),
+        non_calculable_employees=len(non_calculable),
     )
 
 
@@ -260,7 +294,19 @@ def _period_row(
     )
 
 
-def _periods_block(db: Session, actor: Employee, year: int, month: int) -> PeriodsBlockRead:
+def _periods_block(
+    db: Session,
+    actor: Employee,
+    months: list[tuple[int, int]],
+) -> PeriodsBlockRead:
+    """Статусы периодов за все месяцы диапазона.
+
+    Строка — (отдел, месяц): у периода статус месячный, «свернуть» диапазон в
+    одну строку на отдел значило бы потерять, какой именно месяц не закрыт.
+    Просрочка считается от НАЧАЛА диапазона: незакрытый период более раннего
+    месяца — просрочен, месяцы внутри диапазона показаны своими строками.
+    """
+    year, month = months[0]
     # Отделы в зоне видимости actor-а
     if is_department_scoped(actor):
         # Все отделы, которыми руководит менеджер (task_org_structure ч.2) или
@@ -280,16 +326,18 @@ def _periods_block(db: Session, actor: Employee, year: int, month: int) -> Perio
         ).first() is not None
 
     periods = db.query(TimesheetPeriod).filter(
-        TimesheetPeriod.year == year, TimesheetPeriod.month == month
+        TimesheetPeriod.year.in_({y for y, _ in months}),
     ).all()
-    by_dept = {p.department_id: p for p in periods}
+    by_key = {(p.year, p.month, p.department_id): p for p in periods}
 
-    rows = [
-        _period_row(by_dept.get(d.id), d.id, d.name, year, month)
-        for d in sorted(depts, key=lambda d: d.name)
-    ]
-    if include_null_group:
-        rows.append(_period_row(by_dept.get(None), None, "Без отдела", year, month))
+    rows: list[PeriodStatusRowRead] = []
+    for y, m in months:
+        rows.extend(
+            _period_row(by_key.get((y, m, d.id)), d.id, d.name, y, m)
+            for d in sorted(depts, key=lambda d: d.name)
+        )
+        if include_null_group:
+            rows.append(_period_row(by_key.get((y, m, None)), None, "Без отдела", y, m))
 
     # Просроченные: незакрытые периоды месяцев раньше выбранного
     overdue_q = db.query(TimesheetPeriod).filter(
@@ -329,18 +377,22 @@ def _periods_block(db: Session, actor: Employee, year: int, month: int) -> Perio
 def _trend(
     db: Session,
     actor: Employee,
-    year: int,
-    month: int,
+    trend_months: list[tuple[int, int]],
     companies_by_id: dict[int, tuple[str, str]],
     calendars_cache: dict[int, dict | None],
     include_money: bool,
-    current_results: _MonthResults,
+    computed: dict[tuple[int, int], _MonthResults],
 ) -> list[TrendPointRead]:
+    """Динамика по месяцам.
+
+    `computed` — уже посчитанные месяцы (месяцы выбранного диапазона): второй
+    раз их считать незачем, расчёт месяца — самая дорогая часть дашборда.
+    """
     points = []
-    for y, m in _last_n_months(year, month, TREND_MONTHS):
+    for y, m in trend_months:
         results = (
-            current_results
-            if (y, m) == (year, month)
+            computed[(y, m)]
+            if (y, m) in computed
             else _month_payrolls(db, actor, y, m, companies_by_id, calendars_cache)
         )
         total, _, overtime = _sum_hours(results)
@@ -361,7 +413,27 @@ def _trend(
 
 # ── Сборка ответа ─────────────────────────────────────────────────────────────
 
-def build_dashboard(db: Session, actor: Employee, year: int, month: int) -> DashboardResponse:
+def build_dashboard(
+    db: Session,
+    actor: Employee,
+    year: int,
+    month: int,
+    to_year: int | None = None,
+    to_month: int | None = None,
+) -> DashboardResponse:
+    """Дашборд за месяц или за ДИАПАЗОН месяцев (task_ux_improvements ч.2).
+
+    (year, month) — начало диапазона, (to_year, to_month) — конец включительно;
+    не заданы — диапазон из одного месяца, поведение как раньше.
+
+    Все показатели суммируются по месяцам диапазона (часы, ФОТ, эффект
+    округления), статусы периодов показываются построчно по месяцам, а динамика
+    для диапазона строится по его же месяцам (для одиночного месяца остаётся
+    хвост из TREND_MONTHS назад — иначе график выродился бы в одну точку).
+    """
+    to_year = year if to_year is None else to_year
+    to_month = month if to_month is None else to_month
+
     # Финансовый блок (ФОТ) — только ролям с доступом к деньгам: табельщик видит
     # часы и статусы периодов своих отделов, ФОТ ему не отдаётся.
     include_money = can_see_finances(actor)
@@ -371,28 +443,40 @@ def build_dashboard(db: Session, actor: Employee, year: int, month: int) -> Dash
     companies_by_id = {c.id: (c.code, c.name) for c in companies}
     calendars_cache: dict[int, dict | None] = {}
 
-    current = _month_payrolls(db, actor, year, month, companies_by_id, calendars_cache)
+    months = months_in_range(year, month, to_year, to_month)
+    by_month = {
+        (y, m): _month_payrolls(db, actor, y, m, companies_by_id, calendars_cache)
+        for y, m in months
+    }
+    # Показатели диапазона — по всем его месяцам разом.
+    current: _MonthResults = [r for m in months for r in by_month[m]]
+
+    rounding = (
+        sum((_rounding_effect(db, actor, y, m) for y, m in months), _ZERO)
+        if include_money
+        else _ZERO
+    )
+    trend_months = months if len(months) > 1 else _last_n_months(year, month, TREND_MONTHS)
 
     return DashboardResponse(
         year=year,
         month=month,
+        to_year=to_year,
+        to_month=to_month,
+        months_count=len(months),
         role=actor.role,
         hours=_hours_summary(current),
         hours_by_department=[] if is_employee else _hours_by_department(db, current),
-        payroll=(
-            _payroll_totals(current, _rounding_effect(db, actor, year, month))
-            if include_money
-            else None
-        ),
+        payroll=_payroll_totals(current, rounding) if include_money else None,
         payroll_by_department=(
             _payroll_by_department(db, current) if include_money else []
         ),
         payroll_by_company=(
             _payroll_by_company(current, companies_by_id) if include_money else []
         ),
-        periods=None if is_employee else _periods_block(db, actor, year, month),
+        periods=None if is_employee else _periods_block(db, actor, months),
         trend=_trend(
-            db, actor, year, month, companies_by_id, calendars_cache,
-            include_money, current,
+            db, actor, trend_months, companies_by_id, calendars_cache,
+            include_money, by_month,
         ),
     )
