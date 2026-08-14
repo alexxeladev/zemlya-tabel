@@ -134,6 +134,9 @@ export type EmployeePayroll = {
   is_primary_position?: boolean;
   total_hours: string;
   norm_hours: string | null;
+  /** плановых рабочих дней (смен) месяца по графику позиции */
+  norm_days?: number | null;
+  fact_days?: number;
   delta_hours: string | null;
   /** Часы по категориям — их видит и табельщик, деньги ему бэк не отдаёт */
   overtime_hours?: string;
@@ -1026,9 +1029,13 @@ export function TimesheetPage() {
   // итоги, считаются по ВСЕМ видимым сотрудникам месяца, а не по отфильтрованным
   // строкам (см. счётчик «найдено N из M · итоги по всем»).
   const hourTotals = useMemo(() => {
-    const acc = { norm: 0, overtime: 0, offSchedule: 0, holiday: 0, vacationDays: 0, sickDays: 0 };
+    const acc = {
+      norm: 0, normDays: 0, overtime: 0, offSchedule: 0, holiday: 0,
+      vacationDays: 0, sickDays: 0,
+    };
     for (const pe of data?.payroll?.employees ?? []) {
       acc.norm += num(pe.norm_hours);
+      acc.normDays += pe.norm_days ?? 0;
       acc.overtime += num(pe.overtime_hours);
       acc.offSchedule += num(pe.off_schedule_hours);
       acc.holiday += num(pe.holiday_hours);
@@ -1234,7 +1241,7 @@ export function TimesheetPage() {
         {!canSeeMoney && canSeeHourStats && (
           <>
             <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
-              {pay?.norm_hours ? fmtHours(num(pay.norm_hours)) : '—'}
+              <NormCell pay={pay} />
             </td>
             <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
               {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
@@ -1291,7 +1298,7 @@ export function TimesheetPage() {
               {fmtCoeff(pay)}
             </td>
             <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
-              {pay?.norm_hours ? fmtHours(num(pay.norm_hours)) : '—'}
+              <NormCell pay={pay} />
             </td>
             <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
               {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
@@ -1760,7 +1767,7 @@ export function TimesheetPage() {
               {!canSeeMoney && canSeeHourStats && (
                 <>
                   {[
-                    ['Норма', 60, 'Норма часов по графику за месяц'],
+                    ['Норма ч / дн', 72, 'Норма по графику за месяц: часов и рабочих дней (смен)'],
                     ['Δ', 60, 'Отклонение факта от нормы'],
                     ['Сверхур. ч', 76, 'Переработка: часы сверх дневной нормы смены'],
                     ['Вне граф. ч', 82, 'Выход в свой выходной по графику'],
@@ -1790,9 +1797,10 @@ export function TimesheetPage() {
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600"
-                    style={{ minWidth: 60, zIndex: 20 }}
+                    style={{ minWidth: 72, zIndex: 20 }}
+                    title="Норма по графику за месяц: часов и рабочих дней (смен)"
                   >
-                    Норма
+                    Норма ч / дн
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600"
@@ -1927,6 +1935,11 @@ export function TimesheetPage() {
                   <>
                     <td className="border border-gray-300 px-2 py-2 text-center font-mono">
                       {hourTotals.norm > 0 ? fmtHours(hourTotals.norm) : ''}
+                      {hourTotals.normDays > 0 && (
+                        <span className="block text-[10px] font-sans font-normal text-gray-500 leading-tight">
+                          {hourTotals.normDays} дн
+                        </span>
+                      )}
                     </td>
                     <td className="border border-gray-300 px-2 py-2"></td>
                     <td className="border border-gray-300 px-2 py-2 text-center font-mono">
@@ -2200,6 +2213,30 @@ function sumPositionHours(
     if (positionId === undefined || pid === positionId) s += num(e.hours);
   }
   return s;
+}
+
+/**
+ * Норма месяца по графику: часы и ДНИ (task_ux_improvements ч.1).
+ *
+ * Норма дней приходит с бэка (`norm_days`) и уже считается по графику позиции:
+ * для weekday — плановые рабочие дни производственного календаря, для cyclic —
+ * рабочие СМЕНЫ цикла (не календарные дни). Здесь только отображение — рядом с
+ * часами, чтобы не добавлять колонку и не пересчитывать colspan-ы таблицы.
+ */
+export function NormCell({ pay }: { pay?: EmployeePayroll | null }) {
+  const hours = pay?.norm_hours ? num(pay.norm_hours) : null;
+  const days = pay?.norm_days ?? null;
+  if (!hours && !days) return <span className="text-gray-400">—</span>;
+  return (
+    <span title="Норма по графику: часов и рабочих дней (смен) за месяц">
+      {hours ? fmtHours(hours) : '—'}
+      {days != null && (
+        <span className="block text-[10px] font-sans text-gray-400 leading-tight">
+          {days} дн
+        </span>
+      )}
+    </span>
+  );
 }
 
 export function DeltaCell({ delta }: { delta: number }) {
