@@ -27,7 +27,11 @@ from app.schemas.payroll_statement import (
     StatementCompanyRef,
     StatementRow,
 )
-from app.services.absences import get_month_absences, sick_days_used_before_month
+from app.services.absences import (
+    get_month_absences,
+    schedules_by_employee,
+    sick_days_used_before_month,
+)
 from app.services.company_shares import (
     load_department_shares,
     load_employee_shares,
@@ -138,7 +142,7 @@ def build_payroll_summary(
     # Годовой лимит больничного: сколько оплачиваемых дней Б уже израсходовано
     # с 1 января до этого месяца (часть 2).
     sick_used_before = sick_days_used_before_month(
-        db, emp_ids, year, month, calendar_data
+        db, emp_ids, year, month, calendar_data, schedules_by_employee(employees)
     )
 
     payroll_items: list[EmployeePayrollRead] = []

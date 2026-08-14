@@ -30,7 +30,11 @@ from app.schemas.dashboard import (
     PeriodStatusRowRead,
     TrendPointRead,
 )
-from app.services.absences import get_month_absences, sick_days_used_before_month
+from app.services.absences import (
+    get_month_absences,
+    schedules_by_employee,
+    sick_days_used_before_month,
+)
 from app.services.org_access import (
     can_see_finances,
     is_department_scoped,
@@ -94,7 +98,8 @@ def _month_payrolls(
     for a in get_month_absences(db, employees, year, month):
         absences_by_emp.setdefault(a.employee_id, []).append(a)
     sick_used_before = sick_days_used_before_month(
-        db, [e.id for e in employees], year, month, calendar_data
+        db, [e.id for e in employees], year, month, calendar_data,
+        schedules_by_employee(employees),
     )
 
     # По одной строке на ПОЗИЦИЮ (task_positions ч.A) — так же, как считает

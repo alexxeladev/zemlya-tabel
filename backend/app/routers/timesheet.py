@@ -49,6 +49,7 @@ from app.services.absences import (
     absence_code,
     get_month_absences,
     over_limit_sick_dates,
+    schedules_by_employee,
     set_absence,
 )
 from app.services.payroll_statement import (
@@ -470,6 +471,7 @@ def get_month(
     cal_for_year = db.query(ProductionCalendar).filter_by(year=year).first()
     over_limit = over_limit_sick_dates(
         db, [e.id for e in employees], year, cal_for_year.data if cal_for_year else None,
+        schedules_by_employee(employees),
     )
     absences = [
         AbsenceRead(

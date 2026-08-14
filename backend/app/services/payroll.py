@@ -13,11 +13,12 @@ from app.models.positions import (
     EmployeePosition,
 )
 from app.models.timesheet_entries import TimesheetEntry
-from app.services.absences import sick_limit_days, split_sick_dates_by_limit
-from app.services.calendar import (
-    is_holiday,
-    workdays_in_month,
+from app.services.absences import (
+    is_payable_absence_day,
+    sick_limit_days,
+    split_sick_dates_by_limit,
 )
+from app.services.calendar import workdays_in_month
 from app.services.work_schedule import (
     DAY_HOLIDAY,
     DAY_OFF_SCHEDULE,
@@ -37,8 +38,8 @@ _ONE_HALF = Decimal("1.5")
 _HUNDRED = Decimal("100")
 _PERCENT_Q = Decimal("0.1")
 
-# День отпуска/больничного оплачивается как стандартная смена 8 ч
-# (формула образца финдира: оклад / норма_часов × дни × 8).
+# Длина смены для дня отсутствия, когда графика нет: стандартные 8 ч.
+# При заданном графике берётся его `hours_per_shift` — см. `absence_day_hours`.
 ABSENCE_DAY_HOURS = Decimal("8")
 
 
@@ -262,14 +263,33 @@ def hourly_overtime_hours(
     return overtime
 
 
+def absence_day_hours(schedule) -> Decimal:
+    """
+    Сколько часов «стоит» один оплачиваемый день отсутствия — ДЛИНА СМЕНЫ
+    ГРАФИКА (task_vacation_shift_fix): 5/2 → 8 ч, 6/1 → 9 ч, 2/2 и 3/1 → 12 ч.
+
+    Раньше здесь было жёсткое «× 8», из-за чего отпуск сменщика на 12-часовом
+    графике оплачивался в полтора раза дешевле смены. Сокращение
+    предпраздничного дня к отсутствию не применяем: это ставка сотрудника, а не
+    свойство конкретной даты (и на 5/2 сохраняет прежний результат).
+    """
+    if schedule is None:
+        return ABSENCE_DAY_HOURS
+    hours = Decimal(str(schedule.hours_per_shift or 0))
+    return hours if hours > _ZERO else ABSENCE_DAY_HOURS
+
+
 def absence_pay(
     hourly_rate: Decimal | None, paid_days: int, day_hours: Decimal = ABSENCE_DAY_HOURS
 ) -> Decimal:
     """
-    Оплата дней отпуска/больничного: `оклад / норма_часов × (дни × 8)`.
+    Оплата дней отпуска/больничного: `оклад / норма_часов × часы_отсутствия`,
+    где `часы_отсутствия = оплачиваемые дни × длина смены графика`.
 
-    Больничный в этой части — 100% по той же формуле, без годового лимита
-    (лимит — отдельная задача, часть 2).
+    Оплачиваемые дни — это рабочие СМЕНЫ ГРАФИКА, попавшие в период отсутствия
+    (`is_payable_absence_day`), а `day_hours` — `absence_day_hours(schedule)`.
+    Календарные дни отпуска сюда не приходят: у сменщика 14 календарных дней
+    дают смены цикла, а не 14 дней × 8 ч.
     """
     if hourly_rate is None or paid_days <= 0:
         return _ZERO
@@ -431,6 +451,8 @@ def calculate_position_payroll(
     # ── Отсутствия: дни по видам + сколько из них рабочих по календарю ────────
     # Норма от отсутствий НЕ меняется, факт часов — тоже (в день отсутствия
     # часов нет по инварианту взаимоисключения). Меняются только начисления.
+    schedule = position.schedule if position is not None else None
+
     absence_days: dict[str, int] = {kind: 0 for kind in ABSENCE_CODES}
     absence_paid_days: dict[str, int] = {kind: 0 for kind in ABSENCE_CODES}
     sick_dates: list[date] = []
@@ -439,17 +461,16 @@ def calculate_position_payroll(
         if a.kind == AbsenceKind.sick.value:
             sick_dates.append(a.work_date)
             continue  # больничный считаем ниже, через годовой лимит
-        # Платим только за рабочие дни: выходной/праздник в норму не входит,
-        # иначе «оклад за отработанное + отпускные» вылезет за полный оклад.
-        if calendar_data is None or not is_holiday(
-            calendar_data, a.work_date.month, a.work_date.day
-        ):
+        # Платим только за рабочие дни ПО ГРАФИКУ: выходной графика (у сменщика —
+        # выходной цикла) и праздник в норму не входят, иначе «оклад за
+        # отработанное + отпускные» вылезет за полный оклад.
+        if is_payable_absence_day(a.work_date, calendar_data, schedule):
             absence_paid_days[a.kind] = absence_paid_days.get(a.kind, 0) + 1
 
     # Больничный: первые sick_limit рабочих дней в году — 100%, дальше 0.
     # Хронология внутри месяца и между месяцами — по дате (см. services.absences).
     sick_paid_dates, sick_over_dates = split_sick_dates_by_limit(
-        sick_dates, calendar_data, sick_limit, sick_days_used_before,
+        sick_dates, calendar_data, sick_limit, sick_days_used_before, schedule,
     )
     absence_paid_days[AbsenceKind.sick.value] = len(sick_paid_dates)
     sick_unpaid_days = len(sick_over_dates)
@@ -468,8 +489,6 @@ def calculate_position_payroll(
     if not pays_absences:
         absence_paid_days = {kind: 0 for kind in ABSENCE_CODES}
         sick_unpaid_days = 0
-
-    schedule = position.schedule if position is not None else None
 
     # Aggregate hours by company and by date. Каждый день попадает ровно в одну
     # категорию (`day_category`): плановый рабочий → оклад/переработка,
@@ -697,13 +716,15 @@ def calculate_position_payroll(
             )
 
         if not hourly:
-            # Отпуск и больничный — отдельные начисления по «дни × 8», у окладной
-            # и посменной по одной формуле (у посменного оклад условный).
+            # Отпуск и больничный — отдельные начисления «оклад/норма × часы», где
+            # часы = рабочие СМЕНЫ ГРАФИКА в периоде × длина смены. У окладной и
+            # посменной формула одна (у посменного оклад условный).
+            day_hours = absence_day_hours(schedule)
             vacation_amount = absence_pay(
-                hourly_rate, absence_paid_days[AbsenceKind.vacation.value]
+                hourly_rate, absence_paid_days[AbsenceKind.vacation.value], day_hours
             )
             sick_amount = absence_pay(
-                hourly_rate, absence_paid_days[AbsenceKind.sick.value]
+                hourly_rate, absence_paid_days[AbsenceKind.sick.value], day_hours
             )
 
     base_amount = _round(base_amount)

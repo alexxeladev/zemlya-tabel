@@ -27,6 +27,7 @@ from app.models.employee_absences import (
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.calendar import is_holiday
+from app.services.work_schedule import is_planned_work_day
 
 __all__ = [
     "ABSENCE_CODES",
@@ -37,6 +38,7 @@ __all__ = [
     "is_payable_absence_day",
     "load_year_sick_dates",
     "over_limit_sick_dates",
+    "schedules_by_employee",
     "set_absence",
     "sick_days_used_before_month",
     "sick_limit_days",
@@ -85,9 +87,10 @@ def absence_days_by_kind(absences: list[EmployeeAbsence]) -> dict[str, int]:
 # числом в ранний месяц автоматически съедает лимит раньше, и поздние месяцы
 # пересчитываются сами — отдельного «состояния лимита» в БД не храним.
 #
-# Лимит расходуют только оплачиваемые дни (рабочие по производственному
-# календарю): день Б на выходном отмечается, но денег не даёт и лимит не жжёт —
-# это следует из правила части 1 «платим только за рабочие дни».
+# Лимит расходуют только оплачиваемые дни (рабочие ПО ГРАФИКУ сотрудника):
+# день Б на выходном отмечается, но денег не даёт и лимит не жжёт — это следует
+# из правила части 1 «платим только за рабочие дни». У сменщика «выходной» —
+# это выходной его цикла, а не суббота календаря (task_vacation_shift_fix).
 
 
 def sick_limit_days() -> int:
@@ -95,8 +98,22 @@ def sick_limit_days() -> int:
     return settings.SICK_LEAVE_LIMIT_DAYS
 
 
-def is_payable_absence_day(work_date: date, calendar_data: dict | None) -> bool:
-    """Оплачиваемый ли это день отсутствия — т.е. рабочий по календарю."""
+def is_payable_absence_day(
+    work_date: date, calendar_data: dict | None, schedule=None
+) -> bool:
+    """
+    Оплачиваемый ли это день отсутствия — т.е. рабочий день ПО ГРАФИКУ.
+
+    График задан → это плановый рабочий день графика (`is_planned_work_day`,
+    та же функция, что считает норму и автозаполнение): у сменщика выходной
+    цикла отпуском не оплачивается, у 5/2 — суббота и праздник. Календарные
+    дни без графика не считаем — 14 календарных дней отпуска ≠ 14 смен.
+
+    График не задан → падаем на старое правило «рабочий день производственного
+    календаря»: противопоставить нечему, а такая позиция и так не считается.
+    """
+    if schedule is not None:
+        return is_planned_work_day(schedule, work_date, calendar_data)
     if calendar_data is None:
         return True
     return not is_holiday(calendar_data, work_date.month, work_date.day)
@@ -107,6 +124,7 @@ def split_sick_dates_by_limit(
     calendar_data: dict | None,
     limit: int | None = None,
     used_before: int = 0,
+    schedule=None,
 ) -> tuple[list[date], list[date]]:
     """
     Делит дни больничного на оплачиваемые и сверхлимитные — хронологически.
@@ -123,7 +141,7 @@ def split_sick_dates_by_limit(
     paid: list[date] = []
     over: list[date] = []
     for d in sorted(sick_dates):
-        if not is_payable_absence_day(d, calendar_data):
+        if not is_payable_absence_day(d, calendar_data, schedule):
             continue
         if remaining > 0:
             paid.append(d)
@@ -159,31 +177,52 @@ def load_year_sick_dates(
     return result
 
 
+def schedules_by_employee(employees: Iterable[Employee]) -> dict[int, object]:
+    """
+    {employee_id: график ОСНОВНОЙ позиции} — по нему определяются оплачиваемые
+    дни отсутствия. Отсутствия платит только основная позиция (task_positions_fixes
+    п.1), поэтому и лимит больничного расходуется по её графику.
+    """
+    result: dict[int, object] = {}
+    for emp in employees:
+        position = emp.primary_position
+        result[emp.id] = position.schedule if position is not None else None
+    return result
+
+
 def sick_days_used_before_month(
     db: Session,
     emp_ids: list[int],
     year: int,
     month: int,
     calendar_data: dict | None,
+    schedules: dict[int, object] | None = None,
 ) -> dict[int, int]:
     """{employee_id: оплачиваемых дней Б в этом году ДО указанного месяца}."""
     used: dict[int, int] = {}
     for emp_id, dates in load_year_sick_dates(db, emp_ids, year).items():
+        schedule = (schedules or {}).get(emp_id)
         used[emp_id] = sum(
             1
             for d in dates
-            if d.month < month and is_payable_absence_day(d, calendar_data)
+            if d.month < month and is_payable_absence_day(d, calendar_data, schedule)
         )
     return used
 
 
 def over_limit_sick_dates(
-    db: Session, emp_ids: list[int], year: int, calendar_data: dict | None
+    db: Session,
+    emp_ids: list[int],
+    year: int,
+    calendar_data: dict | None,
+    schedules: dict[int, object] | None = None,
 ) -> dict[int, set[date]]:
     """{employee_id: даты Б сверх годового лимита} — для пометки в табеле."""
     result: dict[int, set[date]] = {}
     for emp_id, dates in load_year_sick_dates(db, emp_ids, year).items():
-        _, over = split_sick_dates_by_limit(dates, calendar_data)
+        _, over = split_sick_dates_by_limit(
+            dates, calendar_data, schedule=(schedules or {}).get(emp_id)
+        )
         if over:
             result[emp_id] = set(over)
     return result
