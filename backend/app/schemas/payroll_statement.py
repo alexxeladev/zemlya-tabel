@@ -93,6 +93,16 @@ class StatementRow(BaseModel):
     kpi_amount: Decimal           # KPI
     premium_extra_amount: Decimal  # Премия (доп.) — пока не моделируется, плейсхолдер
 
+    # Обоснования (task_ux_improvements ч.1b). Каждая премия/KPI/аванс заводится
+    # с обязательным текстом, за месяц их может быть несколько — поэтому списки
+    # строк вида «5000 ₽ — за переработку в мае», а не одно поле.
+    # loan_note заполняется только у РУЧНОЙ правки удержания по займу: своего
+    # поля обоснования у займа в модели нет, есть лишь плановая доля.
+    premium_reasons: list[str] = []
+    kpi_reasons: list[str] = []
+    advance_reasons: list[str] = []
+    loan_note: str | None = None
+
     # Отсутствия: дни и оплата (ДО/Н — только дни, денег не дают)
     vacation_days: int = 0
     sick_days: int = 0

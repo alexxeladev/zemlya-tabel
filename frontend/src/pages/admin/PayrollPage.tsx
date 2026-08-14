@@ -19,6 +19,11 @@ const num = (v: string | null | undefined): number => {
   return Number.isFinite(n) ? n : 0
 }
 
+// Обоснования премии/KPI/удержаний — подсказкой к сумме. Записей за месяц может
+// быть несколько, поэтому каждая своей строкой (те же тексты идут в Excel).
+const reasonTitle = (reasons: string[] | undefined): string | undefined =>
+  reasons && reasons.length ? reasons.join('\n') : undefined
+
 // Ключ строки — РАБОЧЕЕ МЕСТО (task_positions): у совместителя строк несколько
 // на одного человека, employee_id их не различает.
 type Edits = Record<string, Record<number, string>> // rowKey → company_id → percent
@@ -463,10 +468,23 @@ export function PayrollPage() {
                         </div>
                       )}
                     </td>
-                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.premium_amount)}</td>
-                    <td className="px-2 py-1.5 text-center text-gray-700">{formatMoney(row.kpi_amount)}</td>
+                    {/* Обоснования — подсказкой к сумме; те же тексты уходят в Excel */}
+                    <td className="px-2 py-1.5 text-center text-gray-700" title={reasonTitle(row.premium_reasons)}>
+                      {formatMoney(row.premium_amount)}
+                    </td>
+                    <td className="px-2 py-1.5 text-center text-gray-700" title={reasonTitle(row.kpi_reasons)}>
+                      {formatMoney(row.kpi_amount)}
+                    </td>
                     <td className="px-2 py-1.5 text-center font-bold text-blue-700">{formatMoney(row.accrued_total, { showZero: true })}</td>
-                    <td className="px-2 py-1.5 text-center text-rose-600">{formatMoney(row.deductions)}</td>
+                    <td
+                      className="px-2 py-1.5 text-center text-rose-600"
+                      title={reasonTitle([
+                        ...(row.advance_reasons ?? []),
+                        ...(row.loan_note ? [row.loan_note] : []),
+                      ])}
+                    >
+                      {formatMoney(row.deductions)}
+                    </td>
                     <td
                       className="px-2 py-1.5 text-center font-bold text-emerald-700"
                       title={

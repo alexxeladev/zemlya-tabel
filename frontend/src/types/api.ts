@@ -181,6 +181,12 @@ export interface StatementRow {
   premium_amount: string
   kpi_amount: string
   premium_extra_amount: string
+  /** обоснования — по одной строке на запись; попадают и в Excel-выгрузку */
+  premium_reasons: string[]
+  kpi_reasons: string[]
+  advance_reasons: string[]
+  /** ручная правка удержания по займу (своего обоснования у займа нет) */
+  loan_note: string | null
   vacation_days: number
   sick_days: number
   unpaid_days: number
