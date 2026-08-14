@@ -397,6 +397,91 @@ class TestAutoDistributionByHours:
         assert len(r.content) > 0
 
 
+# ── Обоснования премий/KPI/удержаний в ведомости (task_ux_improvements ч.1b) ──
+
+class TestAdjustmentReasonsInStatement:
+    """Обоснование заводится обязательным у каждой премии/KPI/аванса — оно должно
+    доезжать до ведомости и её Excel-выгрузки, а не оставаться только в табеле."""
+
+    def _add(self, client, token, emp_id, kind, amount, reason):
+        return client.post("/api/timesheet/adjustments", json={
+            "employee_id": emp_id, "year": 2026, "month": 5,
+            "kind": kind, "amount": amount, "reason": reason,
+        }, headers=_h(client, token))
+
+    def test_reasons_in_statement_rows(self, client: TestClient, admin, worker,
+                                       companies, schedule, calendar, db_session):
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        assert self._add(client, token, worker.id, "premium", "5000",
+                         "за переработку в мае").status_code in (200, 201)
+        assert self._add(client, token, worker.id, "kpi", "3000",
+                         "выполнение плана").status_code in (200, 201)
+        assert self._add(client, token, worker.id, "advance", "2000",
+                         "аванс 20 мая").status_code in (200, 201)
+
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        assert r.status_code == 200
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["premium_reasons"] == ["5000 ₽ — за переработку в мае"]
+        assert row["kpi_reasons"] == ["3000 ₽ — выполнение плана"]
+        assert row["advance_reasons"] == ["2000 ₽ — аванс 20 мая"]
+        # Займа нет — примечания по нему тоже
+        assert row["loan_note"] is None
+
+    def test_several_adjustments_of_one_kind_listed_separately(
+        self, client: TestClient, admin, worker, companies, schedule, calendar, db_session,
+    ):
+        """Две премии за месяц суммируются в деньгах, но обоснования не склеиваются:
+        одна строка «Премия 12000» без разбивки не объясняет цифру."""
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        self._add(client, token, worker.id, "premium", "5000", "за объект А")
+        self._add(client, token, worker.id, "premium", "7000", "за объект Б")
+
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert Decimal(row["premium_amount"]) == Decimal("12000")
+        assert row["premium_reasons"] == ["5000 ₽ — за объект А", "7000 ₽ — за объект Б"]
+
+    def test_no_adjustments_gives_empty_lists(self, client: TestClient, admin, worker,
+                                              companies, schedule, calendar, db_session):
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        assert row["premium_reasons"] == []
+        assert row["kpi_reasons"] == []
+        assert row["advance_reasons"] == []
+
+    def test_reasons_reach_excel(self, client: TestClient, admin, worker, companies,
+                                 schedule, calendar, db_session):
+        from io import BytesIO
+
+        from openpyxl import load_workbook
+
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        self._add(client, token, worker.id, "premium", "5000", "за переработку в мае")
+        self._add(client, token, worker.id, "kpi", "3000", "выполнение плана")
+        self._add(client, token, worker.id, "advance", "2000", "аванс 20 мая")
+
+        r = client.get("/api/timesheet/2026/5/statement/export/excel",
+                       headers=_h(client, token))
+        assert r.status_code == 200
+        ws = load_workbook(BytesIO(r.content)).active
+        texts = [
+            str(c.value)
+            for row in ws.iter_rows()
+            for c in row
+            if isinstance(c.value, str)
+        ]
+        assert any("Обоснование премии" in t for t in texts)
+        assert any("за переработку в мае" in t for t in texts)
+        assert any("выполнение плана" in t for t in texts)
+        assert any("аванс 20 мая" in t for t in texts)
+
+
 # ── Дефолт отдела и каскад приоритетов (task_distribution_v2 ч.3) ─────────────
 
 class TestDepartmentDefaultShares:

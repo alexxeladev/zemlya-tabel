@@ -40,6 +40,7 @@ from app.services.company_shares import (
 from app.services.distribution import distribute
 from app.services.payout import (
     compute_payout,
+    load_adjustment_reasons,
     load_adjustment_sums,
     load_loan_overrides,
     loan_month_state,
@@ -359,6 +360,29 @@ def _auto_shares_by_hours(
     return {}, {}
 
 
+def _fmt_amount(value: Decimal | None) -> str:
+    """Сумма для текста обоснования: целые рубли без хвоста, если он нулевой."""
+    if value is None:
+        return "0"
+    value = Decimal(value)
+    return str(value.quantize(Decimal("1")) if value == value.to_integral_value() else value)
+
+
+def _reason_lines(items: list[tuple[Decimal, str]] | None) -> list[str]:
+    """[(сумма, обоснование)] → ['5000 ₽ — за переработку', ...].
+
+    За месяц у сотрудника может быть несколько премий/KPI/авансов, поэтому в
+    отчёт идёт сумма каждой записи вместе с её текстом: одна строка «Премия
+    12000» без разбивки не объясняет, откуда взялась цифра.
+    """
+    if not items:
+        return []
+    return [
+        f"{_fmt_amount(amount)} ₽ — {reason}" if reason else f"{_fmt_amount(amount)} ₽"
+        for amount, reason in items
+    ]
+
+
 # ── Сводная ведомость ─────────────────────────────────────────────────────────
 
 def build_payroll_statement(
@@ -399,6 +423,11 @@ def build_payroll_statement(
     )
     dept_shares = load_department_shares(
         db, [pos.department_id for pos in position_by_id.values() if pos.department_id]
+    )
+
+    # Обоснования премий/KPI/аванса — только для отчётности, в расчёт не входят.
+    adjustment_reasons = load_adjustment_reasons(
+        db, emp_ids, year, month, primary_position_ids
     )
 
     rows: list[StatementRow] = []
@@ -455,6 +484,13 @@ def build_payroll_statement(
         overtime_coeff = getattr(position, "overtime_coefficient", None) if position else None
         overtime_coeff = Decimal("1.5") if overtime_coeff is None else Decimal(str(overtime_coeff))
 
+        reasons = adjustment_reasons.get(p.employee_id, {}).get(p.position_id, {})
+        loan_note = (
+            f"займ: удержание изменено вручную (плановая доля "
+            f"{_fmt_amount(p.loan_planned_deduction)} ₽)"
+            if p.loan_is_manual else None
+        )
+
         rows.append(StatementRow(
             employee_id=p.employee_id,
             position_id=p.position_id,
@@ -486,6 +522,10 @@ def build_payroll_statement(
             premium_amount=p.premium_amount,
             kpi_amount=p.kpi_amount,
             premium_extra_amount=_ZERO,
+            premium_reasons=_reason_lines(reasons.get("premium")),
+            kpi_reasons=_reason_lines(reasons.get("kpi")),
+            advance_reasons=_reason_lines(reasons.get("advance")),
+            loan_note=loan_note,
             vacation_days=p.vacation_days,
             sick_days=p.sick_days,
             unpaid_days=p.unpaid_days,

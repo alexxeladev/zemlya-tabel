@@ -210,6 +210,47 @@ def load_adjustment_sums(
     return result
 
 
+def load_adjustment_reasons(
+    db: Session,
+    emp_ids: list[int],
+    year: int,
+    month: int,
+    primary_position_ids: dict[int, int | None] | None = None,
+) -> dict[int, dict[int | None, dict[str, list[tuple[Decimal, str]]]]]:
+    """{employee_id: {position_id: {kind: [(сумма, обоснование), ...]}}} за период.
+
+    Обоснование (`reason`) обязательно у каждой премии/KPI/аванса и до сих пор
+    было видно только в табеле. Отдаётся ОТДЕЛЬНЫМ загрузчиком, а не внутри
+    `load_adjustment_sums`: тот участвует в расчёте и суммирует записи по типу,
+    а тексты нужны только отчётности (task_ux_improvements ч.1b).
+
+    Правило адресации то же, что у сумм: `position_id IS NULL` — запись до
+    появления позиций, читается как основная позиция.
+    """
+    result: dict[int, dict[int | None, dict[str, list[tuple[Decimal, str]]]]] = {}
+    if not emp_ids:
+        return result
+    primary_position_ids = primary_position_ids or {}
+    rows = (
+        db.query(EmployeeAdjustment)
+        .filter(
+            EmployeeAdjustment.employee_id.in_(emp_ids),
+            EmployeeAdjustment.year == year,
+            EmployeeAdjustment.month == month,
+        )
+        .order_by(EmployeeAdjustment.id)
+        .all()
+    )
+    for r in rows:
+        position_id = r.position_id
+        if position_id is None:
+            position_id = primary_position_ids.get(r.employee_id)
+        bucket = result.setdefault(r.employee_id, {}).setdefault(position_id, {})
+        amount = r.amount if isinstance(r.amount, Decimal) else Decimal(str(r.amount))
+        bucket.setdefault(r.kind, []).append((amount, r.reason or ""))
+    return result
+
+
 def load_loan_overrides(
     db: Session, emp_ids: list[int]
 ) -> dict[int, dict[tuple[int, int], Decimal]]:
