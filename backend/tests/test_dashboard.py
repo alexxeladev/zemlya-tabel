@@ -346,3 +346,110 @@ class TestDashboardRoles:
         token = get_token(client, "dashadmin@example.com", "admin123")
         resp = _get(client, token, "/api/dashboard/2026/13")
         assert resp.status_code == 422
+
+
+# ── Диапазон месяцев (task_ux_improvements ч.2) ───────────────────────────────
+
+@pytest.fixture
+def april_entries(db_session: Session, worker1: Employee, company1: Company) -> None:
+    """worker1: 8 ч 7 апреля — второй месяц, чтобы было что суммировать."""
+    db_session.add(TimesheetEntry(
+        employee_id=worker1.id, work_date=date(2026, 4, 7),
+        company_id=company1.id, hours=8,
+    ))
+    db_session.commit()
+
+
+class TestDashboardRange:
+    def test_single_month_unchanged(self, client, dash_admin, worker1, worker2,
+                                    calendar_2026, may_entries):
+        """Без to_year/to_month ответ прежний, конец периода = начало."""
+        token = get_token(client, "dashadmin@example.com", "admin123")
+        data = _get(client, token).json()
+        assert (data["year"], data["month"]) == (2026, 5)
+        assert (data["to_year"], data["to_month"]) == (2026, 5)
+        assert data["months_count"] == 1
+        assert Decimal(data["hours"]["total_hours"]) == Decimal("26")
+
+    def test_range_sums_months(self, client, dash_admin, worker1, worker2,
+                               calendar_2026, may_entries, april_entries):
+        """Апрель+май: часы и ФОТ — сумма месяцев диапазона."""
+        token = get_token(client, "dashadmin@example.com", "admin123")
+        one = _get(client, token, "/api/dashboard/2026/4").json()
+        two = _get(client, token, "/api/dashboard/2026/5").json()
+        both = _get(
+            client, token, "/api/dashboard/2026/4?to_year=2026&to_month=5"
+        ).json()
+
+        assert both["months_count"] == 2
+        assert (both["to_year"], both["to_month"]) == (2026, 5)
+        assert (Decimal(both["hours"]["total_hours"])
+                == Decimal(one["hours"]["total_hours"])
+                + Decimal(two["hours"]["total_hours"]))
+        assert (Decimal(both["payroll"]["total"])
+                == Decimal(one["payroll"]["total"]) + Decimal(two["payroll"]["total"]))
+        assert (Decimal(both["hours"]["norm_hours"])
+                == Decimal(one["hours"]["norm_hours"])
+                + Decimal(two["hours"]["norm_hours"]))
+
+    def test_range_trend_is_range_months(self, client, dash_admin, worker1, worker2,
+                                         calendar_2026, may_entries, april_entries):
+        """Динамика диапазона — по его же месяцам, а не хвост из 6 назад."""
+        token = get_token(client, "dashadmin@example.com", "admin123")
+        data = _get(
+            client, token, "/api/dashboard/2026/4?to_year=2026&to_month=6"
+        ).json()
+        assert [(p["year"], p["month"]) for p in data["trend"]] == [
+            (2026, 4), (2026, 5), (2026, 6),
+        ]
+
+    def test_range_periods_rows_per_month(self, client, db_session, dash_admin,
+                                          dept1, calendar_2026):
+        """Строка статуса — (отдел, месяц): свернув диапазон, потеряли бы,
+        какой именно месяц не закрыт."""
+        db_session.add(TimesheetPeriod(department_id=dept1.id, year=2026, month=4,
+                                       status="closed"))
+        db_session.add(TimesheetPeriod(department_id=dept1.id, year=2026, month=5,
+                                       status="draft"))
+        db_session.commit()
+        token = get_token(client, "dashadmin@example.com", "admin123")
+        data = _get(
+            client, token, "/api/dashboard/2026/4?to_year=2026&to_month=5"
+        ).json()
+        rows = {
+            (r["year"], r["month"]): r["status"]
+            for r in data["periods"]["rows"] if r["department_id"] == dept1.id
+        }
+        assert rows[(2026, 4)] == "closed"
+        assert rows[(2026, 5)] == "draft"
+
+    def test_non_calculable_counted_once_per_position(self, client, db_session,
+                                                      dash_admin, dept1, calendar_2026):
+        """Сотрудник без графика не должен считаться заново в каждом месяце."""
+        emp = Employee(full_name="Без графика", is_active=True, department_id=dept1.id)
+        db_session.add(emp)
+        db_session.commit()
+        token = get_token(client, "dashadmin@example.com", "admin123")
+        one = _get(client, token, "/api/dashboard/2026/4").json()
+        both = _get(
+            client, token, "/api/dashboard/2026/4?to_year=2026&to_month=6"
+        ).json()
+        assert one["payroll"]["non_calculable_employees"] >= 1
+        assert (both["payroll"]["non_calculable_employees"]
+                == one["payroll"]["non_calculable_employees"])
+
+    def test_end_before_start_422(self, client, dash_admin):
+        token = get_token(client, "dashadmin@example.com", "admin123")
+        resp = _get(client, token, "/api/dashboard/2026/5?to_year=2026&to_month=4")
+        assert resp.status_code == 422
+
+    def test_only_one_bound_422(self, client, dash_admin):
+        token = get_token(client, "dashadmin@example.com", "admin123")
+        resp = _get(client, token, "/api/dashboard/2026/5?to_year=2026")
+        assert resp.status_code == 422
+
+    def test_range_longer_than_year_422(self, client, dash_admin):
+        """Каждый месяц — полный расчёт ЗП, поэтому длина ограничена."""
+        token = get_token(client, "dashadmin@example.com", "admin123")
+        resp = _get(client, token, "/api/dashboard/2025/1?to_year=2026&to_month=12")
+        assert resp.status_code == 422

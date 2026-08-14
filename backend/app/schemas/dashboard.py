@@ -85,8 +85,14 @@ class TrendPointRead(BaseModel):
 
 
 class DashboardResponse(BaseModel):
+    # (year, month) — НАЧАЛО периода, (to_year, to_month) — конец включительно.
+    # Для одиночного месяца конец совпадает с началом, а months_count == 1 —
+    # старые клиенты, читающие только year/month, ничего не замечают.
     year: int
     month: int
+    to_year: int
+    to_month: int
+    months_count: int = 1
     role: str
 
     hours: HoursSummaryRead

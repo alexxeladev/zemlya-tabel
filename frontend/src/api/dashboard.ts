@@ -76,8 +76,12 @@ export interface TrendPoint {
 }
 
 export interface DashboardData {
+  /** начало периода; конец — to_year/to_month (включительно) */
   year: number
   month: number
+  to_year: number
+  to_month: number
+  months_count: number
   role: string
   hours: HoursSummary
   hours_by_department: DepartmentHours[]
@@ -88,7 +92,24 @@ export interface DashboardData {
   trend: TrendPoint[]
 }
 
-export async function getDashboard(year: number, month: number): Promise<DashboardData> {
-  const { data } = await apiClient.get<DashboardData>(`/api/dashboard/${year}/${month}`)
+/**
+ * Дашборд за месяц или за диапазон месяцев.
+ *
+ * (year, month) — начало периода. Конец (toYear/toMonth) передаётся только если
+ * период длиннее месяца: без него бэк отвечает ровно как раньше.
+ */
+export async function getDashboard(
+  year: number,
+  month: number,
+  toYear?: number,
+  toMonth?: number,
+): Promise<DashboardData> {
+  const range =
+    toYear !== undefined && toMonth !== undefined && (toYear !== year || toMonth !== month)
+      ? { to_year: toYear, to_month: toMonth }
+      : undefined
+  const { data } = await apiClient.get<DashboardData>(
+    `/api/dashboard/${year}/${month}`, { params: range },
+  )
   return data
 }

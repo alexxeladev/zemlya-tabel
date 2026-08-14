@@ -31,6 +31,148 @@ function num(v: string | null | undefined): number {
   return Number.isFinite(n) ? n : 0
 }
 
+// ── Период дашборда: месяц или диапазон месяцев ───────────────────────────────
+// Показатели считаются на бэке за весь период, поэтому диапазон ограничен
+// годом (MAX_RANGE_MONTHS): каждый месяц — полный расчёт ЗП.
+const MAX_RANGE_MONTHS = 12
+
+export type DashPeriod = { year: number; month: number; toYear: number; toMonth: number }
+
+const monthIndex = (y: number, m: number) => y * 12 + (m - 1)
+const periodLength = (p: DashPeriod) =>
+  monthIndex(p.toYear, p.toMonth) - monthIndex(p.year, p.month) + 1
+
+const shiftMonth = (y: number, m: number, delta: number): [number, number] => {
+  const i = monthIndex(y, m) + delta
+  return [Math.floor(i / 12), (i % 12) + 1]
+}
+
+/** 'YYYY-MM' — формат <input type="month"> */
+const toInputValue = (y: number, m: number) => `${y}-${String(m).padStart(2, '0')}`
+const fromInputValue = (v: string): [number, number] | null => {
+  const match = /^(\d{4})-(\d{2})$/.exec(v)
+  if (!match) return null
+  const y = Number(match[1])
+  const m = Number(match[2])
+  if (y < 2000 || y > 2100 || m < 1 || m > 12) return null
+  return [y, m]
+}
+
+export function currentMonthPeriod(now = new Date()): DashPeriod {
+  const y = now.getFullYear()
+  const m = now.getMonth() + 1
+  return { year: y, month: m, toYear: y, toMonth: m }
+}
+
+function quarterPeriod(now = new Date()): DashPeriod {
+  const y = now.getFullYear()
+  const start = Math.floor(now.getMonth() / 3) * 3 + 1
+  return { year: y, month: start, toYear: y, toMonth: start + 2 }
+}
+
+function yearPeriod(now = new Date()): DashPeriod {
+  const y = now.getFullYear()
+  return { year: y, month: 1, toYear: y, toMonth: 12 }
+}
+
+const periodLabel = (p: DashPeriod): string =>
+  p.year === p.toYear && p.month === p.toMonth
+    ? `${MONTH_NAMES_RU[p.month - 1]} ${p.year}`
+    : `${MONTH_SHORT_RU[p.month - 1]} ${p.year} — ${MONTH_SHORT_RU[p.toMonth - 1]} ${p.toYear}`
+
+function PeriodPicker({ period, onChange }: {
+  period: DashPeriod
+  onChange: (p: DashPeriod) => void
+}) {
+  const length = periodLength(period)
+  // Стрелки двигают ВЕСЬ период целиком, сохраняя его длину: для месяца это
+  // привычное «предыдущий/следующий месяц», для квартала — предыдущий квартал.
+  const shift = (delta: number) => {
+    const [y, m] = shiftMonth(period.year, period.month, delta)
+    const [ty, tm] = shiftMonth(period.toYear, period.toMonth, delta)
+    onChange({ year: y, month: m, toYear: ty, toMonth: tm })
+  }
+  // Начало позже конца — подтягиваем вторую границу, вместо того чтобы
+  // отвергать ввод: иначе диапазон нельзя перетащить вперёд.
+  const setStart = (v: string) => {
+    const parsed = fromInputValue(v)
+    if (!parsed) return
+    const [y, m] = parsed
+    const after = monthIndex(y, m) > monthIndex(period.toYear, period.toMonth)
+    onChange({
+      year: y, month: m,
+      toYear: after ? y : period.toYear,
+      toMonth: after ? m : period.toMonth,
+    })
+  }
+  const setEnd = (v: string) => {
+    const parsed = fromInputValue(v)
+    if (!parsed) return
+    const [y, m] = parsed
+    const before = monthIndex(y, m) < monthIndex(period.year, period.month)
+    onChange({
+      year: before ? y : period.year,
+      month: before ? m : period.month,
+      toYear: y, toMonth: m,
+    })
+  }
+
+  const presets: [string, () => DashPeriod][] = [
+    ['Месяц', currentMonthPeriod],
+    ['Квартал', quarterPeriod],
+    ['Год', yearPeriod],
+  ]
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button onClick={() => shift(-1)} className="rounded p-2 hover:bg-gray-100" aria-label="Предыдущий период">←</button>
+      <input
+        type="month"
+        value={toInputValue(period.year, period.month)}
+        onChange={(e) => setStart(e.target.value)}
+        className="rounded border border-gray-300 px-2 py-1 text-sm"
+        aria-label="Начало периода"
+      />
+      <span className="text-gray-400">—</span>
+      <input
+        type="month"
+        value={toInputValue(period.toYear, period.toMonth)}
+        onChange={(e) => setEnd(e.target.value)}
+        className="rounded border border-gray-300 px-2 py-1 text-sm"
+        aria-label="Конец периода"
+      />
+      <button onClick={() => shift(1)} className="rounded p-2 hover:bg-gray-100" aria-label="Следующий период">→</button>
+      <div className="flex items-center gap-1">
+        {presets.map(([label, make]) => {
+          const p = make()
+          const active =
+            p.year === period.year && p.month === period.month
+            && p.toYear === period.toYear && p.toMonth === period.toMonth
+          return (
+            <button
+              key={label}
+              onClick={() => onChange(make())}
+              className={
+                'rounded border px-2 py-1 text-xs ' +
+                (active
+                  ? 'border-blue-300 bg-blue-50 text-blue-700'
+                  : 'border-gray-300 text-gray-600 hover:bg-gray-50')
+              }
+            >
+              {label}
+            </button>
+          )
+        })}
+      </div>
+      {length > MAX_RANGE_MONTHS && (
+        <span className="text-xs text-red-600">
+          Период больше {MAX_RANGE_MONTHS} мес. — сократите диапазон
+        </span>
+      )}
+    </div>
+  )
+}
+
 // ── Мелкие компоненты ─────────────────────────────────────────────────────────
 
 function KpiCard({ label, value, accent, hint }: {
@@ -78,19 +220,22 @@ function StatusBadge({ status, overdue }: { status: PeriodStatusRow['status']; o
 export function DashboardPage() {
   const user = useAuthStore((s) => s.user)
   const navigate = useNavigate()
-  const now = new Date()
-  const [year, setYear] = useState(now.getFullYear())
-  const [month, setMonth] = useState(now.getMonth() + 1)
+  const [period, setPeriod] = useState<DashPeriod>(() => currentMonthPeriod())
+  const { year, month, toYear, toMonth } = period
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  // Слишком длинный диапазон бэк отвергает — не ходим за 422, а показываем
+  // подсказку в самом переключателе.
+  const tooLong = periodLength(period) > MAX_RANGE_MONTHS
 
   useEffect(() => {
+    if (tooLong) return
     let cancelled = false
     setLoading(true)
     setError(null)
-    getDashboard(year, month)
+    getDashboard(year, month, toYear, toMonth)
       .then((d) => { if (!cancelled) setData(d) })
       .catch((err) => {
         if (cancelled) return
@@ -100,10 +245,7 @@ export function DashboardPage() {
       })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [year, month, reloadKey])
-
-  const prevMonth = () => (month === 1 ? (setMonth(12), setYear(year - 1)) : setMonth(month - 1))
-  const nextMonth = () => (month === 12 ? (setMonth(1), setYear(year + 1)) : setMonth(month + 1))
+  }, [year, month, toYear, toMonth, tooLong, reloadKey])
 
   const gotoTimesheet = (deptId: number | null, y = year, m = month) => {
     const dept = deptId !== null ? `&department_id=${deptId}` : ''
@@ -115,16 +257,16 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Шапка: заголовок + переключатель месяца */}
+      {/* Шапка: заголовок + переключатель периода (месяц или диапазон) */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold text-gray-900">Дашборд</h1>
-        <div className="flex items-center gap-2">
-          <button onClick={prevMonth} className="rounded p-2 hover:bg-gray-100" aria-label="Предыдущий месяц">←</button>
-          <div className="min-w-[160px] text-center text-base font-semibold">
-            {MONTH_NAMES_RU[month - 1]} {year}
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Дашборд</h1>
+          <div className="text-sm text-gray-500">
+            {periodLabel(period)}
+            {periodLength(period) > 1 && ` · ${periodLength(period)} мес. суммарно`}
           </div>
-          <button onClick={nextMonth} className="rounded p-2 hover:bg-gray-100" aria-label="Следующий месяц">→</button>
         </div>
+        <PeriodPicker period={period} onChange={setPeriod} />
       </div>
 
       {loading && !data && <div className="p-8 text-gray-500">Загрузка…</div>}
@@ -180,7 +322,7 @@ function HoursBlock({ data, onDeptClick }: {
   }))
 
   return (
-    <Section title="Часы">
+    <Section title={data.months_count > 1 ? 'Часы за период (сумма месяцев)' : 'Часы'}>
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Отработано" value={`${formatHours(h.total_hours)} ч`} />
         <KpiCard label="Норма" value={h.norm_hours !== null ? `${formatHours(h.norm_hours)} ч` : '—'} />
@@ -231,7 +373,13 @@ function PayrollBlock({ data }: { data: DashboardData }) {
     }))
 
   return (
-    <Section title="ФОТ (брутто к начислению)">
+    <Section
+      title={
+        data.months_count > 1
+          ? 'ФОТ за период (брутто к начислению, сумма месяцев)'
+          : 'ФОТ (брутто к начислению)'
+      }
+    >
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
         <KpiCard label="Всего начислено" value={formatMoney(p.total, { showZero: true })} accent="text-blue-700" />
         <KpiCard label="Оклады" value={formatMoney(p.base, { showZero: true })} />
@@ -295,7 +443,13 @@ function PeriodsBlockView({ data, onRowClick }: {
   const allRows = [...pb.overdue_rows, ...pb.rows]
 
   return (
-    <Section title="Статусы периодов">
+    <Section
+      title={
+        data.months_count > 1
+          ? 'Статусы периодов (по месяцам диапазона)'
+          : 'Статусы периодов'
+      }
+    >
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard label="Закрыто" value={String(pb.counts.closed)} accent="text-green-700" />
         <KpiCard label="На проверке" value={String(pb.counts.pending_review)} accent="text-yellow-700" />
