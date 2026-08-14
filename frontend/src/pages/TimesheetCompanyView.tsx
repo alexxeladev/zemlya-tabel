@@ -26,6 +26,7 @@ import type { AbsenceKind } from '../types/api';
 import {
   PeriodBadge,
   DeltaCell,
+  NormCell,
   posKey,
   positionIdParam,
   type Absence,
@@ -543,7 +544,7 @@ export function TimesheetCompanyView(props: Props) {
                         rowSpan={n}
                         className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600 align-top"
                       >
-                        {pay?.norm_hours ? fmtHours(num(pay.norm_hours)) : '—'}
+                        <NormCell pay={pay} />
                       </td>
                     </>
                   )}
@@ -565,7 +566,7 @@ export function TimesheetCompanyView(props: Props) {
                         rowSpan={n}
                         className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600 align-top"
                       >
-                        {pay?.norm_hours ? fmtHours(num(pay.norm_hours)) : '—'}
+                        <NormCell pay={pay} />
                       </td>
                     </>
                   )}
@@ -675,14 +676,14 @@ export function TimesheetCompanyView(props: Props) {
           {hoursOnly && (
             <>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }} title="Отклонение факта от нормы">Δ</th>
-              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 60, zIndex: 20 }} title="Норма часов по графику">Норма</th>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 72, zIndex: 20 }} title="Норма по графику за месяц: часов и рабочих дней (смен)">Норма ч / дн</th>
             </>
           )}
           {canSeeMoney && (
             <>
               <th className="sticky top-0 bg-blue-50 border border-gray-200 px-2 py-2 text-right font-semibold text-blue-700" style={{ minWidth: 100, zIndex: 20 }}>Итого ₽</th>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }}>Δ</th>
-              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 60, zIndex: 20 }}>Норма</th>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 72, zIndex: 20 }} title="Норма по графику за месяц: часов и рабочих дней (смен)">Норма ч / дн</th>
             </>
           )}
         </tr>
