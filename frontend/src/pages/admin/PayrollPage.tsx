@@ -8,6 +8,9 @@ import { timesheetApi } from '../../api/timesheet'
 import { apiClient } from '../../api/client'
 import { formatHours, formatMoney } from '../../utils/money'
 import { distribute } from '../../utils/distribution'
+import { usePeriodStore } from '../../store/period'
+import { usePersistentState } from '../../hooks/usePersistentState'
+import { UI_KEYS } from '../../utils/persist'
 
 const MONTH_NAMES = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -79,13 +82,26 @@ function employeeSpans(rows: StatementRow[]): number[] {
 
 export function PayrollPage() {
   const user = useAuthStore((s) => s.user)
-  const now = new Date()
-  const [year, setYear] = useState(now.getFullYear())
-  const [month, setMonth] = useState(now.getMonth() + 1)
-  const [departmentId, setDepartmentId] = useState<number | undefined>(undefined)
+  // Период — общий с табелем и сохранённый (task_ux_improvements ч.3):
+  // выбрал май в табеле — ведомость открылась за май.
+  const year = usePeriodStore((s) => s.year)
+  const month = usePeriodStore((s) => s.month)
+  const setYear = usePeriodStore((s) => s.setYear)
+  const setMonth = usePeriodStore((s) => s.setMonth)
   const [departments, setDepartments] = useState<Department[]>([])
-  const [query, setQuery] = useState('')
-  const [companyFilter, setCompanyFilter] = useState<number | undefined>(undefined)
+  // Отдел/поиск/компания — фильтры этого экрана, живут своим ключом.
+  const [filters, setFilters] = usePersistentState(
+    UI_KEYS.payrollFilters,
+    { departmentId: undefined as number | undefined, query: '', companyId: undefined as number | undefined },
+    (v) => typeof v === 'object' && v !== null && 'query' in v,
+  )
+  const { departmentId, query } = filters
+  const companyFilter = filters.companyId
+  const setDepartmentId = (value: number | undefined) =>
+    setFilters((f) => ({ ...f, departmentId: value }))
+  const setQuery = (value: string) => setFilters((f) => ({ ...f, query: value }))
+  const setCompanyFilter = (value: number | undefined) =>
+    setFilters((f) => ({ ...f, companyId: value }))
   const [data, setData] = useState<PayrollStatement | null>(null)
   const [edits, setEdits] = useState<Edits>({})
   const [loading, setLoading] = useState(true)
@@ -106,12 +122,12 @@ export function PayrollPage() {
   useEffect(reload, [year, month, departmentId])
 
   const prevMonth = () => {
-    if (month === 1) { setYear((y) => y - 1); setMonth(12) }
-    else setMonth((m) => m - 1)
+    if (month === 1) { setYear(year - 1); setMonth(12) }
+    else setMonth(month - 1)
   }
   const nextMonth = () => {
-    if (month === 12) { setYear((y) => y + 1); setMonth(1) }
-    else setMonth((m) => m + 1)
+    if (month === 12) { setYear(year + 1); setMonth(1) }
+    else setMonth(month + 1)
   }
 
   if (user?.role !== 'admin' && user?.role !== 'accountant' && user?.role !== 'manager') {

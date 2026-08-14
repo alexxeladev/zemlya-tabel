@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { timesheetApi } from '../api/timesheet'
 import { toast } from '../store/toasts'
 import type { PeriodTask, TasksResponse } from '../types/api'
+import { usePersistentState } from '../hooks/usePersistentState'
+import { UI_KEYS } from '../utils/persist'
 
 const MONTH_NAMES_RU = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -30,7 +32,10 @@ export function TasksPage() {
   const navigate = useNavigate()
   const [data, setData] = useState<TasksResponse | null>(null)
   const [loading, setLoading] = useState(true)
-  const [showClosed, setShowClosed] = useState(true)
+  // Настройка вида — сохраняется, как и остальные (task_ux_improvements ч.3)
+  const [showClosed, setShowClosed] = usePersistentState(
+    UI_KEYS.tasksShowClosed, true, (v) => typeof v === 'boolean',
+  )
 
   useEffect(() => {
     timesheetApi

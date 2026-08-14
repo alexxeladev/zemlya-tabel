@@ -15,6 +15,8 @@ import { useAuthStore } from '../store/auth'
 import { toast } from '../store/toasts'
 import { formatHours, formatMoney } from '../utils/money'
 import { CHART, companyColorByIndex, PERIOD_STATUS } from '../utils/colors'
+import { usePersistentState } from '../hooks/usePersistentState'
+import { UI_KEYS, isMonthRange } from '../utils/persist'
 
 const MONTH_NAMES_RU = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -220,7 +222,12 @@ function StatusBadge({ status, overdue }: { status: PeriodStatusRow['status']; o
 export function DashboardPage() {
   const user = useAuthStore((s) => s.user)
   const navigate = useNavigate()
-  const [period, setPeriod] = useState<DashPeriod>(() => currentMonthPeriod())
+  // Период переживает переход в другой раздел и перезагрузку страницы
+  // (task_ux_improvements ч.3). У дашборда он свой: диапазон месяцев, а не
+  // месяц, как в табеле и ведомости.
+  const [period, setPeriod] = usePersistentState<DashPeriod>(
+    UI_KEYS.dashboardPeriod, currentMonthPeriod(), isMonthRange,
+  )
   const { year, month, toYear, toMonth } = period
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
