@@ -64,6 +64,8 @@ type Props = {
   // Коды отсутствий: `empId:day` → отметка. День с кодом часов не имеет.
   absenceByEmpDay: Map<string, Absence>;
   canSeeMoney: boolean;
+  /** Табельщик: часы по категориям видит, рубли — нет (task_timekeeper_role) */
+  canSeeHourStats: boolean;
   saveSlot: (
     employeeId: number, day: number, companyId: number, hours: number, positionId?: number,
   ) => void;
@@ -139,7 +141,7 @@ type CompanyRow = {
 export function TimesheetCompanyView(props: Props) {
   const {
     data, year, month, numDays, dayTypes, rows, grouped, groups,
-    payrollFor, entryPositionId, absenceByEmpDay, canSeeMoney, saveSlot, setAbsence,
+    payrollFor, entryPositionId, absenceByEmpDay, canSeeMoney, canSeeHourStats, saveSlot, setAbsence,
     periodForDept, dayTotals,
     onSubmit, onClose, onReturn, onReopen,
   } = props;
@@ -239,9 +241,16 @@ export function TimesheetCompanyView(props: Props) {
   const companyMoneyCols = canSeeMoney ? 7 : 0; // Оклад, Сверхур.Ч, Вне граф.Ч, Празд.Ч, Сверхур.₽, Вне граф.₽, Празд.₽
   const posMoneyCols = canSeeMoney ? 2 : 0; // Итого ₽, Δ
   const normCols = canSeeMoney ? 1 : 0; // Норма
+  // Табельщику вместо денежного блока — только часы: по компании Сверхур.Ч /
+  // Вне граф.Ч / Празд.Ч, по позиции Δ и Норма.
+  const hoursOnly = canSeeHourStats && !canSeeMoney;
+  const companyHourCols = hoursOnly ? 3 : 0;
+  const posHourCols = hoursOnly ? 2 : 0;
   // ФИО,Должность,Отдел,График(4) + Компания(1) + дни + ИтогоЧ компании(1)
   // + companyMoney + ИтогоЧ позиции(1) + posMoney + Норма
-  const totalCols = 4 + 1 + numDays + 1 + companyMoneyCols + 1 + posMoneyCols + normCols;
+  const totalCols =
+    4 + 1 + numDays + 1 + companyMoneyCols + companyHourCols + 1 + posMoneyCols + normCols
+    + posHourCols;
 
   // ── Рендер строк одного рабочего места ──
   // `index`/`count` — место позиции среди позиций сотрудника: ФИО объединяется
@@ -460,6 +469,30 @@ export function TimesheetCompanyView(props: Props) {
                 {fmtHours(compTotalHours)}
               </td>
 
+              {/* ── Табельщику: только часы по категориям ── */}
+              {hoursOnly && (
+                <>
+                  <td
+                    className="border border-gray-200 px-2 py-1 text-center font-mono text-xs text-gray-600"
+                    title="Переработка по этой компании"
+                  >
+                    {bd ? fmtHours(num(bd.overtime_hours)) || '—' : '—'}
+                  </td>
+                  <td
+                    className="border border-gray-200 px-2 py-1 text-center font-mono text-xs text-gray-600"
+                    title="Часы вне графика по этой компании"
+                  >
+                    {bd ? fmtHours(num(bd.off_schedule_hours)) || '—' : '—'}
+                  </td>
+                  <td
+                    className="border border-gray-200 px-2 py-1 text-center font-mono text-xs text-gray-600"
+                    title="Праздничные часы по этой компании"
+                  >
+                    {bd ? fmtHours(num(bd.holiday_hours)) || '—' : '—'}
+                  </td>
+                </>
+              )}
+
               {/* ── Финансы по компании ── */}
               {canSeeMoney && (
                 <>
@@ -498,6 +531,22 @@ export function TimesheetCompanyView(props: Props) {
                   >
                     {fmtHours(posTotal)}
                   </td>
+                  {hoursOnly && (
+                    <>
+                      <td
+                        rowSpan={n}
+                        className="border border-gray-200 px-2 py-2 text-center font-mono text-xs align-top"
+                      >
+                        {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
+                      </td>
+                      <td
+                        rowSpan={n}
+                        className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600 align-top"
+                      >
+                        {pay?.norm_hours ? fmtHours(num(pay.norm_hours)) : '—'}
+                      </td>
+                    </>
+                  )}
                   {canSeeMoney && (
                     <>
                       <td
@@ -602,6 +651,13 @@ export function TimesheetCompanyView(props: Props) {
           <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 60, zIndex: 20 }}>
             Ч комп.
           </th>
+          {hoursOnly && (
+            <>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }} title="Переработка по компании">Свер.Ч</th>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }} title="Часы вне графика по компании">Вне граф.Ч</th>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }} title="Праздничные часы по компании">Празд.Ч</th>
+            </>
+          )}
           {canSeeMoney && (
             <>
               <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600" style={{ minWidth: 80, zIndex: 20 }}>Оклад</th>
@@ -616,6 +672,12 @@ export function TimesheetCompanyView(props: Props) {
           <th className="sticky top-0 bg-gray-100 border border-gray-200 px-2 py-2 text-center font-semibold text-gray-700" style={{ minWidth: 70, zIndex: 20 }}>
             Итого Ч
           </th>
+          {hoursOnly && (
+            <>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 50, zIndex: 20 }} title="Отклонение факта от нормы">Δ</th>
+              <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ minWidth: 60, zIndex: 20 }} title="Норма часов по графику">Норма</th>
+            </>
+          )}
           {canSeeMoney && (
             <>
               <th className="sticky top-0 bg-blue-50 border border-gray-200 px-2 py-2 text-right font-semibold text-blue-700" style={{ minWidth: 100, zIndex: 20 }}>Итого ₽</th>
@@ -680,6 +742,10 @@ export function TimesheetCompanyView(props: Props) {
               </>
             ) : canSeeMoney ? (
               Array.from({ length: 11 }, (_, i) => <td key={i} className="border border-gray-300 px-2 py-2" />)
+            ) : hoursOnly ? (
+              Array.from({ length: companyHourCols + posHourCols }, (_, i) => (
+                <td key={i} className="border border-gray-300 px-2 py-2" />
+              ))
             ) : null}
           </tr>
         )}

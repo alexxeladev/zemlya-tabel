@@ -8,6 +8,7 @@
 проверяется изоляция чужого отдела.
 """
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -248,9 +249,24 @@ def test_timesheet_shows_own_department_without_money(
     assert emp["department"]["code"] == "ITO"
     assert data["positions_by_employee"][str(workers["own"].id)][0]["display_title"]
 
-    # Денег нет: ни расчёта, ни премий, ни ставок в карточке и позициях
-    assert data["payroll"] is None
+    # Расчёт приходит РАДИ ЧАСОВ (норма, переработка, дни отсутствий), но без
+    # денег — суммы обнулены, ставки сняты. Премии/KPI не приходят вовсе.
+    assert data["payroll"] is not None
     assert data["adjustments"] == []
+    for row in data["payroll"]["employees"]:
+        for field in ("base_amount", "overtime_amount", "off_schedule_amount",
+                      "holiday_amount", "total_amount", "vacation_amount", "sick_amount",
+                      "premium_amount", "kpi_amount", "total_deductions", "net_payout"):
+            assert Decimal(row[field]) == 0, f"утекла сумма {field}"
+        for field in ("rate", "hourly_rate", "shift_rate", "hour_rate",
+                      "weekend_coefficient", "weekend_fixed_rate",
+                      "holiday_coefficient", "holiday_fixed_rate"):
+            assert row[field] is None, f"утекла ставка {field}"
+    totals = data["payroll"]
+    for field in ("total_base_amount", "total_overtime_amount", "total_holiday_amount",
+                  "total_vacation_amount", "total_sick_amount", "grand_total",
+                  "total_premium", "total_kpi", "total_deductions", "total_net_payout"):
+        assert Decimal(totals[field]) == 0, f"утёк итог {field}"
     for field in EMPLOYEE_MONEY_FIELDS:
         assert emp[field] is None, f"утекло поле {field}"
     for position in data["positions_by_employee"][str(workers["own"].id)]:
@@ -266,6 +282,54 @@ def test_timesheet_response_has_no_money_anywhere(
     assert resp.status_code == 200
     assert "50000" not in resp.text
     assert "12000" not in resp.text  # займ
+
+
+def test_timekeeper_sees_all_hour_categories(
+    client: TestClient, timekeeper: Employee, workers: dict, company: Company,
+    calendar_2026, db_session: Session,
+):
+    """Табельщик ведёт время, поэтому ЧАСЫ он должен видеть все: норму, Δ,
+    переработку, часы вне графика, дни отпуска и больничного. Без этого он не
+    поймёт, правильно ли заполнил табель."""
+    emp_id = workers["own"].id
+    db_session.add_all([
+        # плановый день 5/2 с переработкой: 12 ч при дневной норме 8
+        TimesheetEntry(employee_id=emp_id, work_date=date(2026, 5, 5),
+                       company_id=company.id, hours=12),
+        # 10 мая — нерабочий по тестовому календарю (MAY_CALENDAR), то есть
+        # выход в свой выходной: все часы дня идут в категорию «вне графика»
+        TimesheetEntry(employee_id=emp_id, work_date=date(2026, 5, 10),
+                       company_id=company.id, hours=6),
+    ])
+    db_session.commit()
+    client.put(
+        "/api/timesheet/absence",
+        json={"employee_id": emp_id, "work_date": "2026-05-06", "kind": "vacation"},
+        headers=_auth(client),
+    )
+    client.put(
+        "/api/timesheet/absence",
+        json={"employee_id": emp_id, "work_date": "2026-05-07", "kind": "sick"},
+        headers=_auth(client),
+    )
+
+    data = client.get(
+        "/api/timesheet/2026/5?include_payroll=true", headers=_auth(client)
+    ).json()
+    row = next(r for r in data["payroll"]["employees"] if r["employee_id"] == emp_id)
+
+    assert Decimal(row["total_hours"]) == 18          # 12 + 6
+    assert Decimal(row["norm_hours"]) > 0             # норма по графику 5/2
+    assert row["delta_hours"] is not None
+    assert Decimal(row["overtime_hours"]) == 4        # 12 − 8 в плановый день
+    assert Decimal(row["off_schedule_hours"]) == 6    # суббота целиком
+    assert row["vacation_days"] == 1
+    assert row["sick_days"] == 1
+    assert row["sick_limit_remaining"] >= 0           # остаток лимита виден
+    assert row["norm_days"] and row["fact_days"]
+    # …и при этом ни рубля
+    assert Decimal(row["total_amount"]) == 0
+    assert row["rate"] is None
 
 
 def test_timesheet_period_status_visible(

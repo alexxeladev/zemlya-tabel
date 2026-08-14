@@ -57,6 +57,7 @@ from app.services.payroll_statement import (
 )
 from app.services.finance_masking import (
     mask_employees,
+    mask_payroll_summary,
     mask_positions_by_employee,
 )
 from app.services.org_access import (
@@ -493,11 +494,20 @@ def get_month(
     if can_see_finances(actor):
         adjustments = _load_adjustments(db, employees, year, month)
         if include_payroll:
-            # include_payroll от роли без доступа к деньгам игнорируем молча —
-            # проверка принудительная на бэке, а не «по просьбе» фронта.
             payroll = _build_payroll_summary(
                 db, employees, entries, year, month, actor, department_id
             )
+    elif include_payroll and hides_finances(actor):
+        # Табельщику расчёт нужен ради ЧАСОВ: норма, переработка, часы вне
+        # графика и праздничные, дни отпуска/больничного, остаток лимита Б —
+        # без них не видно, правильно ли заполнен табель. Деньги из этого
+        # расчёта вычищаются ниже (mask_payroll_summary). Премии/KPI/удержания
+        # (adjustments) ему не отдаются вообще — это чистые деньги.
+        payroll = _build_payroll_summary(
+            db, employees, entries, year, month, actor, department_id
+        )
+    # include_payroll от employee игнорируем молча — проверка принудительная на
+    # бэке, а не «по просьбе» фронта.
 
     response = TimesheetMonthResponse(
         year=year,
@@ -513,13 +523,15 @@ def get_month(
         adjustments=adjustments,
     )
     if hides_finances(actor):
-        # Табельщику table приходит целиком, но без денег: оклад и ставки живут в
+        # Табельщику табель приходит целиком, но без денег: оклад и ставки живут в
         # карточке сотрудника и его позициях, а они часть этого же ответа
         # (task_timekeeper_role). Скрывать это только в UI недостаточно.
         response.employees = mask_employees(response.employees)
         response.positions_by_employee = mask_positions_by_employee(
             response.positions_by_employee
         )
+        if response.payroll is not None:
+            response.payroll = mask_payroll_summary(response.payroll)
     return response
 
 
