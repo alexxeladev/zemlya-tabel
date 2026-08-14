@@ -135,6 +135,12 @@ export type EmployeePayroll = {
   total_hours: string;
   norm_hours: string | null;
   delta_hours: string | null;
+  /** Часы по категориям — их видит и табельщик, деньги ему бэк не отдаёт */
+  overtime_hours?: string;
+  /** выход в свой выходной по графику */
+  off_schedule_hours?: string;
+  /** работа в нерабочий праздничный день календаря */
+  holiday_hours?: string;
   /** salary — оклад; per_shift — смены × ставка */
   pay_type?: 'salary' | 'per_shift';
   shift_rate?: string | null;
@@ -444,6 +450,10 @@ export function TimesheetPage() {
   // Табельщик (task_timekeeper_role) ведёт часы, но денег не видит — бэк ему
   // payroll и не отдаёт, так что колонки было бы нечем заполнить.
   const canSeeMoney = role === 'admin' || role === 'accountant' || role === 'manager';
+  // Табельщик ведёт время, поэтому ЧАСЫ он видит все — норму, Δ, переработку,
+  // часы вне графика и праздничные, дни отпуска и больничного. Деньги считает и
+  // вычищает бэк (mask_payroll_summary), фронт лишь не рисует денежные колонки.
+  const canSeeHourStats = canSeeMoney || role === 'timekeeper';
   // Т-13 — только часы, поэтому выгрузка доступна и табельщику.
   const canExport =
     role === 'admin' || role === 'accountant' || role === 'manager' || role === 'timekeeper';
@@ -526,7 +536,7 @@ export function TimesheetPage() {
         const [monthData, cal] = await Promise.all([
           timesheetApi.getMonth(year, month, {
             department_id: departmentFilter ?? undefined,
-            include_payroll: withPayroll && canSeeMoney,
+            include_payroll: withPayroll && canSeeHourStats,
           }) as Promise<MonthResponse>,
           apiClient.get<CalendarSummary>(`/api/calendar/${year}/${month}/summary`)
             .then(r => r.data)
@@ -549,7 +559,7 @@ export function TimesheetPage() {
         setLoading(false);
       }
     },
-    [year, month, departmentFilter, canSeeMoney, deptChosen]
+    [year, month, departmentFilter, canSeeHourStats, deptChosen]
   );
 
   // Полная перезагрузка (смена месяца/отдела, workflow периода).
@@ -563,14 +573,14 @@ export function TimesheetPage() {
   // серия правок не гоняла расчёт по всему отделу на каждую цифру.
   const afterEdit = useCallback(async () => {
     await fetchMonth(false);
-    if (!canSeeMoney) return;
+    if (!canSeeHourStats) return;
     setPayrollStale(true);
     if (payrollTimer.current) clearTimeout(payrollTimer.current);
     payrollTimer.current = setTimeout(() => {
       // Пометку снимаем только при успехе: после ошибки суммы остались старыми
       fetchMonth(true).then((ok) => { if (ok) setPayrollStale(false); });
     }, PAYROLL_REFRESH_DELAY_MS);
-  }, [fetchMonth, canSeeMoney]);
+  }, [fetchMonth, canSeeHourStats]);
 
   useEffect(() => {
     reload();
@@ -1012,6 +1022,22 @@ export function TimesheetPage() {
     return totals;
   }, [data, visibleEmpIds]);
 
+  // Итоги по колонкам часов — для строки «ИТОГО» у табельщика. Как и денежные
+  // итоги, считаются по ВСЕМ видимым сотрудникам месяца, а не по отфильтрованным
+  // строкам (см. счётчик «найдено N из M · итоги по всем»).
+  const hourTotals = useMemo(() => {
+    const acc = { norm: 0, overtime: 0, offSchedule: 0, holiday: 0, vacationDays: 0, sickDays: 0 };
+    for (const pe of data?.payroll?.employees ?? []) {
+      acc.norm += num(pe.norm_hours);
+      acc.overtime += num(pe.overtime_hours);
+      acc.offSchedule += num(pe.off_schedule_hours);
+      acc.holiday += num(pe.holiday_hours);
+      acc.vacationDays += pe.vacation_days ?? 0;
+      acc.sickDays += pe.sick_days ?? 0;
+    }
+    return acc;
+  }, [data]);
+
   // ── Переключение месяца ──
   const prevMonth = () => {
     if (month === 1) {
@@ -1053,7 +1079,9 @@ export function TimesheetPage() {
   // ФИО,Должность,Отдел,График(4) + дни + Итого ч + денежный блок:
   // Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Праздн.,Отпуск,Больн,Премия,KPI,
   // Итого₽,Удержано,К выплате
-  const totalCols = 4 + numDays + (canSeeMoney ? 15 : 1);
+  // 4 инфо-колонки + дни + «Итого ч» и блок справа: 14 денежных колонок у
+  // финансовых ролей, 7 часовых у табельщика, ничего у employee.
+  const totalCols = 4 + numDays + 1 + (canSeeMoney ? 14 : canSeeHourStats ? 7 : 0);
 
   // Одна строка = одно рабочее место. У сотрудника с единственной позицией
   // строка ровно одна, как было до совместительства; у совместителя ФИО
@@ -1201,6 +1229,56 @@ export function TimesheetPage() {
         </td>
 
         {/* ── Финансы ── */}
+        {/* Табельщик: детализация ЧАСОВ вместо денежного блока (деньги бэк ему
+            и не отдаёт). Порядок колонок совпадает с шапкой ниже. */}
+        {!canSeeMoney && canSeeHourStats && (
+          <>
+            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
+              {pay?.norm_hours ? fmtHours(num(pay.norm_hours)) : '—'}
+            </td>
+            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
+              {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
+            </td>
+            <td
+              className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
+              title="Переработка: часы сверх дневной нормы смены"
+            >
+              {num(pay?.overtime_hours) > 0 ? fmtHours(num(pay?.overtime_hours)) : '—'}
+            </td>
+            <td
+              className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
+              title="Вне графика: выход в свой выходной по графику"
+            >
+              {num(pay?.off_schedule_hours) > 0 ? fmtHours(num(pay?.off_schedule_hours)) : '—'}
+            </td>
+            <td
+              className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
+              title="Праздничные: работа в нерабочий праздничный день календаря"
+            >
+              {num(pay?.holiday_hours) > 0 ? fmtHours(num(pay?.holiday_hours)) : '—'}
+            </td>
+            <td
+              className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
+              title={absenceDaysTitle('Отпуск', pay?.vacation_days, pay?.vacation_paid_days)}
+            >
+              {pay?.vacation_days ? `${pay.vacation_days} д` : '—'}
+            </td>
+            <td
+              className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
+              title={sickLimitTitle(pay)}
+            >
+              {pay?.sick_days ? (
+                <>
+                  {pay.sick_days} д
+                  {!!pay.sick_unpaid_days && (
+                    <span className="text-amber-600"> ({pay.sick_unpaid_days} б/о)</span>
+                  )}
+                </>
+              ) : '—'}
+            </td>
+          </>
+        )}
+
         {canSeeMoney && (() => {
           const premium = num(pay?.premium_amount);
           const kpi = num(pay?.kpi_amount);
@@ -1467,9 +1545,13 @@ export function TimesheetPage() {
           {payrollStale && (
             <span
               className="text-xs text-amber-600"
-              title="Часы сохранены. Суммы (оклад, переработка, к выплате) пересчитываются."
+              title={
+                canSeeMoney
+                  ? 'Часы сохранены. Суммы (оклад, переработка, к выплате) пересчитываются.'
+                  : 'Часы сохранены. Норма, переработка и итоги пересчитываются.'
+              }
             >
-              суммы пересчитываются…
+              {canSeeMoney ? 'суммы пересчитываются…' : 'итоги пересчитываются…'}
             </span>
           )}
 
@@ -1600,6 +1682,7 @@ export function TimesheetPage() {
             entryPositionId={entryPositionId}
             absenceByEmpDay={absenceByEmpDay}
             canSeeMoney={canSeeMoney}
+            canSeeHourStats={canSeeHourStats}
             saveSlot={saveSlot}
             setAbsence={setAbsence}
             periodForDept={periodForDept}
@@ -1673,6 +1756,29 @@ export function TimesheetPage() {
               >
                 Итого ч
               </th>
+              {/* Табельщику — часы вместо рублей, порядок как в строке выше */}
+              {!canSeeMoney && canSeeHourStats && (
+                <>
+                  {[
+                    ['Норма', 60, 'Норма часов по графику за месяц'],
+                    ['Δ', 60, 'Отклонение факта от нормы'],
+                    ['Сверхур. ч', 76, 'Переработка: часы сверх дневной нормы смены'],
+                    ['Вне граф. ч', 82, 'Выход в свой выходной по графику'],
+                    ['Празд. ч', 76, 'Работа в нерабочий праздничный день календаря'],
+                    ['Отпуск', 70, 'Дни, отмеченные кодом ОТ'],
+                    ['Больничный', 92, 'Дни, отмеченные кодом Б (в скобках — сверх годового лимита)'],
+                  ].map(([label, width, hint]) => (
+                    <th
+                      key={label as string}
+                      className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600"
+                      style={{ minWidth: width as number, zIndex: 20 }}
+                      title={hint as string}
+                    >
+                      {label as string}
+                    </th>
+                  ))}
+                </>
+              )}
               {canSeeMoney && (
                 <>
                   <th
@@ -1817,6 +1923,29 @@ export function TimesheetPage() {
                 <td className="border border-gray-300 px-3 py-2 text-center font-mono font-bold">
                   {fmtHours(dayTotals.reduce((a, b) => a + b, 0))}
                 </td>
+                {!canSeeMoney && canSeeHourStats && (
+                  <>
+                    <td className="border border-gray-300 px-2 py-2 text-center font-mono">
+                      {hourTotals.norm > 0 ? fmtHours(hourTotals.norm) : ''}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2"></td>
+                    <td className="border border-gray-300 px-2 py-2 text-center font-mono">
+                      {hourTotals.overtime > 0 ? fmtHours(hourTotals.overtime) : ''}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-center font-mono">
+                      {hourTotals.offSchedule > 0 ? fmtHours(hourTotals.offSchedule) : ''}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-center font-mono">
+                      {hourTotals.holiday > 0 ? fmtHours(hourTotals.holiday) : ''}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-center font-mono">
+                      {hourTotals.vacationDays > 0 ? `${hourTotals.vacationDays} д` : ''}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-center font-mono">
+                      {hourTotals.sickDays > 0 ? `${hourTotals.sickDays} д` : ''}
+                    </td>
+                  </>
+                )}
                 {canSeeMoney && (data.payroll ? (
                   <>
                     <td className="border border-gray-300 px-2 py-2"></td>
