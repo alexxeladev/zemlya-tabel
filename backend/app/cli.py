@@ -169,7 +169,8 @@ def seed_test_data() -> None:
     """Наполнить БД тестовыми данными для ручной проверки (граничные случаи).
 
     Идемпотентна: справочники и сотрудники ищутся по натуральным ключам
-    (код / имя / email) и не дублируются. Табель часами НЕ заполняется.
+    (код / имя / email) и не дублируются. Табель часами НЕ заполняется —
+    единственная отметка в нём это отпуск сменщика T-010 (см. ниже).
     """
     import datetime
     from decimal import Decimal
@@ -178,6 +179,7 @@ def seed_test_data() -> None:
     from app.database import SessionLocal
     from app.models.companies import Company
     from app.models.departments import Department
+    from app.models.employee_absences import EmployeeAbsence
     from app.models.employees import Employee
     from app.models.positions import EmployeePosition
     from app.models.schedules import Schedule
@@ -186,7 +188,7 @@ def seed_test_data() -> None:
     db = SessionLocal()
     created: dict[str, int] = {
         "companies": 0, "departments": 0, "schedules": 0,
-        "employees": 0, "calendar": 0,
+        "employees": 0, "calendar": 0, "absences": 0,
     }
 
     def get_or_create(model, lookup: dict, defaults: dict, counter: str):
@@ -375,6 +377,29 @@ def seed_test_data() -> None:
                 department_id=ito.id,
                 company_id=kft.id,
             ))
+
+        # --- Отпуск сменщика (task_vacation_shift_fix) ---
+        # Отпускные считаются по РАБОЧИМ СМЕНАМ графика × длину смены (у 2/2 это
+        # 12 ч), а не по календарным дням × 8. Чтобы случай было видно без ручной
+        # подготовки, T-010 (2/2, 12 ч) уходит в отпуск на 14 календарных дней
+        # текущего месяца — в оплату попадут только смены его цикла, выходные
+        # цикла останутся отметкой без денег.
+        shifter = db.query(Employee).filter_by(tab_number="T-010").first()
+        if shifter:
+            vacation_start = today.replace(day=9)
+            for offset in range(14):
+                day = vacation_start + datetime.timedelta(days=offset)
+                if day.month != today.month:
+                    break  # хвост, уехавший в следующий месяц, не заводим
+                exists = db.query(EmployeeAbsence).filter_by(
+                    employee_id=shifter.id, work_date=day,
+                ).first()
+                if exists:
+                    continue
+                db.add(EmployeeAbsence(
+                    employee_id=shifter.id, work_date=day, kind="vacation",
+                ))
+                created["absences"] += 1
 
         # --- Менеджеры и табельщики отделов (task_org_structure ч.2) ---
         # Управляемые отделы задаются ОТДЕЛЬНО от department_id: менеджер ИТО
