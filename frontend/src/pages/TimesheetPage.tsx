@@ -26,6 +26,9 @@ import { listDepartments } from '../api/departments';
 import { companyColorByIndex } from '../utils/colors';
 import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
 import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
+import { usePeriodStore } from '../store/period';
+import { usePersistentState } from '../hooks/usePersistentState';
+import { UI_KEYS } from '../utils/persist';
 import { TimesheetCompanyView } from './TimesheetCompanyView';
 import type { AbsenceKind, AutofillPreview } from '../types/api';
 
@@ -470,30 +473,38 @@ export function TimesheetPage() {
   const viewMode = useTimesheetViewStore((s) => s.mode);
   const setViewMode = useTimesheetViewStore((s) => s.setMode);
 
-  // ── Начальное состояние из URL (?year=&month=&department_id=) — для перехода из «Задач» ──
+  // ── Ссылка из «Задач»/дашборда (?year=&month=&department_id=) ──
+  // Она сильнее сохранённого выбора: человек перешёл в конкретный месяц отдела,
+  // открыть надо именно его. Применяется СИНХРОННО на первом рендере (useState
+  // вместо useEffect и ДО чтения сторов ниже): из эффекта первый запрос ушёл бы
+  // за прежний месяц/отдел, а его ответ мог прийти позже правильного и затереть
+  // его — гонка на ровном месте.
   const [searchParams] = useSearchParams();
-  const now = new Date();
-  const [year, setYear] = useState(() => {
+  useState(() => {
     const y = parseInt(searchParams.get('year') ?? '', 10);
-    return y >= 2000 && y <= 2100 ? y : now.getFullYear();
-  });
-  const [month, setMonth] = useState(() => {
     const m = parseInt(searchParams.get('month') ?? '', 10);
-    return m >= 1 && m <= 12 ? m : now.getMonth() + 1;
+    const validY = y >= 2000 && y <= 2100 ? y : null;
+    const validM = m >= 1 && m <= 12 ? m : null;
+    if (validY !== null || validM !== null) {
+      const period = usePeriodStore.getState();
+      period.setPeriod(validY ?? period.year, validM ?? period.month);
+    }
+    const dept = parseInt(searchParams.get('department_id') ?? '', 10);
+    if (Number.isFinite(dept)) useTimesheetViewStore.getState().setDeptChoice(dept);
+    return null;
   });
+
+  // ── Период: общий с «Расчёт ЗП» и сохранённый (task_ux_improvements ч.3) ──
+  const year = usePeriodStore((s) => s.year);
+  const month = usePeriodStore((s) => s.month);
+  const setYear = usePeriodStore((s) => s.setYear);
+  const setMonth = usePeriodStore((s) => s.setMonth);
   // ── Выбор отдела: при 200 сотрудниках «все отделы» по умолчанию не грузим ──
   // deptChoice: id | 'all' | null(не выбрано). Тем, у кого выбора нет (employee,
   // руководитель/табельщик одного отдела), сразу ставим 'all' — бэк и так отдаёт
-  // только их людей, спрашивать нечего. Ссылка из «Задач»/дашборда с
-  // ?department_id=N считается выбором.
+  // только их людей, спрашивать нечего.
   const deptChoice = useTimesheetViewStore((s) => s.deptChoice);
   const setDeptChoice = useTimesheetViewStore((s) => s.setDeptChoice);
-  useEffect(() => {
-    const fromUrl = parseInt(searchParams.get('department_id') ?? '', 10);
-    if (Number.isFinite(fromUrl)) setDeptChoice(fromUrl);
-    // Только на монтировании: дальше выбор живёт в сторе и переживает смену месяца.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Параметр для бэка: 'all' и «не выбрано» — это отсутствие фильтра.
   const departmentFilter = typeof deptChoice === 'number' ? deptChoice : null;
@@ -503,16 +514,29 @@ export function TimesheetPage() {
   const deptChosen = !needsDeptChoice;
   // Поиск по ФИО/таб.№ и фильтр компании — как на «Расчёт ЗП»: фильтруют строки
   // поверх фильтра отдела, на бэк не ходят.
-  const [search, setSearch] = useState('');
-  const [companyFilter, setCompanyFilter] = useState<number | null>(null);
+  // Сохраняются вместе (один ключ — один объект): фильтры осмыслены только
+  // в паре, и восстанавливать их порознь незачем.
+  const [filters, setFilters] = usePersistentState(
+    UI_KEYS.timesheetFilters,
+    { search: '', companyId: null as number | null },
+    (v) => typeof v === 'object' && v !== null && 'search' in v,
+  );
+  const { search } = filters;
+  const companyFilter = filters.companyId;
+  const setSearch = (value: string) => setFilters((f) => ({ ...f, search: value }));
+  const setCompanyFilter = (value: number | null) =>
+    setFilters((f) => ({ ...f, companyId: value }));
 
   const [data, setData] = useState<MonthResponse | null>(null);
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   // Сводка «По компаниям» в подвале: при 8 юрлицах занимала пол-экрана
-  // (в основном прочерками), поэтому по умолчанию свёрнута.
-  const [companySummaryOpen, setCompanySummaryOpen] = useState(false);
+  // (в основном прочерками), поэтому по умолчанию свёрнута. Развернул —
+  // остаётся развёрнутой и после перехода в другой раздел.
+  const [companySummaryOpen, setCompanySummaryOpen] = usePersistentState(
+    UI_KEYS.timesheetCompanySummary, false, (v) => typeof v === 'boolean',
+  );
   const [autofillPreview, setAutofillPreview] = useState<AutofillPreview | null>(null);
   const [autofillLoading, setAutofillLoading] = useState(false);
   // Суммы на экране относятся к состоянию ДО последней правки часов и ждут
@@ -813,10 +837,11 @@ export function TimesheetPage() {
       .catch(() => setDepartments([]));
   }, [canSelectDept]);
 
-  // Выбор отдела живёт в сторе и переживает не только смену месяца, но и смену
-  // пользователя в той же вкладке. Чужой (или удалённый) отдел дал бы 403 и
-  // пустой экран — возвращаем к выбору. Пустой список отделов не трогаем: это
-  // может быть неудавшаяся загрузка справочника, а не отсутствие доступа.
+  // Выбор отдела живёт в сторе и localStorage: переживает смену месяца, смену
+  // пользователя в той же вкладке и перезагрузку страницы. Чужой (или
+  // удалённый) отдел дал бы 403 и пустой экран — возвращаем к выбору. Пустой
+  // список отделов не трогаем: это может быть неудавшаяся загрузка справочника,
+  // а не отсутствие доступа.
   useEffect(() => {
     if (!canSelectDept || departments.length === 0) return;
     if (typeof deptChoice === 'number' && !departments.some((d) => d.id === deptChoice)) {

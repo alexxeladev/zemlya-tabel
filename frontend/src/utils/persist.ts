@@ -19,10 +19,14 @@ export const UI_KEYS = {
   /** табель: вид (классический / по компаниям) и выбранный отдел */
   timesheetView: 'timesheet.view',
   timesheetDept: 'timesheet.dept',
-  /** табель: поиск, фильтр компании, развёрнутость блока «ПО КОМПАНИЯМ» */
+  /** табель: поиск и фильтр компании */
   timesheetFilters: 'timesheet.filters',
+  /** табель: развёрнут ли блок «ПО КОМПАНИЯМ» в подвале */
+  timesheetCompanySummary: 'timesheet.companySummary',
   /** ведомость «Расчёт ЗП»: отдел, поиск, фильтр компании */
   payrollFilters: 'payroll.filters',
+  /** «Задачи»: показывать ли закрытые периоды */
+  tasksShowClosed: 'tasks.showClosed',
 } as const
 
 export function loadUiState<T>(key: string, fallback: T): T {
