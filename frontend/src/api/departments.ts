@@ -16,11 +16,19 @@ export const createDepartment = (data: {
   name: string
   code: string
   head_company_id?: number | null
+  /** фонд ночных смен на месяц; не задан — дефолт 100 000 */
+  night_shift_fund?: string | null
 }) => apiClient.post<Department>('/api/departments', data).then((r) => r.data)
 
 export const updateDepartment = (
   id: number,
-  data: Partial<{ name: string; code: string; head_company_id: number | null; is_active: boolean }>,
+  data: Partial<{
+    name: string
+    code: string
+    head_company_id: number | null
+    night_shift_fund: string
+    is_active: boolean
+  }>,
 ) => apiClient.patch<Department>(`/api/departments/${id}`, data).then((r) => r.data)
 
 export const deleteDepartment = (id: number) =>

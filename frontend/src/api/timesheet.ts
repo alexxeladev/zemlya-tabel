@@ -1,4 +1,4 @@
-import type { Absence, AbsenceKind, AuditLogEntry, AutofillPreview, CompanyShare, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
+import type { Absence, AbsenceKind, AuditLogEntry, AutofillPreview, CompanyShare, NightShift, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
 export const timesheetApi = {
@@ -41,6 +41,17 @@ export const timesheetApi = {
     employee_id: number; work_date: string; kind: AbsenceKind | null
   }): Promise<Absence | null> {
     const { data } = await apiClient.put<Absence | null>('/api/timesheet/absence', input)
+    return data
+  },
+
+  // ── Ночные смены: отметка выхода в ночь (value=false — снять) ──
+  // Ночная смена не привязана к графику и сосуществует с дневными часами.
+  // Превышение фонда отдела бэк блокирует 409-м — сообщение показываем как есть.
+  async setNightShift(input: {
+    employee_id: number; position_id?: number | null
+    work_date: string; value: boolean
+  }): Promise<NightShift | null> {
+    const { data } = await apiClient.put<NightShift | null>('/api/timesheet/night-shift', input)
     return data
   },
 

@@ -49,6 +49,12 @@ export interface EmployeePayroll {
   off_schedule_amount: string
   holiday_amount: string
   total_amount: string
+  // Ночные смены: число отмеченных, ставка (фонд отдела / дни месяца) и
+  // надбавка = смены × ставка. Надбавка входит в total_amount и «к выплате».
+  // У табельщика ставка и сумма пустые, а число смен — на месте.
+  night_shifts: number
+  night_rate: string | null
+  night_amount: string
   // Отсутствия: дни по видам и оплата ОТ/Б
   vacation_days: number
   unpaid_days: number
@@ -98,6 +104,7 @@ export interface PayrollSummary {
   total_holiday_amount: string
   total_vacation_amount: string
   total_sick_amount: string
+  total_night_amount: string
   grand_total: string
   total_premium: string
   total_kpi: string
@@ -196,6 +203,10 @@ export interface StatementRow {
   sick_limit_days: number
   sick_unpaid_days: number
   sick_limit_remaining: number
+  /** надбавка за ночные смены: число смен × ставка фонда отдела */
+  night_shifts: number
+  night_rate: string | null
+  night_amount: string
   accrued_total: string
   deductions: string
   net_payout: string        // округлено вниз до 100 ₽
@@ -220,6 +231,7 @@ export interface PayrollStatement {
   total_base_salary: string
   total_vacation_amount: string
   total_sick_amount: string
+  total_night_amount: string
   total_premium: string
   total_kpi: string
   total_accrued: string
@@ -267,6 +279,28 @@ export interface Absence {
   over_limit: boolean
 }
 
+// ── Ночные смены (task_night_shifts_rework) ──
+// Отметка выхода в ночь: часов нет, оплачивается сам факт смены по ставке
+// «фонд отдела / календарные дни месяца». К графику не привязана и с дневными
+// часами того же дня сосуществует.
+export interface NightShift {
+  employee_id: number
+  position_id: number
+  work_date: string  // YYYY-MM-DD
+}
+
+/** Состояние фонда ночных смен отдела за месяц (индикатор остатка). */
+export interface NightFund {
+  department_id: number
+  department_name: string | null
+  /** деньги — у табельщика null; смены видны всем, кто ведёт табель */
+  fund: string | null
+  rate: string | null
+  limit_shifts: number
+  used_shifts: number
+  remaining_shifts: number
+}
+
 export interface TimesheetMonthResponse {
   year: number
   month: number
@@ -278,6 +312,8 @@ export interface TimesheetMonthResponse {
   /** видимые актору рабочие места по сотрудникам: табель строит строку на позицию */
   positions_by_employee: Record<string, EmployeePosition[]>
   absences: Absence[]
+  night_shifts: NightShift[]
+  night_funds: NightFund[]
   payroll: PayrollSummary | null
   adjustments: Adjustment[]
 }
@@ -408,6 +444,8 @@ export interface Department {
    * работают на несколько юрлиц (часы + проценты распределения).
    */
   head_company_id: number | null
+  /** месячный фонд ночных смен: из него считаются ставка и лимит числа смен */
+  night_shift_fund: string | null
   is_active: boolean
 }
 
@@ -503,8 +541,9 @@ export interface EmployeePosition {
   holiday_coefficient: string | null
   holiday_fixed_rate: string | null
   overtime_coefficient: string | null
+  /** можно ли отмечать этому рабочему месту выходы в ночь; ставка не задаётся —
+   *  она вычисляется из фонда отдела (task_night_shifts_rework) */
   has_night_shifts: boolean
-  night_rate: string | null
   department: Department | null
   schedule: Schedule | null
   company: Company | null
@@ -518,7 +557,7 @@ export type EmployeePositionInput = Partial<
     | 'pay_type' | 'rate' | 'shift_rate' | 'hour_rate'
     | 'weekend_pay_type' | 'weekend_coefficient' | 'weekend_fixed_rate'
     | 'holiday_pay_type' | 'holiday_coefficient' | 'holiday_fixed_rate'
-    | 'overtime_coefficient' | 'has_night_shifts' | 'night_rate'
+    | 'overtime_coefficient' | 'has_night_shifts'
     | 'is_active' | 'sort_order'
   >
 > & { is_primary?: boolean }

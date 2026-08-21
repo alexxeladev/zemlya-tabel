@@ -53,7 +53,6 @@ type Draft = {
   holiday_fixed_rate: string
   overtime_coefficient: string
   has_night_shifts: boolean
-  night_rate: string
 }
 
 const EMPTY_DRAFT: Draft = {
@@ -61,7 +60,7 @@ const EMPTY_DRAFT: Draft = {
   pay_type: 'salary', rate: '', shift_rate: '', hour_rate: '',
   weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
   holiday_pay_type: 'coefficient', holiday_coefficient: '1.5', holiday_fixed_rate: '',
-  overtime_coefficient: '1.5', has_night_shifts: false, night_rate: '',
+  overtime_coefficient: '1.5', has_night_shifts: false,
 }
 
 function toDraft(p: EmployeePosition): Draft {
@@ -82,7 +81,6 @@ function toDraft(p: EmployeePosition): Draft {
     holiday_fixed_rate: p.holiday_fixed_rate ?? '',
     overtime_coefficient: p.overtime_coefficient ?? '1.5',
     has_night_shifts: p.has_night_shifts,
-    night_rate: p.night_rate ?? '',
   }
 }
 
@@ -108,7 +106,6 @@ function toPayload(d: Draft): EmployeePositionInput {
     holiday_fixed_rate: d.holiday_pay_type === 'fixed_rate' ? strOrNull(d.holiday_fixed_rate) : null,
     overtime_coefficient: strOrNull(d.overtime_coefficient),
     has_night_shifts: d.has_night_shifts,
-    night_rate: d.has_night_shifts ? strOrNull(d.night_rate) : null,
   }
 }
 
@@ -309,7 +306,7 @@ export function PositionsEditor({
               <span>График: {nameOf(schedules, p.schedule_id)}</span>
               <span>Компания: {nameOf(companies, p.company_id)}</span>
               <span title="Коэффициент/ставка оплаты выходных">Выходные: {coeffLabel(p)}</span>
-              {p.has_night_shifts && <span>Ночные: {p.night_rate ?? '—'}</span>}
+              {p.has_night_shifts && <span title="Ставка ночной смены вычисляется из фонда отдела">Ночные смены: да</span>}
             </div>
 
             {editing === p.id && (
@@ -518,13 +515,13 @@ function PositionForm({
             />
             Ночные смены
           </label>
+          {/* Ставка здесь НЕ задаётся: она вычисляется из фонда отдела
+              (фонд / календарные дни месяца) — task_night_shifts_rework. */}
           {draft.has_night_shifts && (
-            <input
-              value={draft.night_rate}
-              onChange={(e) => set('night_rate', e.target.value)}
-              placeholder="Ставка за ночной час, ₽"
-              className={inputCls}
-            />
+            <p className="text-[11px] leading-tight text-gray-500">
+              Ставка считается из фонда ночных смен отдела
+              (фонд ÷ календарные дни месяца) и вручную не задаётся.
+            </p>
           )}
         </div>
       </div>
