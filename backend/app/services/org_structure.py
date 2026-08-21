@@ -60,6 +60,7 @@ def build_org_tree(db: Session, include_inactive: bool = False) -> OrgTreeRead:
             code=dept.code,
             is_active=dept.is_active,
             head_company_id=dept.head_company_id,
+            night_shift_fund=dept.night_shift_fund,
             managers=[_employee_read(m) for m in _by_name(list(dept.managers))],
             employee_count=len(members),
             employees=[_employee_read(e) for e in members],

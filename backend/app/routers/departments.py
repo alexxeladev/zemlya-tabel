@@ -22,7 +22,11 @@ from app.schemas.department import (
 )
 from app.schemas.payroll_statement import CompanyShareInput
 from app.services.company_shares import SharesValidationError, validate_shares
-from app.services.org_access import is_department_scoped, managed_department_ids
+from app.services.org_access import (
+    hides_finances,
+    is_department_scoped,
+    managed_department_ids,
+)
 
 router = APIRouter()
 
@@ -36,8 +40,29 @@ def _to_dict(obj: Department) -> dict:
         "name": obj.name,
         "code": obj.code,
         "head_company_id": obj.head_company_id,
+        "night_shift_fund": str(obj.night_shift_fund),
         "is_active": obj.is_active,
     }
+
+
+def _read(dept: Department, actor: Employee) -> DepartmentRead:
+    """Карточка отдела для ответа: фонд ночных смен — деньги, поэтому
+    табельщику он не отдаётся (task_timekeeper_role). Число смен и остаток
+    лимита ему видны отдельно, в табеле."""
+    data = DepartmentRead.model_validate(dept)
+    if hides_finances(actor):
+        data.night_shift_fund = None
+    return data
+
+
+def _check_night_fund(value: Decimal | None) -> None:
+    """Фонд ночных смен — неотрицательная сумма. Ноль допустим и означает
+    «ночных смен в отделе нет»: лимит тогда 0 и отметить нельзя ни одной."""
+    if value is not None and value < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Фонд ночных смен не может быть отрицательным",
+        )
 
 
 def _check_head_company(db: Session, company_id: int | None) -> None:
@@ -62,8 +87,10 @@ def list_departments(
         managed = managed_department_ids(current_user)
         if not managed:
             return []
-        return db.query(Department).filter(Department.id.in_(managed)).all()
-    return db.query(Department).all()
+        rows = db.query(Department).filter(Department.id.in_(managed)).all()
+    else:
+        rows = db.query(Department).all()
+    return [_read(d, current_user) for d in rows]
 
 
 @router.post("", response_model=DepartmentRead, status_code=status.HTTP_201_CREATED)
@@ -81,12 +108,15 @@ def create_department(
         head_company_id=payload.head_company_id,
         is_active=True,
     )
+    if payload.night_shift_fund is not None:
+        _check_night_fund(payload.night_shift_fund)
+        dept.night_shift_fund = payload.night_shift_fund
     db.add(dept)
     db.flush()
     log_action(db, actor, "department", dept.id, "create", after=_to_dict(dept))
     db.commit()
     db.refresh(dept)
-    return dept
+    return _read(dept, actor)
 
 
 @router.get("/{dept_id}", response_model=DepartmentRead)
@@ -100,7 +130,7 @@ def get_department(
     dept = db.get(Department, dept_id)
     if not dept:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
-    return dept
+    return _read(dept, current_user)
 
 
 @router.patch("/{dept_id}", response_model=DepartmentRead)
@@ -117,13 +147,19 @@ def update_department(
     changes = payload.model_dump(exclude_unset=True)
     if "head_company_id" in changes:
         _check_head_company(db, changes["head_company_id"])
+    if "night_shift_fund" in changes:
+        _check_night_fund(changes["night_shift_fund"])
+        # Фонд не обнуляется в NULL: колонка обязательная, а «нет фонда» —
+        # это 0. Пришедший null трактуем как «не менять».
+        if changes["night_shift_fund"] is None:
+            changes.pop("night_shift_fund")
     for field, value in changes.items():
         setattr(dept, field, value)
     db.flush()
     log_action(db, actor, "department", dept.id, "update", before=before, after=_to_dict(dept))
     db.commit()
     db.refresh(dept)
-    return dept
+    return _read(dept, actor)
 
 
 @router.delete("/{dept_id}", status_code=status.HTTP_204_NO_CONTENT)
