@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel
@@ -21,6 +22,10 @@ class OrgDepartmentRead(BaseModel):
     code: str
     is_active: bool
     head_company_id: Optional[int] = None
+    # Месячный фонд ночных смен (task_night_shifts_rework): из него считаются
+    # ставка ночной смены и лимит их числа. Дерево видит только admin, поэтому
+    # сумма отдаётся как есть.
+    night_shift_fund: Optional[Decimal] = None
     # Менеджеры и табельщики отдела: чем руководят / что ведут, а не где числятся
     # (task_org_structure ч.2, task_timekeeper_role). Кто есть кто — по `role`.
     managers: list[OrgEmployeeRead]

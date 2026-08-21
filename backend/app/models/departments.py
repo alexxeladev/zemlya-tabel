@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, String, func
+from sqlalchemy import Boolean, ForeignKey, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -12,6 +13,12 @@ if TYPE_CHECKING:
     from app.models.companies import Company
     from app.models.employees import Employee
     from app.models.positions import EmployeePosition
+
+
+# Месячный фонд ночных смен отдела по умолчанию (task_night_shifts_rework).
+# Из него ВЫЧИСЛЯЕТСЯ ставка ночной смены (фонд / календарные дни месяца) и
+# следует лимит числа смен — вручную ставка больше не задаётся.
+DEFAULT_NIGHT_SHIFT_FUND = Decimal("100000")
 
 
 class Department(Base):
@@ -27,6 +34,16 @@ class Department(Base):
     # остаются мультикомпанийными и на это поле не смотрят.
     head_company_id: Mapped[int | None] = mapped_column(
         ForeignKey("companies.id"), nullable=True
+    )
+
+    # Фонд ночных смен на МЕСЯЦ (task_night_shifts_rework). Задаёт и ставку
+    # (фонд / календарные дни месяца), и лимит числа смен по отделу — считает
+    # `app.services.night_shifts`, здесь только хранение.
+    night_shift_fund: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2),
+        default=DEFAULT_NIGHT_SHIFT_FUND,
+        server_default=str(DEFAULT_NIGHT_SHIFT_FUND),
+        nullable=False,
     )
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
