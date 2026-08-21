@@ -30,8 +30,8 @@ MAY_CALENDAR = {"year": 2026, "months": [{"month": 5, "days": "3,4,10,11,17,18,2
 
 # Денежные поля, которых табельщик не должен увидеть. Список зеркалит
 # app.services.finance_masking — если там появится новое поле, а здесь нет, тест
-# перестанет ловить утечку. Ночная ставка есть только у позиции: в «плоской»
-# карточке сотрудника такого поля нет.
+# перестанет ловить утечку. Ставки ночной смены на позиции нет: она вычисляется
+# из фонда отдела и гасится в строке расчёта (task_night_shifts_rework).
 POSITION_MONEY_FIELDS = (
     "rate",
     "shift_rate",
@@ -41,11 +41,10 @@ POSITION_MONEY_FIELDS = (
     "holiday_coefficient",
     "holiday_fixed_rate",
     "overtime_coefficient",
-    "night_rate",
 )
-EMPLOYEE_MONEY_FIELDS = tuple(
-    f for f in POSITION_MONEY_FIELDS if f != "night_rate"
-) + ("loan_amount", "loan_term_months", "loan_start_date")
+EMPLOYEE_MONEY_FIELDS = POSITION_MONEY_FIELDS + (
+    "loan_amount", "loan_term_months", "loan_start_date",
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

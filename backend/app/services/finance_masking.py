@@ -21,7 +21,9 @@ from app.schemas.position import EmployeePositionRead
 
 _ZERO = Decimal("0")
 
-# Денежные поля позиции: база оплаты, коэффициенты надбавок, ночная ставка.
+# Денежные поля позиции: база оплаты и коэффициенты надбавок. Ставки ночной
+# смены среди них нет — на позиции её больше не хранят, она вычисляется из
+# фонда отдела и гасится ниже, в строках расчёта (task_night_shifts_rework).
 FINANCIAL_POSITION_FIELDS = (
     "rate",
     "shift_rate",
@@ -31,15 +33,10 @@ FINANCIAL_POSITION_FIELDS = (
     "holiday_coefficient",
     "holiday_fixed_rate",
     "overtime_coefficient",
-    "night_rate",
 )
 
 # То же в «плоской» карточке сотрудника (это compat-вид основной позиции) плюс займ.
-# Ночная ставка сюда не попадает: в карточке её нет, она только у позиции —
-# лишние имена отсеет `_blank`, но перечислять несуществующее незачем.
-FINANCIAL_EMPLOYEE_FIELDS = tuple(
-    f for f in FINANCIAL_POSITION_FIELDS if f != "night_rate"
-) + (
+FINANCIAL_EMPLOYEE_FIELDS = FINANCIAL_POSITION_FIELDS + (
     "loan_amount",
     "loan_term_months",
     "loan_start_date",
@@ -99,6 +96,9 @@ _PAYROLL_AMOUNT_FIELDS = (
     "off_schedule_amount",
     "holiday_amount",
     "total_amount",
+    # Ночные: сумма надбавки — деньги, а само ЧИСЛО смен (`night_shifts`)
+    # остаётся: факт выхода в ночь табельщик отмечает сам.
+    "night_amount",
     "vacation_amount",
     "sick_amount",
     "premium_amount",
@@ -123,6 +123,7 @@ _PAYROLL_RATE_FIELDS = (
     "weekend_fixed_rate",
     "holiday_coefficient",
     "holiday_fixed_rate",
+    "night_rate",
 )
 
 # Суммы в разрезе по юрлицам; часы (`hours`, `*_hours`, `percent`) остаются
@@ -142,6 +143,7 @@ _SUMMARY_AMOUNT_FIELDS = (
     "total_holiday_amount",
     "total_vacation_amount",
     "total_sick_amount",
+    "total_night_amount",
     "grand_total",
     "total_premium",
     "total_kpi",

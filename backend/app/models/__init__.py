@@ -16,6 +16,7 @@ from app.models.employee_absences import (
 from app.models.employee_adjustments import AdjustmentKind, EmployeeAdjustment
 from app.models.employees import Employee, EmployeeRole
 from app.models.loan_deductions import LoanDeduction
+from app.models.night_shifts import NightShift
 from app.models.positions import (
     PAY_TYPE_HOURLY,
     PAY_TYPE_PER_SHIFT,
@@ -45,6 +46,7 @@ __all__ = [
     "EmployeePosition",
     "EmployeeRole",
     "LoanDeduction",
+    "NightShift",
     "PAY_TYPES",
     "PAY_TYPE_HOURLY",
     "PAY_TYPE_PER_SHIFT",

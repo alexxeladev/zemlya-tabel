@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.absence import AbsenceRead
 from app.schemas.company import CompanyRead
 from app.schemas.employee import EmployeeRead
+from app.schemas.night_shift import NightFundRead, NightShiftRead
 from app.schemas.payout import AdjustmentRead
 from app.schemas.payroll import PayrollSummaryRead
 from app.schemas.position import EmployeePositionRead
@@ -55,6 +56,10 @@ class TimesheetMonthResponse(BaseModel):
     positions_by_employee: dict[int, list[EmployeePositionRead]] = {}
     # Коды отсутствий (ОТ/ДО/Б/Н) — видны всем, включая employee (свои дни)
     absences: list[AbsenceRead] = []
+    # Ночные смены (task_night_shifts_rework): отметки выходов в ночь и
+    # состояние фонда отделов — из него считаются ставка и лимит числа смен.
+    night_shifts: list[NightShiftRead] = []
+    night_funds: list[NightFundRead] = []
     payroll: PayrollSummaryRead | None = None
     adjustments: list[AdjustmentRead] = []
 

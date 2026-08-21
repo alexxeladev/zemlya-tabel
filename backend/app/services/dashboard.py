@@ -35,6 +35,7 @@ from app.services.absences import (
     schedules_by_employee,
     sick_days_used_before_month,
 )
+from app.services.night_shifts import load_night_context
 from app.services.org_access import (
     can_see_finances,
     is_department_scoped,
@@ -127,6 +128,9 @@ def _month_payrolls(
         db, [e.id for e in employees], year, month, calendar_data,
         schedules_by_employee(employees),
     )
+    # Ночные — часть ФОТ (надбавка входит в total_amount), иначе дашборд
+    # разошёлся бы с /payroll у отделов, где ночные отмечены.
+    night = load_night_context(db, employees, year, month)
 
     # По одной строке на ПОЗИЦИЮ (task_positions ч.A) — так же, как считает
     # /payroll: иначе у совместителя ФОТ дашборда разошёлся бы с табелем.
@@ -143,6 +147,8 @@ def _month_payrolls(
                     calendar_data, year, month, companies_by_id,
                     absences=absences_by_emp.get(emp.id, []),
                     sick_days_used_before=sick_used_before.get(emp.id, 0),
+                    night_shifts=night.shifts_of(position),
+                    night_rate=night.rate_of(position),
                 ),
             ))
     return results

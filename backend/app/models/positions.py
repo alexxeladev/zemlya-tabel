@@ -93,7 +93,6 @@ EMPLOYEE_COMPAT_FIELDS: dict[str, str] = {
     "holiday_fixed_rate": "holiday_fixed_rate",
     "overtime_coefficient": "overtime_coefficient",
     "has_night_shifts": "has_night_shifts",
-    "night_rate": "night_rate",
 }
 
 # Relationship-аксессоры: имя на Employee → имя на позиции.
@@ -173,12 +172,13 @@ class EmployeePosition(Base):
     )
 
     # ── Ночные смены ──────────────────────────────────────────────────────────
-    # Флаг + ставка. В расчёте части A не участвуют (ввод ночных часов — часть B),
-    # поле заводится здесь, чтобы позиция была цельной карточкой рабочего места.
+    # Только ФЛАГ: можно ли отмечать этому рабочему месту выходы в ночь.
+    # Ставки здесь нет — она вычисляется из фонда ОТДЕЛА (фонд / календарные
+    # дни месяца, task_night_shifts_rework), а ручное поле `night_rate` снято
+    # миграцией: два источника цены смены неминуемо разошлись бы.
     has_night_shifts: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
-    night_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
 
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now()

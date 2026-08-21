@@ -289,11 +289,10 @@ def _make_employee(
     emp.holiday_pay_type = "coefficient"
     emp.holiday_coefficient = Decimal(rnd.choice(["2", "2", "1.5"]))
 
+    # Ночные смены: только флаг. Ставка вычисляется из фонда отдела
+    # (task_night_shifts_rework), задавать её на позиции больше нельзя.
     primary = emp.primary_position
     primary.has_night_shifts = kind == "per_shift"
-    primary.night_rate = (
-        Decimal(str(rnd.randrange(80, 160, 10))) if primary.has_night_shifts else None
-    )
 
     # Займ у части сотрудников — чтобы «Удержано» и «К выплате» были не пустыми
     if rnd.random() < 0.08:
