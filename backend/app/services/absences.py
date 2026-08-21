@@ -25,6 +25,7 @@ from app.models.employee_absences import (
     EmployeeAbsence,
 )
 from app.models.employees import Employee
+from app.models.night_shifts import NightShift
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.calendar import is_holiday
 from app.services.work_schedule import is_planned_work_day
@@ -298,6 +299,28 @@ def set_absence(
         )
         db.delete(entry)
     if hours_entries:
+        db.flush()
+
+    # Ночные смены этого дня — тоже снимаем. Ночная смена сосуществует с
+    # ДНЕВНЫМИ ЧАСАМИ, но не с отсутствием: человек либо отсутствует весь день,
+    # либо выходит. Отметка на всех рабочих местах — отсутствие на человеке.
+    night_shifts = (
+        db.query(NightShift)
+        .filter(
+            NightShift.employee_id == employee_id,
+            NightShift.work_date == work_date,
+        )
+        .all()
+    )
+    for shift in night_shifts:
+        log_action(
+            db, actor, "night_shift", shift.id, "delete",
+            before={"employee_id": employee_id, "position_id": shift.position_id,
+                    "work_date": str(work_date)},
+            reason=f"Проставлен код отсутствия {absence_code(kind)}",
+        )
+        db.delete(shift)
+    if night_shifts:
         db.flush()
 
     existing = (

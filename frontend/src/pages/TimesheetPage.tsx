@@ -1554,6 +1554,7 @@ export function TimesheetPage() {
           numDays={numDays}
           dayTypes={dayTypes}
           marked={(d) => nightByPosDay.has(`${posKey(emp.id, position.id)}:${d}`)}
+          absenceCode={(d) => absenceByEmpDay.get(`${emp.id}:${d}`)?.code}
           fund={
             position.department_id != null
               ? nightFundByDept.get(position.department_id) ?? null
@@ -2741,6 +2742,7 @@ function NightRow({
   numDays,
   dayTypes,
   marked,
+  absenceCode,
   fund,
   editable,
   onToggle,
@@ -2750,6 +2752,8 @@ function NightRow({
   numDays: number;
   dayTypes: Record<number, DayType>;
   marked: (day: number) => boolean;
+  /** код отсутствия этого дня (ОТ/ДО/Б/Н), если он стоит — ночную не отметить */
+  absenceCode: (day: number) => string | undefined;
   fund: NightFund | null;
   editable: boolean;
   onToggle: (day: number, value: boolean) => void;
@@ -2778,6 +2782,10 @@ function NightRow({
 
       {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => {
         const on = marked(d);
+        // Отсутствие — на весь день человека: в такой день он не выходит ни
+        // днём, ни в ночь. Бэк это тоже не пропустит (422), здесь просто не
+        // даём кликнуть и объясняем почему.
+        const absent = absenceCode(d);
         const t = dayTypes[d];
         const bgClass =
           t === 'holiday'
@@ -2790,11 +2798,13 @@ function NightRow({
             <input
               type="checkbox"
               checked={on}
-              disabled={!editable}
+              disabled={!editable || !!absent}
               onChange={(e) => onToggle(d, e.target.checked)}
-              className="cursor-pointer accent-indigo-600 disabled:cursor-not-allowed"
+              className="cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
               title={
-                editable
+                absent
+                  ? `В этот день отмечено отсутствие (${absent}) — ночную смену не отметить`
+                  : editable
                   ? `${emp.full_name} — ${position.display_title}: выход в ночь ${d}-го`
                   : 'Период закрыт для редактирования'
               }
