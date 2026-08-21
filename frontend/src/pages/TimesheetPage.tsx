@@ -1201,6 +1201,10 @@ export function TimesheetPage() {
     const positionId = positionIdParam(position);
     // Высота ФИО-ячейки: строки позиций + их строки «Ночные».
     const nameSpan = spans?.get(emp.id) ?? count;
+    // «Итого ч» и весь блок справа (деньги или часы) растягиваются на строку
+    // «Ночные»: отдельной строки в сводном блоке быть не должно — там нечего
+    // показывать, а пустые ячейки читаются как полоса через таблицу.
+    const trailingSpan = hasNight(position) ? { rowSpan: 2 } : {};
     const pay = payrollFor(emp, position);
     // Пока суммы ждут пересчёта, часы берём из ячеек: они уже перечитаны, а
     // payroll.total_hours относится к состоянию до правки — иначе введённая
@@ -1337,7 +1341,7 @@ export function TimesheetPage() {
         })}
 
         {/* ── Итого часов по этому рабочему месту ── */}
-        <td className="border border-gray-200 px-3 py-2 text-center font-mono font-semibold bg-gray-50">
+        <td {...trailingSpan} className="border border-gray-200 px-3 py-2 text-center font-mono font-semibold bg-gray-50">
           {fmtHours(rowTotal)}
         </td>
 
@@ -1346,43 +1350,43 @@ export function TimesheetPage() {
             и не отдаёт). Порядок колонок совпадает с шапкой ниже. */}
         {!canSeeMoney && canSeeHourStats && (
           <>
-            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
               <NormCell pay={pay} />
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
               {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
               title="Переработка: часы сверх дневной нормы смены"
             >
               {num(pay?.overtime_hours) > 0 ? fmtHours(num(pay?.overtime_hours)) : '—'}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
               title="Вне графика: выход в свой выходной по графику"
             >
               {num(pay?.off_schedule_hours) > 0 ? fmtHours(num(pay?.off_schedule_hours)) : '—'}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
               title="Праздничные: работа в нерабочий праздничный день календаря"
             >
               {num(pay?.holiday_hours) > 0 ? fmtHours(num(pay?.holiday_hours)) : '—'}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-indigo-700"
               title="Ночные смены: отмеченные выходы в ночь (надбавку считает бухгалтерия)"
             >
               {pay?.night_shifts ? `${pay.night_shifts} см.` : '—'}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
               title={absenceDaysTitle('Отпуск', pay?.vacation_days, pay?.vacation_paid_days)}
             >
               {pay?.vacation_days ? `${pay.vacation_days} д` : '—'}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
               title={sickLimitTitle(pay)}
             >
@@ -1406,16 +1410,16 @@ export function TimesheetPage() {
           const grossTotal = num(pay?.total_amount) + premium + kpi;
           return (
           <>
-            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600" title="Оплата выходных">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600" title="Оплата выходных">
               {fmtCoeff(pay)}
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-600">
               <NormCell pay={pay} />
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
               {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
               title={
                 pay?.pay_type === 'per_shift'
@@ -1431,23 +1435,23 @@ export function TimesheetPage() {
                 </div>
               )}
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-2 text-right font-mono text-xs">
               {fmtMoney(pay?.overtime_amount ?? null)}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
               title="Вне графика: выход в свой выходной по графику"
             >
               {fmtMoney(pay?.off_schedule_amount ?? null)}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
               title="Праздничные: работа в нерабочий праздничный день"
             >
               {fmtMoney(pay?.holiday_amount ?? null)}
             </td>
             {/* Надбавка за ночные смены — смены × ставка фонда отдела */}
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
               title={
                 pay?.night_shifts
@@ -1463,7 +1467,7 @@ export function TimesheetPage() {
               )}
             </td>
             {/* Отпускные / больничные — оплата дней отсутствия */}
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
               title={absenceDaysTitle('Отпуск', pay?.vacation_days, pay?.vacation_paid_days)}
             >
@@ -1472,7 +1476,7 @@ export function TimesheetPage() {
                 <span className="ml-1 text-[10px] text-gray-400">{pay.vacation_days}д</span>
               )}
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
               title={sickLimitTitle(pay)}
             >
@@ -1487,7 +1491,7 @@ export function TimesheetPage() {
               )}
             </td>
             {/* Премия — своя кнопка */}
-            <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
               <button
                 type="button"
                 onClick={() => setAdjModal({ emp, position, category: 'premium' })}
@@ -1499,7 +1503,7 @@ export function TimesheetPage() {
               </button>
             </td>
             {/* KPI — своя кнопка */}
-            <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-1 text-right font-mono text-xs">
               <button
                 type="button"
                 onClick={() => setAdjModal({ emp, position, category: 'kpi' })}
@@ -1510,11 +1514,11 @@ export function TimesheetPage() {
                 <span className="text-blue-500 font-sans">✎</span>
               </button>
             </td>
-            <td className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-blue-700 bg-blue-50/30">
               {grossTotal > 0 ? fmtMoney(String(grossTotal)) : '—'}
             </td>
             {/* Удержано — аванс + займ, своя кнопка */}
-            <td className="border border-gray-200 px-2 py-1 text-right font-mono text-xs text-red-600">
+            <td {...trailingSpan} className="border border-gray-200 px-2 py-1 text-right font-mono text-xs text-red-600">
               <button
                 type="button"
                 onClick={() => setAdjModal({ emp, position, category: 'deduction' })}
@@ -1525,7 +1529,7 @@ export function TimesheetPage() {
                 <span className="text-blue-500 font-sans">✎</span>
               </button>
             </td>
-            <td
+            <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-right font-mono font-bold text-emerald-700 bg-emerald-50/40"
               title={
                 num(pay?.rounding_tail) > 0
@@ -1556,7 +1560,6 @@ export function TimesheetPage() {
               : null
           }
           editable={periodEditable}
-          trailingCols={trailingCols}
           onToggle={(d, value) => toggleNight(emp, position, d, value)}
         />
       )}
@@ -2740,7 +2743,6 @@ function NightRow({
   marked,
   fund,
   editable,
-  trailingCols,
   onToggle,
 }: {
   emp: Employee;
@@ -2750,7 +2752,6 @@ function NightRow({
   marked: (day: number) => boolean;
   fund: NightFund | null;
   editable: boolean;
-  trailingCols: number;
   onToggle: (day: number, value: boolean) => void;
 }) {
   const noFund = fund != null && fund.limit_shifts === 0;
@@ -2802,14 +2803,10 @@ function NightRow({
         );
       })}
 
-      {/* Итог и денежный блок в этой строке ПУСТЫЕ: сколько смен и почём — уже
-          в колонке «Ночные» справа. Ячейки строим по одной на колонку, а не
-          одной через colSpan: иначе на месте денежного блока получается сплошная
-          полоса без вертикальных линий и таблица «разъезжается» глазом. */}
-      <td className="border border-gray-200 px-2 py-1" />
-      {Array.from({ length: trailingCols }, (_, i) => (
-        <td key={i} className="border border-gray-200 px-2 py-1" />
-      ))}
+      {/* Ячеек «Итого ч» и блока справа здесь НЕТ: они растянуты на две строки
+          со строки рабочего места (rowSpan). Пустые ячейки на их месте читались
+          как полоса через всю таблицу — в сводном блоке строки «Ночные» быть не
+          должно, там просто выше колонки. */}
     </tr>
   );
 }
