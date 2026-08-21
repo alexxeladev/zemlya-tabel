@@ -72,9 +72,12 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
     reason_headers = [
         "Обоснование премии", "Обоснование KPI", "Обоснование удержаний",
     ]
+    # Ночные смены (task_night_shifts_rework) — тоже ХВОСТОВЫЕ колонки: надбавка
+    # уже сидит внутри «Итого начислено», и без них не видно, из чего она сложилась.
+    night_headers = ["Ночных смен", "Надбавка за ночные"]
     headers = (
         base_headers + dist_headers
-        + ["Итого распред."] + reason_headers + ["Примечание"]
+        + ["Итого распред."] + reason_headers + ["Примечание"] + night_headers
     )
     n_cols = len(headers)
 
@@ -99,6 +102,8 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
     kpi_reason_col = premium_reason_col + 1
     deduction_reason_col = kpi_reason_col + 1
     note_col = deduction_reason_col + 1
+    night_shifts_col = note_col + 1
+    night_amount_col = night_shifts_col + 1
     # Колонки премии / KPI / удержаний в base_headers — к ним же вешаем
     # обоснование примечанием ячейки, чтобы оно было видно рядом со значением.
     premium_col = base_headers.index("Премия") + 1
@@ -201,6 +206,18 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
         c.font = normal
         c.border = border
         c.alignment = left
+
+        # Ночные: число смен и надбавка (смены × фонд отдела ÷ дни месяца)
+        for col, val in (
+            (night_shifts_col, r.night_shifts or ""),
+            (night_amount_col, _money(r.night_amount)),
+        ):
+            c = ws.cell(row=row, column=col, value=val)
+            c.font = normal
+            c.border = border
+            c.alignment = center
+            if isinstance(val, float):
+                c.number_format = "#,##0.00"
         row += 1
 
     # ── Итоговая строка ────────────────────────────────────────────────────────
@@ -214,6 +231,7 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
         18: statement.total_accrued,
         19: statement.total_deductions,
         20: statement.total_net_payout,
+        night_amount_col: statement.total_night_amount,
     }
     for col in range(1, n_cols + 1):
         c = ws.cell(row=row, column=col)

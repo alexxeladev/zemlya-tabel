@@ -250,7 +250,7 @@ export function PayrollPage() {
   const footer = useMemo(() => {
     const acc = {
       overtime: 0, base: 0, vacation: 0, sick: 0, vacationDays: 0, sickDays: 0,
-      premium: 0, kpi: 0, accrued: 0, deductions: 0, net: 0,
+      night: 0, premium: 0, kpi: 0, accrued: 0, deductions: 0, net: 0,
       dist: {} as Record<number, number>,
     }
     for (const c of companies) acc.dist[c.id] = 0
@@ -259,6 +259,7 @@ export function PayrollPage() {
       acc.base += num(row.base_salary)
       acc.vacation += num(row.vacation_amount)
       acc.sick += num(row.sick_amount)
+      acc.night += num(row.night_amount)
       acc.vacationDays += row.vacation_days
       acc.sickDays += row.sick_days
       acc.premium += num(row.premium_amount)
@@ -357,6 +358,12 @@ export function PayrollPage() {
                 <th className="px-2 py-2 text-center font-medium" title="Дней отпуска / больничного">Отп./Больн. дн.</th>
                 <th className="px-2 py-2 text-center font-medium" title="Отпускные: оклад / норма × (дни × 8)">Отпускные</th>
                 <th className="px-2 py-2 text-center font-medium" title="Больничные: оклад / норма × (дни × 8)">Больничные</th>
+                <th
+                  className="px-2 py-2 text-center font-medium"
+                  title="Надбавка за ночные смены: число смен × (фонд отдела ÷ календарные дни месяца)"
+                >
+                  Ночные
+                </th>
                 <th className="px-2 py-2 text-center font-medium">Премия</th>
                 <th className="px-2 py-2 text-center font-medium">KPI</th>
                 <th className="px-2 py-2 text-center font-semibold text-blue-700 min-w-[90px]">Итого начисл.</th>
@@ -484,6 +491,20 @@ export function PayrollPage() {
                         </div>
                       )}
                     </td>
+                    {/* Ночные: надбавка = смены × ставка фонда отдела (входит в «Итого начислено») */}
+                    <td
+                      className="px-2 py-1.5 text-center text-gray-700"
+                      title={
+                        row.night_shifts
+                          ? `${row.night_shifts} ночных смен × ${formatMoney(row.night_rate)}`
+                          : 'Надбавка за ночные смены'
+                      }
+                    >
+                      {formatMoney(row.night_amount)}
+                      {row.night_shifts > 0 && (
+                        <div className="text-[10px] text-gray-400">{row.night_shifts} см.</div>
+                      )}
+                    </td>
                     {/* Обоснования — подсказкой к сумме; те же тексты уходят в Excel */}
                     <td className="px-2 py-1.5 text-center text-gray-700" title={reasonTitle(row.premium_reasons)}>
                       {formatMoney(row.premium_amount)}
@@ -587,6 +608,7 @@ export function PayrollPage() {
                 </td>
                 <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.vacation))}</td>
                 <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.sick))}</td>
+                <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.night))}</td>
                 <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.premium))}</td>
                 <td className="px-2 py-2 text-center text-gray-700">{formatMoney(String(footer.kpi))}</td>
                 <td className="px-2 py-2 text-center font-bold text-blue-700">{formatMoney(String(footer.accrued), { showZero: true })}</td>
