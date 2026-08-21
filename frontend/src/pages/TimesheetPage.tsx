@@ -30,7 +30,7 @@ import { usePeriodStore } from '../store/period';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { UI_KEYS } from '../utils/persist';
 import { TimesheetCompanyView } from './TimesheetCompanyView';
-import type { AbsenceKind, AutofillPreview } from '../types/api';
+import type { AbsenceKind, AutofillPreview, NightFund, NightShift } from '../types/api';
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
@@ -69,6 +69,9 @@ export type Position = {
   schedule_id: number | null;
   schedule?: { id: number; name: string; hours_per_shift: number } | null;
   company_id: number | null;
+  /** можно ли отмечать этому месту выходы в ночь: только тогда под строкой
+   *  появляется строка «Ночные» (task_night_shifts_rework) */
+  has_night_shifts?: boolean;
 };
 
 /** Строка табеля = сотрудник × его позиция; ФИО объединяется через rowspan. */
@@ -161,6 +164,10 @@ export type EmployeePayroll = {
   /** работа в нерабочий праздничный день календаря */
   holiday_amount: string;
   total_amount: string;
+  /** ночные смены: число отмеченных, ставка фонда отдела и надбавка = смены × ставка */
+  night_shifts?: number;
+  night_rate?: string | null;
+  night_amount?: string;
   vacation_days?: number;
   unpaid_days?: number;
   sick_days?: number;
@@ -204,6 +211,8 @@ type PayrollSummary = {
   total_holiday_amount: string;
   total_vacation_amount?: string;
   total_sick_amount?: string;
+  /** надбавка за ночные смены за месяц (входит в grand_total) */
+  total_night_amount?: string;
   grand_total: string;
   total_premium?: string;
   total_kpi?: string;
@@ -234,6 +243,10 @@ export type MonthResponse = {
   /** видимые актору рабочие места по сотрудникам (табель отдела — только его) */
   positions_by_employee?: Record<number, Position[]>;
   absences?: Absence[];
+  /** отметки выходов в ночь (task_night_shifts_rework) */
+  night_shifts?: NightShift[];
+  /** фонд ночных смен по отделам: ставка, лимит смен и остаток */
+  night_funds?: NightFund[];
   payroll: PayrollSummary | null;
   periods: Period[];
   adjustments?: Adjustment[];
@@ -690,6 +703,34 @@ export function TimesheetPage() {
     return map;
   }, [data]);
 
+  // ── Ночные смены: `empId:posId:day` → отмечена ли ночь ──
+  // Ключ с позицией, потому что флаг «ночные смены» и отдел (а с ним фонд и
+  // ставка) — свойства рабочего места, а не человека.
+  const nightByPosDay = useMemo(() => {
+    const set = new Set<string>();
+    for (const n of data?.night_shifts ?? []) {
+      const day = parseInt(n.work_date.slice(-2), 10);
+      set.add(`${posKey(n.employee_id, n.position_id)}:${day}`);
+    }
+    return set;
+  }, [data]);
+
+  const nightCountByPos = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const n of data?.night_shifts ?? []) {
+      const key = posKey(n.employee_id, n.position_id);
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return map;
+  }, [data]);
+
+  // Фонд ночных смен отдела: ставка, лимит и остаток (индикатор + подсказки).
+  const nightFundByDept = useMemo(() => {
+    const map = new Map<number, NightFund>();
+    for (const f of data?.night_funds ?? []) map.set(f.department_id, f);
+    return map;
+  }, [data]);
+
   // Расчёт — строка на ПОЗИЦИЮ: ключ `empId:posId`, иначе у совместителя
   // вторая позиция затёрла бы первую.
   const payrollByPos = useMemo(() => {
@@ -947,6 +988,28 @@ export function TimesheetPage() {
     [data, entriesByPosDay, saveSlot]
   );
 
+  // ── Ночная смена: отметить/снять выход в ночь ──
+  // Часы дня не трогаем: ночная смена — отдельная подработка и сосуществует с
+  // дневной работой. Лимит фонда отдела проверяет БЭК (409) — здесь только
+  // показываем его сообщение: два человека в разных вкладках иначе
+  // перерасходовали бы фонд.
+  const toggleNight = useCallback(
+    async (emp: Employee, position: Position, day: number, value: boolean) => {
+      try {
+        await timesheetApi.setNightShift({
+          employee_id: emp.id,
+          position_id: positionIdParam(position) ?? null,
+          work_date: dateStr(year, month, day),
+          value,
+        });
+        await afterEdit();
+      } catch (err: any) {
+        toast.error(err?.message ?? String(err));
+      }
+    },
+    [year, month, afterEdit]
+  );
+
   // ── Excel export ──
   const handleExportExcel = async () => {
     setExporting(true);
@@ -1056,7 +1119,7 @@ export function TimesheetPage() {
   const hourTotals = useMemo(() => {
     const acc = {
       norm: 0, normDays: 0, overtime: 0, offSchedule: 0, holiday: 0,
-      vacationDays: 0, sickDays: 0,
+      nightShifts: 0, vacationDays: 0, sickDays: 0,
     };
     for (const pe of data?.payroll?.employees ?? []) {
       acc.norm += num(pe.norm_hours);
@@ -1064,6 +1127,7 @@ export function TimesheetPage() {
       acc.overtime += num(pe.overtime_hours);
       acc.offSchedule += num(pe.off_schedule_hours);
       acc.holiday += num(pe.holiday_hours);
+      acc.nightShifts += pe.night_shifts ?? 0;
       acc.vacationDays += pe.vacation_days ?? 0;
       acc.sickDays += pe.sick_days ?? 0;
     }
@@ -1108,18 +1172,44 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // ФИО,Должность,Отдел,График(4) + дни + Итого ч + денежный блок:
-  // Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Праздн.,Отпуск,Больн,Премия,KPI,
-  // Итого₽,Удержано,К выплате
-  // 4 инфо-колонки + дни + «Итого ч» и блок справа: 14 денежных колонок у
-  // финансовых ролей, 7 часовых у табельщика, ничего у employee.
-  const totalCols = 4 + numDays + 1 + (canSeeMoney ? 14 : canSeeHourStats ? 7 : 0);
+  // ФИО,Должность,Отдел,График(4) + дни + Итого ч + блок справа:
+  //   деньги (15): Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Праздн.,Ночные,
+  //                Отпускные,Больничные,Премия,KPI,Итого₽,Удержано,К выплате
+  //   часы  (8):   Норма,Δ,Сверхур,Вне граф.,Празд.,Ночные см.,Отпуск,Больничный
+  // Числа держим константами: по ним считается colSpan строки «Ночные» и
+  // заглушка ИТОГО, и разъехавшись, они ломают всю таблицу.
+  const MONEY_COLS = 15;
+  const HOUR_COLS = 8;
+  const trailingCols = canSeeMoney ? MONEY_COLS : canSeeHourStats ? HOUR_COLS : 0;
+  const totalCols = 4 + numDays + 1 + trailingCols;
+
+  /** Есть ли у рабочего места ночные смены — только тогда рисуем строку «Ночные». */
+  const hasNight = (position: Position) => Boolean(position.has_night_shifts);
+
+  /**
+   * Сколько СТРОК таблицы занимает сотрудник в этом списке: по строке на
+   * рабочее место плюс строка «Ночные» у тех мест, где ночные включены.
+   * `count` из withSpans считает только позиции, и ФИО-ячейка с ним разъехалась
+   * бы с телом на высоту ночных строк.
+   */
+  const employeeRowSpans = (rows: PositionRow[]) => {
+    const map = new Map<number, number>();
+    for (const r of rows) {
+      map.set(r.emp.id, (map.get(r.emp.id) ?? 0) + 1 + (hasNight(r.position) ? 1 : 0));
+    }
+    return map;
+  };
 
   // Одна строка = одно рабочее место. У сотрудника с единственной позицией
   // строка ровно одна, как было до совместительства; у совместителя ФИО
   // объединяется по его строкам через rowspan.
-  const renderPositionRow = ({ emp, position, index, count }: PositionRow) => {
+  const renderPositionRow = (
+    { emp, position, index, count }: PositionRow,
+    spans?: Map<number, number>,
+  ) => {
     const positionId = positionIdParam(position);
+    // Высота ФИО-ячейки: строки позиций + их строки «Ночные».
+    const nameSpan = spans?.get(emp.id) ?? count;
     const pay = payrollFor(emp, position);
     // Пока суммы ждут пересчёта, часы берём из ячеек: они уже перечитаны, а
     // payroll.total_hours относится к состоянию до правки — иначе введённая
@@ -1135,15 +1225,15 @@ export function TimesheetPage() {
     const isFirst = index === 0;
 
     return (
+      <Fragment key={`${emp.id}-${position.id}`}>
       <tr
-        key={`${emp.id}-${position.id}`}
         className="hover:bg-blue-50/30"
         title={noSchedule ? 'График не задан, автозаполнение по графику недоступно' : undefined}
       >
         {/* ── Sticky-колонка сотрудника: merge на все его позиции ── */}
         {isFirst && (
           <td
-            rowSpan={count}
+            rowSpan={nameSpan}
             className="sticky left-0 bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
             style={{ minWidth: 200, zIndex: 10 }}
             title={emp.full_name}
@@ -1290,6 +1380,12 @@ export function TimesheetPage() {
               {num(pay?.holiday_hours) > 0 ? fmtHours(num(pay?.holiday_hours)) : '—'}
             </td>
             <td
+              className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-indigo-700"
+              title="Ночные смены: отмеченные выходы в ночь (надбавку считает бухгалтерия)"
+            >
+              {pay?.night_shifts ? `${pay.night_shifts} см.` : '—'}
+            </td>
+            <td
               className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
               title={absenceDaysTitle('Отпуск', pay?.vacation_days, pay?.vacation_paid_days)}
             >
@@ -1358,6 +1454,22 @@ export function TimesheetPage() {
               title="Праздничные: работа в нерабочий праздничный день"
             >
               {fmtMoney(pay?.holiday_amount ?? null)}
+            </td>
+            {/* Надбавка за ночные смены — смены × ставка фонда отдела */}
+            <td
+              className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
+              title={
+                pay?.night_shifts
+                  ? `${pay.night_shifts} ночных смен × ${fmtMoney(pay.night_rate ?? null)}`
+                  : 'Надбавка за ночные смены: смены × (фонд отдела ÷ дни месяца)'
+              }
+            >
+              {fmtMoney(pay?.night_amount ?? null)}
+              {!!pay?.night_shifts && (
+                <div className="text-[10px] font-sans text-gray-400 leading-tight">
+                  {pay.night_shifts} см. × {fmtMoney(pay.night_rate ?? null)}
+                </div>
+              )}
             </td>
             {/* Отпускные / больничные — оплата дней отсутствия */}
             <td
@@ -1436,6 +1548,30 @@ export function TimesheetPage() {
           );
         })()}
       </tr>
+
+      {/* ── Строка «Ночные»: отдельная подработка, галочка на день ──
+          Ночная смена не привязана к графику и сосуществует с дневными часами
+          того же дня, поэтому это своя тонкая строка, а не слот в ячейке. */}
+      {hasNight(position) && (
+        <NightRow
+          emp={emp}
+          position={position}
+          numDays={numDays}
+          dayTypes={dayTypes}
+          marked={(d) => nightByPosDay.has(`${posKey(emp.id, position.id)}:${d}`)}
+          count={nightCountByPos.get(posKey(emp.id, position.id)) ?? 0}
+          fund={
+            position.department_id != null
+              ? nightFundByDept.get(position.department_id) ?? null
+              : null
+          }
+          editable={periodEditable}
+          trailingCols={trailingCols}
+          canSeeMoney={canSeeMoney}
+          onToggle={(d, value) => toggleNight(emp, position, d, value)}
+        />
+      )}
+      </Fragment>
     );
   };
 
@@ -1797,6 +1933,7 @@ export function TimesheetPage() {
                     ['Сверхур. ч', 76, 'Переработка: часы сверх дневной нормы смены'],
                     ['Вне граф. ч', 82, 'Выход в свой выходной по графику'],
                     ['Празд. ч', 76, 'Работа в нерабочий праздничный день календаря'],
+                    ['Ночные см.', 82, 'Отмечено выходов в ночь (надбавку считает бухгалтерия)'],
                     ['Отпуск', 70, 'Дни, отмеченные кодом ОТ'],
                     ['Больничный', 92, 'Дни, отмеченные кодом Б (в скобках — сверх годового лимита)'],
                   ].map(([label, width, hint]) => (
@@ -1863,6 +2000,16 @@ export function TimesheetPage() {
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
+                    style={{ minWidth: 110, zIndex: 20 }}
+                    title="Надбавка за ночные смены: число смен × (фонд отдела ÷ календарные дни месяца)"
+                  >
+                    Ночные ₽
+                    <div className="text-[10px] font-normal text-gray-400 leading-tight">
+                      смены × ставка фонда
+                    </div>
+                  </th>
+                  <th
+                    className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
                     style={{ minWidth: 90, zIndex: 20 }}
                     title="Отпускные: оклад / норма × (дни × 8)"
                   >
@@ -1926,14 +2073,23 @@ export function TimesheetPage() {
               </tr>
             )}
 
+            {/* rowspan ФИО считаем внутри отрисовываемого списка: у строки
+                «Ночные» своя высота, и в разных группах у человека разный набор
+                рабочих мест. */}
             {grouped
-              ? groups.map((g) => (
-                  <Fragment key={`grp-${g.deptId ?? 'null'}`}>
-                    {renderGroupDivider(g.deptId, g.name, g.period)}
-                    {g.rows.map((row) => renderPositionRow(row))}
-                  </Fragment>
-                ))
-              : flatRows.map((row) => renderPositionRow(row))}
+              ? groups.map((g) => {
+                  const spans = employeeRowSpans(g.rows);
+                  return (
+                    <Fragment key={`grp-${g.deptId ?? 'null'}`}>
+                      {renderGroupDivider(g.deptId, g.name, g.period)}
+                      {g.rows.map((row) => renderPositionRow(row, spans))}
+                    </Fragment>
+                  );
+                })
+              : (() => {
+                  const spans = employeeRowSpans(flatRows);
+                  return flatRows.map((row) => renderPositionRow(row, spans));
+                })()}
 
             {/* ===== ИТОГО строка ===== */}
             {visibleEmployees.length > 0 && (
@@ -1976,6 +2132,9 @@ export function TimesheetPage() {
                     <td className="border border-gray-300 px-2 py-2 text-center font-mono">
                       {hourTotals.holiday > 0 ? fmtHours(hourTotals.holiday) : ''}
                     </td>
+                    <td className="border border-gray-300 px-2 py-2 text-center font-mono text-indigo-700">
+                      {hourTotals.nightShifts > 0 ? `${hourTotals.nightShifts} см.` : ''}
+                    </td>
                     <td className="border border-gray-300 px-2 py-2 text-center font-mono">
                       {hourTotals.vacationDays > 0 ? `${hourTotals.vacationDays} д` : ''}
                     </td>
@@ -2002,6 +2161,9 @@ export function TimesheetPage() {
                       {fmtMoney(data.payroll.total_holiday_amount)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
+                      {fmtMoney(data.payroll.total_night_amount ?? null)}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono">
                       {fmtMoney(data.payroll.total_vacation_amount ?? null)}
                     </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
@@ -2024,7 +2186,9 @@ export function TimesheetPage() {
                     </td>
                   </>
                 ) : (
-                  [0,1,2,3,4,5,6,7,8,9,10,11,12].map(i => <td key={i} className="border border-gray-300 px-2 py-2" />)
+                  Array.from({ length: MONEY_COLS }, (_, i) => (
+                    <td key={i} className="border border-gray-300 px-2 py-2" />
+                  ))
                 ))}
               </tr>
             )}
@@ -2564,6 +2728,114 @@ function AbsenceChip({
       </span>
       <ChipClose onClick={onClear} title="Убрать отметку" disabled={disabled} />
     </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────
+// NightRow — строка «Ночные» под рабочим местом (task_night_shifts_rework)
+// ──────────────────────────────────────────────────────────────
+//
+// Ночная смена — отдельная подработка: к графику не привязана, часов не даёт и
+// сосуществует с дневной работой того же дня. Поэтому здесь не слоты с часами,
+// а галочка на день: отметил выход в ночь — снял.
+//
+// Ставка вручную не задаётся, она вычисляется из фонда отдела (фонд ÷
+// календарные дни месяца), а лимит числа смен по отделу общий на всех — его
+// остаток и показываем в хвосте строки. Проверяет лимит БЭК: две вкладки
+// иначе перерасходовали бы фонд.
+function NightRow({
+  emp,
+  position,
+  numDays,
+  dayTypes,
+  marked,
+  count,
+  fund,
+  editable,
+  trailingCols,
+  canSeeMoney,
+  onToggle,
+}: {
+  emp: Employee;
+  position: Position;
+  numDays: number;
+  dayTypes: Record<number, DayType>;
+  marked: (day: number) => boolean;
+  count: number;
+  fund: NightFund | null;
+  editable: boolean;
+  trailingCols: number;
+  canSeeMoney: boolean;
+  onToggle: (day: number, value: boolean) => void;
+}) {
+  const rate = fund?.rate ? Number(fund.rate) : null;
+  const amount = rate != null ? Math.round(rate * count) : null;
+  const noFund = fund != null && fund.limit_shifts === 0;
+
+  return (
+    <tr className="bg-indigo-50/40">
+      <td
+        className="border border-gray-200 px-2 py-1 text-[11px] text-indigo-700"
+        colSpan={3}
+        title={
+          'Ночные смены: отдельная подработка, к графику не привязана и с ' +
+          'дневными часами сосуществует. Ставка — из фонда отдела.'
+        }
+      >
+        🌙 Ночные
+        {fund && (
+          <span className="ml-2 text-[10px] text-gray-500">
+            {noFund
+              ? 'фонд отдела не задан'
+              : `осталось ${fund.remaining_shifts} из ${fund.limit_shifts} смен`}
+          </span>
+        )}
+      </td>
+
+      {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => {
+        const on = marked(d);
+        const t = dayTypes[d];
+        const bgClass =
+          t === 'holiday'
+            ? 'bg-red-50/30'
+            : t === 'weekend'
+            ? 'bg-gray-50/40'
+            : '';
+        return (
+          <td key={d} className={`border border-gray-200 text-center p-0.5 ${bgClass}`}>
+            <input
+              type="checkbox"
+              checked={on}
+              disabled={!editable}
+              onChange={(e) => onToggle(d, e.target.checked)}
+              className="cursor-pointer accent-indigo-600 disabled:cursor-not-allowed"
+              title={
+                editable
+                  ? `${emp.full_name} — ${position.display_title}: выход в ночь ${d}-го`
+                  : 'Период закрыт для редактирования'
+              }
+            />
+          </td>
+        );
+      })}
+
+      <td className="border border-gray-200 px-2 py-1 text-center font-mono text-[11px] text-indigo-700">
+        {count > 0 ? `${count} см.` : '—'}
+      </td>
+
+      {trailingCols > 0 && (
+        <td
+          className="border border-gray-200 px-2 py-1 text-right text-[11px] text-gray-600"
+          colSpan={trailingCols}
+        >
+          {count === 0
+            ? '—'
+            : canSeeMoney && rate != null
+            ? `${count} см. × ${fmtMoney(String(rate))} = ${fmtMoney(String(amount))}`
+            : `${count} ночных смен`}
+        </td>
+      )}
+    </tr>
   );
 }
 
