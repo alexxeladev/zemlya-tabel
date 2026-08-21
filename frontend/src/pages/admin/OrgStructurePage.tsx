@@ -44,6 +44,20 @@ type DepartmentForm = {
   name: string
   code: string
   head_company_id: number | null
+  /** фонд ночных смен на месяц; из него считаются ставка и лимит числа смен */
+  night_shift_fund: string
+}
+
+/** Ставка ночной смены = фонд ÷ календарные дни месяца, лимит смен = число дней
+ *  месяца (task_night_shifts_rework). Считаем здесь только для подсказки в форме —
+ *  авторитетно то же самое считает бэк. */
+function nightHint(fund: string): string | null {
+  const value = Number(String(fund).replace(',', '.'))
+  if (!Number.isFinite(value) || value <= 0) return null
+  const now = new Date()
+  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
+  const rate = (value / days).toFixed(2)
+  return `в этом месяце (${days} дн.) — ${rate} ₽ за смену, не более ${days} смен на отдел`
 }
 
 const err = (e: unknown) => (e instanceof ApiError ? e.message : 'Ошибка')
@@ -103,6 +117,14 @@ function DepartmentNode({ dept, onEdit, onDelete, onManagers, onOpenEmployee }: 
           <span className="text-xs text-gray-500">
             {dept.employee_count} чел.
           </span>
+          {dept.night_shift_fund != null && (
+            <span
+              className="text-xs text-indigo-500"
+              title="Фонд ночных смен: из него считаются ставка смены и лимит их числа за месяц"
+            >
+              🌙 {Math.round(Number(dept.night_shift_fund)).toLocaleString('ru-RU')} ₽/мес
+            </span>
+          )}
         </button>
 
         <div className="ml-auto flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -277,6 +299,7 @@ export function OrgStructurePage() {
       name: deptForm.name.trim(),
       code: deptForm.code.trim(),
       head_company_id: deptForm.head_company_id,
+      night_shift_fund: String(Number(deptForm.night_shift_fund.replace(',', '.')) || 0),
     }
     if (!payload.name || !payload.code) {
       toast.error('Название и код обязательны')
@@ -357,6 +380,7 @@ export function OrgStructurePage() {
         name: d.name,
         code: d.code,
         head_company_id: d.head_company_id,
+        night_shift_fund: d.night_shift_fund ?? '100000',
       }),
     onDelete: setDeleteDeptTarget,
     onManagers: setManagersFor,
@@ -395,7 +419,7 @@ export function OrgStructurePage() {
             }
             onDeleteCompany={setDeleteCompanyTarget}
             onAddDepartment={(companyId) =>
-              openDeptForm({ name: '', code: '', head_company_id: companyId })
+              openDeptForm({ name: '', code: '', head_company_id: companyId, night_shift_fund: '100000' })
             }
             {...deptNodeProps}
           />
@@ -531,6 +555,28 @@ export function OrgStructurePage() {
               <p className="mt-1 text-[11px] text-gray-400">
                 Только группировка в дереве. Сотрудники отдела по-прежнему могут работать
                 на любые юрлица — часы и распределение процентов это не ограничивает.
+              </p>
+            </Field>
+
+            {/* Фонд ночных смен (task_night_shifts_rework): задаёт и цену смены,
+                и сколько их всего можно отметить по отделу за месяц. */}
+            <Field label="Фонд ночных смен, ₽/мес">
+              <input
+                className={inputCls}
+                value={deptForm.night_shift_fund}
+                onChange={(e) => setDeptForm({ ...deptForm, night_shift_fund: e.target.value })}
+                placeholder="100000"
+                inputMode="decimal"
+              />
+              <p className="mt-1 text-[11px] text-gray-400">
+                Ставка ночной смены вычисляется как фонд ÷ календарные дни месяца и
+                вручную не задаётся. Столько же смен — предел на весь отдел за месяц:
+                больше отметить нельзя.
+                {nightHint(deptForm.night_shift_fund) && (
+                  <span className="block text-gray-500">
+                    {nightHint(deptForm.night_shift_fund)}
+                  </span>
+                )}
               </p>
             </Field>
 

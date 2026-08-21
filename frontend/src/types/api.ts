@@ -481,6 +481,8 @@ export interface OrgDepartment {
   code: string
   is_active: boolean
   head_company_id: number | null
+  /** фонд ночных смен на месяц: задаёт ставку смены и лимит их числа */
+  night_shift_fund: string | null
   managers: OrgEmployee[]
   /** Количество сотрудников — чтобы свёрнутый узел не рендерил список. */
   employee_count: number
