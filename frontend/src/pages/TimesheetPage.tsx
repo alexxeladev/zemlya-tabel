@@ -715,15 +715,6 @@ export function TimesheetPage() {
     return set;
   }, [data]);
 
-  const nightCountByPos = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const n of data?.night_shifts ?? []) {
-      const key = posKey(n.employee_id, n.position_id);
-      map.set(key, (map.get(key) ?? 0) + 1);
-    }
-    return map;
-  }, [data]);
-
   // Фонд ночных смен отдела: ставка, лимит и остаток (индикатор + подсказки).
   const nightFundByDept = useMemo(() => {
     const map = new Map<number, NightFund>();
@@ -1559,7 +1550,6 @@ export function TimesheetPage() {
           numDays={numDays}
           dayTypes={dayTypes}
           marked={(d) => nightByPosDay.has(`${posKey(emp.id, position.id)}:${d}`)}
-          count={nightCountByPos.get(posKey(emp.id, position.id)) ?? 0}
           fund={
             position.department_id != null
               ? nightFundByDept.get(position.department_id) ?? null
@@ -1567,7 +1557,6 @@ export function TimesheetPage() {
           }
           editable={periodEditable}
           trailingCols={trailingCols}
-          canSeeMoney={canSeeMoney}
           onToggle={(d, value) => toggleNight(emp, position, d, value)}
         />
       )}
@@ -2749,11 +2738,9 @@ function NightRow({
   numDays,
   dayTypes,
   marked,
-  count,
   fund,
   editable,
   trailingCols,
-  canSeeMoney,
   onToggle,
 }: {
   emp: Employee;
@@ -2761,15 +2748,11 @@ function NightRow({
   numDays: number;
   dayTypes: Record<number, DayType>;
   marked: (day: number) => boolean;
-  count: number;
   fund: NightFund | null;
   editable: boolean;
   trailingCols: number;
-  canSeeMoney: boolean;
   onToggle: (day: number, value: boolean) => void;
 }) {
-  const rate = fund?.rate ? Number(fund.rate) : null;
-  const amount = rate != null ? Math.round(rate * count) : null;
   const noFund = fund != null && fund.limit_shifts === 0;
 
   return (
@@ -2819,22 +2802,11 @@ function NightRow({
         );
       })}
 
-      <td className="border border-gray-200 px-2 py-1 text-center font-mono text-[11px] text-indigo-700">
-        {count > 0 ? `${count} см.` : '—'}
-      </td>
-
-      {trailingCols > 0 && (
-        <td
-          className="border border-gray-200 px-2 py-1 text-right text-[11px] text-gray-600"
-          colSpan={trailingCols}
-        >
-          {count === 0
-            ? '—'
-            : canSeeMoney && rate != null
-            ? `${count} см. × ${fmtMoney(String(rate))} = ${fmtMoney(String(amount))}`
-            : `${count} ночных смен`}
-        </td>
-      )}
+      {/* Итог и денежный блок в этой строке ПУСТЫЕ: сколько смен и почём —
+          уже в колонке «Ночные» справа, дублировать это полосой через всю
+          таблицу незачем. */}
+      <td className="border border-gray-200 px-2 py-1" />
+      {trailingCols > 0 && <td className="border border-gray-200 px-2 py-1" colSpan={trailingCols} />}
     </tr>
   );
 }
