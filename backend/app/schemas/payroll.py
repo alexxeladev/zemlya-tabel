@@ -68,6 +68,13 @@ class EmployeePayrollRead(BaseModel):
     holiday_amount: Decimal
     total_amount: Decimal
 
+    # Ночные смены (task_night_shifts_rework): число отмеченных смен, ставка
+    # (фонд отдела / календарные дни месяца) и надбавка = смены × ставка.
+    # Надбавка входит в total_amount и дальше в «к выплате».
+    night_shifts: int = 0
+    night_rate: Decimal | None = None
+    night_amount: Decimal = Decimal("0")
+
     # Отсутствия (ОТ/ДО/Б/Н). *_paid_days — рабочие дни из отмеченных,
     # именно за них считается оплата «оклад/норма × дни × 8».
     vacation_days: int = 0
@@ -127,6 +134,7 @@ class PayrollSummaryRead(BaseModel):
     total_holiday_amount: Decimal
     total_vacation_amount: Decimal = Decimal("0")
     total_sick_amount: Decimal = Decimal("0")
+    total_night_amount: Decimal = Decimal("0")
     grand_total: Decimal
     total_premium: Decimal = Decimal("0")
     total_kpi: Decimal = Decimal("0")

@@ -16,6 +16,7 @@ from app.models.employees import Employee
 from app.models.loan_deductions import LoanDeduction
 from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.absence import AbsenceInput, AbsenceRead
+from app.schemas.night_shift import NightFundRead, NightShiftInput, NightShiftRead
 from app.schemas.payout import (
     AdjustmentCreate,
     AdjustmentRead,
@@ -51,6 +52,12 @@ from app.services.absences import (
     over_limit_sick_dates,
     schedules_by_employee,
     set_absence,
+)
+from app.services.night_shifts import (
+    NightLimitExceeded,
+    get_month_night_shifts,
+    load_night_context,
+    set_night_shift,
 )
 from app.services.payroll_statement import (
     build_payroll_statement,
@@ -491,6 +498,45 @@ def get_month(
         emp.id: visible_positions(emp, actor, department_id) for emp in employees
     }
 
+    # Ночные смены: отметки + состояние фонда отделов, попавших в выдачу.
+    # Фонд считается по ВСЕМУ отделу (не только по видимым сотрудникам) —
+    # иначе остаток лимита на экране расходился бы с проверкой при сохранении.
+    night = load_night_context(
+        db,
+        employees,
+        year,
+        month,
+        department_ids=sorted({
+            pos.department_id
+            for positions in positions_by_employee.values()
+            for pos in positions
+            if pos.department_id is not None
+        }),
+    )
+    night_shifts = [
+        NightShiftRead(
+            employee_id=s.employee_id,
+            position_id=s.position_id,
+            work_date=s.work_date,
+        )
+        for s in get_month_night_shifts(db, employees, year, month)
+    ]
+    hide_money = hides_finances(actor) or not can_see_finances(actor)
+    night_funds = [
+        NightFundRead(
+            department_id=dept_id,
+            department_name=night.name_by_department.get(dept_id),
+            # Фонд и ставка — деньги: у табельщика и сотрудника их нет,
+            # остаётся счётчик смен (сколько отмечено и сколько ещё можно).
+            fund=None if hide_money else night.fund_by_department.get(dept_id),
+            rate=None if hide_money else night.rate_by_department.get(dept_id),
+            limit_shifts=night.limit_by_department.get(dept_id, 0),
+            used_shifts=night.used_by_department.get(dept_id, 0),
+            remaining_shifts=night.remaining_of(dept_id),
+        )
+        for dept_id in sorted(night.limit_by_department)
+    ]
+
     payroll = None
     adjustments: list[AdjustmentRead] = []
     if can_see_finances(actor):
@@ -521,6 +567,8 @@ def get_month(
         extra_companies_by_employee=extra_companies,
         positions_by_employee=positions_by_employee,
         absences=absences,
+        night_shifts=night_shifts,
+        night_funds=night_funds,
         payroll=payroll,
         adjustments=adjustments,
     )
@@ -620,6 +668,51 @@ def save_absence(
         work_date=result.work_date,
         kind=result.kind,
         code=absence_code(result.kind),
+    )
+
+
+# ── Ночные смены (task_night_shifts_rework) ───────────────────────────────────
+
+@router.put("/night-shift", response_model=Optional[NightShiftRead])
+def save_night_shift(
+    payload: NightShiftInput,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """
+    Отметить/снять выход в ночную смену (value=false — снять).
+
+    Права те же, что у ячейки часов: это ФАКТ выхода, а не деньги, — поэтому
+    отмечает и табельщик. Период должен быть в draft.
+
+    Дневные часы дня не трогаются: ночная смена — отдельная подработка и
+    сосуществует с ними. Превышение фонда отдела блокируется на бэке (409):
+    авторитетная проверка здесь, фронт лишь показывает остаток заранее.
+    """
+    _require_timesheet_role(actor)
+    _check_cell_access(actor, payload.employee_id, db, payload.position_id)
+    try:
+        result = set_night_shift(
+            db, actor, payload.employee_id, payload.position_id,
+            payload.work_date, payload.value,
+        )
+    except NightLimitExceeded as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except PeriodLockedException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Период закрыт для редактирования, статус: {exc.status}",
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        )
+    if result is None:
+        return None
+    return NightShiftRead(
+        employee_id=result.employee_id,
+        position_id=result.position_id,
+        work_date=result.work_date,
     )
 
 

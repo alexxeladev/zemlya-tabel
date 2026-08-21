@@ -40,8 +40,9 @@ class EmployeePositionBase(BaseModel):
     holiday_coefficient: Optional[Decimal] = None
     holiday_fixed_rate: Optional[Decimal] = None
     overtime_coefficient: Optional[Decimal] = None
+    # Ставка ночной смены на позиции НЕ задаётся: она вычисляется из фонда
+    # отдела (task_night_shifts_rework), здесь остался только флаг.
     has_night_shifts: bool = False
-    night_rate: Optional[Decimal] = None
     is_active: bool = True
     sort_order: int = 0
 
@@ -69,7 +70,6 @@ class EmployeePositionUpdate(BaseModel):
     holiday_fixed_rate: Optional[Decimal] = None
     overtime_coefficient: Optional[Decimal] = None
     has_night_shifts: Optional[bool] = None
-    night_rate: Optional[Decimal] = None
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
 

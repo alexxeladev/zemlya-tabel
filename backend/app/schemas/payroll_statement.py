@@ -115,7 +115,14 @@ class StatementRow(BaseModel):
     sick_unpaid_days: int = 0
     sick_limit_remaining: int = 0
 
+    # Надбавка за ночные смены (task_night_shifts_rework): число смен × ставка
+    # (фонд отдела / календарные дни месяца). Входит в «Итого начислено».
+    night_shifts: int = 0
+    night_rate: Decimal | None = None
+    night_amount: Decimal = Decimal("0")
+
     # Итого начислено = оклад + переработка + отпускные + больничные + премии + KPI
+    #                   + надбавка за ночные
     accrued_total: Decimal
     deductions: Decimal           # Аванс/Удержано (займ + аванс)
     net_payout: Decimal           # К выплате — округлено вниз до 100 ₽
@@ -145,6 +152,7 @@ class PayrollStatementRead(BaseModel):
     total_base_salary: Decimal
     total_vacation_amount: Decimal = Decimal("0")
     total_sick_amount: Decimal = Decimal("0")
+    total_night_amount: Decimal = Decimal("0")
     total_premium: Decimal
     total_kpi: Decimal
     total_accrued: Decimal

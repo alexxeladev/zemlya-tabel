@@ -263,6 +263,18 @@ def hourly_overtime_hours(
     return overtime
 
 
+def _night_amount(shifts: int, rate: Decimal | None) -> Decimal:
+    """Надбавка за ночные смены = число смен × ставка.
+
+    Ставку считает `services.night_shifts` (фонд отдела / календарные дни
+    месяца) и передаёт сюда готовой — расчёт остаётся чистой функцией и в БД
+    за фондом не ходит.
+    """
+    if not shifts or shifts <= 0 or rate is None or rate <= _ZERO:
+        return _ZERO
+    return Decimal(rate) * Decimal(shifts)
+
+
 def absence_day_hours(schedule) -> Decimal:
     """
     Сколько часов «стоит» один оплачиваемый день отсутствия — ДЛИНА СМЕНЫ
@@ -367,6 +379,13 @@ class EmployeePayroll:
     holiday_amount: Decimal
     total_amount: Decimal
 
+    # Ночные смены (task_night_shifts_rework) — НАДБАВКА СВЕРХУ дневного расчёта.
+    # К графику не привязаны, часов не дают: `night_shifts × night_rate`, где
+    # ставка вычислена из фонда отдела (фонд / календарные дни месяца).
+    night_shifts: int
+    night_rate: Decimal | None
+    night_amount: Decimal
+
     # Отсутствия (ОТ/ДО/Б/Н). *_days — сколько дней отмечено кодом,
     # *_paid_days — сколько из них рабочих по календарю (за них и платим).
     vacation_days: int
@@ -399,6 +418,8 @@ def calculate_employee_payroll(
     absences: list | None = None,
     sick_days_used_before: int = 0,
     sick_limit: int | None = None,
+    night_shifts: int = 0,
+    night_rate: Decimal | None = None,
 ) -> EmployeePayroll:
     """Расчёт по ОСНОВНОЙ позиции сотрудника.
 
@@ -409,6 +430,7 @@ def calculate_employee_payroll(
     return calculate_position_payroll(
         employee, employee.primary_position, entries, calendar_data, year, month,
         companies_by_id, absences, sick_days_used_before, sick_limit,
+        night_shifts, night_rate,
     )
 
 
@@ -423,6 +445,8 @@ def calculate_position_payroll(
     absences: list | None = None,
     sick_days_used_before: int = 0,
     sick_limit: int | None = None,
+    night_shifts: int = 0,
+    night_rate: Decimal | None = None,
 ) -> EmployeePayroll:
     """
     Чистая функция: считает зарплату ОДНОЙ ПОЗИЦИИ сотрудника за период.
@@ -442,6 +466,10 @@ def calculate_position_payroll(
         году ДО текущего месяца (годовой лимит, часть 2) — считает вызывающий
         код по всем месяцам года, здесь только применяется остаток.
     sick_limit: годовой лимит дней; None — из настроек.
+    night_shifts / night_rate: сколько ночных смен отмечено на этом рабочем
+        месте и почём (ставка вычислена из фонда отдела — `services.night_shifts`).
+        Надбавка идёт СВЕРХУ дневного расчёта и от него не зависит: ночная смена
+        к графику не привязана, часов не даёт и оклад не меняет.
     """
     if companies_by_id is None:
         companies_by_id = {}
@@ -727,18 +755,24 @@ def calculate_position_payroll(
                 hourly_rate, absence_paid_days[AbsenceKind.sick.value], day_hours
             )
 
+    # Ночные — надбавка сверху: считается ТОЛЬКО от числа смен и ставки фонда,
+    # поэтому начисляется и позиции, у которой дневной расчёт невозможен (нет
+    # оклада или графика) — ночная смена к графику не привязана.
+    night_amount = _round(_night_amount(night_shifts, night_rate))
+
     base_amount = _round(base_amount)
     overtime_amount = _round(overtime_amount)
     off_schedule_amount = _round(off_schedule_amount)
     holiday_amount = _round(holiday_amount)
     vacation_amount = _round(vacation_amount)
     sick_amount = _round(sick_amount)
-    # Итог включает оплату отсутствий; распределение по компаниям (breakdown)
-    # ниже — только по «рабочим» категориям: отсутствие к юрлицу не привязано,
-    # разнесение отпускных по юрлицам делает ведомость (проценты каскада).
+    # Итог включает оплату отсутствий и надбавку за ночные; распределение по
+    # компаниям (breakdown) ниже — только по «рабочим» категориям: отсутствие и
+    # ночная смена к юрлицу не привязаны, разнесение по юрлицам делает ведомость
+    # (проценты каскада).
     total_amount = (
         base_amount + overtime_amount + off_schedule_amount + holiday_amount
-        + vacation_amount + sick_amount
+        + vacation_amount + sick_amount + night_amount
     )
 
     # Company breakdown — суммы частей по каждой категории сходятся с итогом
@@ -815,6 +849,9 @@ def calculate_position_payroll(
         off_schedule_amount=off_schedule_amount,
         holiday_amount=holiday_amount,
         total_amount=total_amount,
+        night_shifts=max(0, night_shifts),
+        night_rate=night_rate,
+        night_amount=night_amount,
         vacation_days=absence_days[AbsenceKind.vacation.value],
         unpaid_days=absence_days[AbsenceKind.unpaid.value],
         sick_days=absence_days[AbsenceKind.sick.value],

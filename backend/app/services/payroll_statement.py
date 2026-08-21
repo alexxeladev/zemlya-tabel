@@ -38,6 +38,7 @@ from app.services.company_shares import (
     load_month_overrides,
 )
 from app.services.distribution import distribute
+from app.services.night_shifts import load_night_context
 from app.services.payout import (
     compute_payout,
     load_adjustment_reasons,
@@ -145,6 +146,10 @@ def build_payroll_summary(
     sick_used_before = sick_days_used_before_month(
         db, emp_ids, year, month, calendar_data, schedules_by_employee(employees)
     )
+    # Ночные смены: сколько отмечено на каждом рабочем месте и почём (ставка =
+    # фонд отдела / календарные дни месяца). Надбавка идёт сверху дневного
+    # расчёта — см. `services.night_shifts`.
+    night = load_night_context(db, employees, year, month)
 
     payroll_items: list[EmployeePayrollRead] = []
     for emp, position in _payroll_rows(employees, actor, department_id):
@@ -156,6 +161,8 @@ def build_payroll_summary(
             emp, position, emp_entries, calendar_data, year, month, companies_by_id,
             absences=absences_by_employee.get(emp.id, []),
             sick_days_used_before=sick_used_before.get(emp.id, 0),
+            night_shifts=night.shifts_of(position),
+            night_rate=night.rate_of(position),
         )
 
         # Премии/KPI/аванс и займ адресованы КОНКРЕТНОЙ позиции: деньги
@@ -224,6 +231,9 @@ def build_payroll_summary(
             off_schedule_amount=p.off_schedule_amount,
             holiday_amount=p.holiday_amount,
             total_amount=p.total_amount,
+            night_shifts=p.night_shifts,
+            night_rate=p.night_rate,
+            night_amount=p.night_amount,
             vacation_days=p.vacation_days,
             unpaid_days=p.unpaid_days,
             sick_days=p.sick_days,
@@ -270,6 +280,7 @@ def build_payroll_summary(
         total_holiday_amount=sum((p.holiday_amount for p in payroll_items), _ZERO),
         total_vacation_amount=sum((p.vacation_amount for p in payroll_items), _ZERO),
         total_sick_amount=sum((p.sick_amount for p in payroll_items), _ZERO),
+        total_night_amount=sum((p.night_amount for p in payroll_items), _ZERO),
         grand_total=sum((p.total_amount for p in payroll_items), _ZERO),
         total_premium=sum((p.premium_amount for p in payroll_items), _ZERO),
         total_kpi=sum((p.kpi_amount for p in payroll_items), _ZERO),
@@ -441,11 +452,12 @@ def build_payroll_statement(
         # (вне графика и праздничные): отдельных колонок под них в форме
         # финдира нет, а в базу распределения по юрлицам они входить обязаны.
         base_salary = p.base_amount + p.off_schedule_amount + p.holiday_amount
-        # Отпускные/больничные — часть «Итого начислено» и, значит, базы
-        # распределения по юрлицам (само отсутствие к юрлицу не привязано).
+        # Отпускные/больничные и надбавка за ночные — часть «Итого начислено» и,
+        # значит, базы распределения по юрлицам (ни отсутствие, ни ночная смена
+        # к юрлицу не привязаны — их разносит каскад процентов).
         accrued = (
             base_salary + p.overtime_amount + p.vacation_amount + p.sick_amount
-            + p.premium_amount + p.kpi_amount
+            + p.night_amount + p.premium_amount + p.kpi_amount
         )
         main_company = position.company if position else None
 
@@ -535,6 +547,9 @@ def build_payroll_statement(
             sick_limit_days=p.sick_limit_days,
             sick_unpaid_days=p.sick_unpaid_days,
             sick_limit_remaining=p.sick_limit_remaining,
+            night_shifts=p.night_shifts,
+            night_rate=p.night_rate,
+            night_amount=p.night_amount,
             accrued_total=accrued,
             deductions=p.total_deductions,
             net_payout=p.net_payout,
@@ -559,6 +574,7 @@ def build_payroll_statement(
         total_base_salary=sum((r.base_salary for r in rows), _ZERO),
         total_vacation_amount=sum((r.vacation_amount for r in rows), _ZERO),
         total_sick_amount=sum((r.sick_amount for r in rows), _ZERO),
+        total_night_amount=sum((r.night_amount for r in rows), _ZERO),
         total_premium=sum((r.premium_amount for r in rows), _ZERO),
         total_kpi=sum((r.kpi_amount for r in rows), _ZERO),
         total_accrued=sum((r.accrued_total for r in rows), _ZERO),
