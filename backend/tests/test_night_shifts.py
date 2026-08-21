@@ -304,6 +304,64 @@ class TestMarking:
         assert len(day_cells) == 1 and day_cells[0]["hours"] == 8
         assert len(night) == 1
 
+    def test_absence_removes_night_shift(
+        self, client: TestClient, admin, worker, calendar_2026, db_session
+    ):
+        """Код отсутствия ставится на ВЕСЬ день — ночная отметка этого дня
+        снимается вместе с часами: человек либо отсутствует, либо выходит."""
+        assert _mark(client, worker, 3).status_code == 200
+        assert db_session.query(NightShift).count() == 1
+
+        resp = client.put(
+            "/api/timesheet/absence",
+            json={"employee_id": worker.id, "work_date": "2026-07-03", "kind": "sick"},
+            headers=_auth(client),
+        )
+        assert resp.status_code == 200
+        assert db_session.query(NightShift).count() == 0
+
+        # Освободившаяся смена вернулась в лимит отдела
+        month = client.get("/api/timesheet/2026/7", headers=_auth(client)).json()
+        fund = month["night_funds"][0]
+        assert fund["used_shifts"] == 0
+
+    def test_night_shift_rejected_on_absence_day(
+        self, client: TestClient, admin, worker, calendar_2026, db_session
+    ):
+        """Обратная сторона: на день с кодом ночную не отметить.
+
+        Код НЕ снимается молча (в отличие от часов): отсутствие отмечено на
+        человеке целиком, а галочка ставится одному рабочему месту.
+        """
+        client.put(
+            "/api/timesheet/absence",
+            json={"employee_id": worker.id, "work_date": "2026-07-03", "kind": "vacation"},
+            headers=_auth(client),
+        )
+        resp = _mark(client, worker, 3)
+        assert resp.status_code == 422
+        assert "ОТ" in resp.json()["detail"]
+        assert db_session.query(NightShift).count() == 0
+
+    def test_day_hours_still_coexist_with_night(
+        self, client: TestClient, admin, worker, company, calendar_2026, db_session
+    ):
+        """Регрессия к AC6: запрет касается ТОЛЬКО отсутствий. Ввод дневных
+        часов ночную отметку не трогает."""
+        _mark(client, worker, 4)
+        client.put(
+            "/api/timesheet/cell",
+            json={
+                "employee_id": worker.id,
+                "position_id": worker.primary_position.id,
+                "work_date": "2026-07-04",
+                "company_id": company.id,
+                "hours": 8,
+            },
+            headers=_auth(client),
+        )
+        assert db_session.query(NightShift).count() == 1
+
     def test_flag_required(
         self, client: TestClient, admin, dept, company, schedule, calendar_2026, db_session
     ):

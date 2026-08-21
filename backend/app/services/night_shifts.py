@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
 from app.models.departments import DEFAULT_NIGHT_SHIFT_FUND, Department
+from app.models.employee_absences import ABSENCE_CODES, EmployeeAbsence
 from app.models.employees import Employee
 from app.models.night_shifts import NightShift
 from app.models.positions import EmployeePosition
@@ -312,6 +313,26 @@ def set_night_shift(
 
     if existing is not None:
         return existing  # уже отмечено — повторный клик лимит не тратит
+
+    # Взаимоисключение с отсутствием: с дневными часами ночная смена
+    # сосуществует, а с кодом ОТ/ДО/Б/Н — нет, человек в этот день не работает
+    # нигде. Код НЕ снимаем молча (в отличие от часов): отсутствие отмечено на
+    # человеке целиком, и убирать его из-за галочки на одном рабочем месте
+    # нельзя — просим снять код явно.
+    absence = (
+        db.query(EmployeeAbsence)
+        .filter(
+            EmployeeAbsence.employee_id == employee_id,
+            EmployeeAbsence.work_date == work_date,
+        )
+        .first()
+    )
+    if absence is not None:
+        raise ValueError(
+            f"В этот день отмечено отсутствие "
+            f"({ABSENCE_CODES.get(absence.kind, absence.kind)}) — "
+            "снимите код, чтобы отметить ночную смену"
+        )
 
     department = position.department
     fund = department_fund(department)
