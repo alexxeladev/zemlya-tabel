@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { timesheetApi } from '../api/timesheet'
+import { usePersistentState } from '../hooks/usePersistentState'
 import { toast } from '../store/toasts'
 import type { DepartmentApplications } from '../types/api'
 import { companyColorByIndex } from '../utils/colors'
 import { companyLabel } from '../utils/companies'
 import { distribute } from '../utils/distribution'
+import { UI_KEYS } from '../utils/persist'
 import { Button } from './Button'
 
 /** Минимум, нужный блоку: табель держит свой облегчённый тип компании. */
@@ -49,15 +51,53 @@ const fmtPercent = (v: number): string =>
  * отличие от процентов, приходят с бэка: пересобирать «Итого начислено» из
  * кусков расчёта на фронте нельзя — разъедется с ведомостью.
  *
- * Блок показывается только для отделов с флагом.
+ * Блок показывается только для отделов с флагом и **сворачивается** — вместе с
+ * колонками распределения он съедал пол-экрана. Свёрнутый оставляет в заголовке
+ * главные цифры (сколько заявок и сколько по ним распределено), выбор
+ * запоминается (`UI_KEYS.timesheetApplications`) и переживает перезагрузку.
+ * Свёрнутый блок остаётся смонтированным (`hidden`), а не размонтируется:
+ * иначе набранные, но не сохранённые цифры молча пропали бы.
  */
 export function ApplicationsPanel({
   applications, companies, year, month, canEdit, totalsByDepartment, onSaved,
 }: Props) {
+  // Хук ДО раннего выхода: вызов после условного return ломает порядок хуков.
+  const [open, setOpen] = usePersistentState(
+    UI_KEYS.timesheetApplications, false, (v) => typeof v === 'boolean',
+  )
   if (applications.length === 0) return null
+
+  const totalApplications = applications.reduce((s, d) => s + d.total_applications, 0)
+  const totalMoney = applications.reduce(
+    (s, d) => s + (totalsByDepartment?.get(d.department_id)?.grand ?? 0), 0,
+  )
+  const names = applications.map((d) => d.department_name ?? 'отдел').join(', ')
+
   return (
-    <div className="flex-shrink-0 border-b border-gray-200 bg-emerald-50/40 px-6 py-3">
-      <div className="flex flex-col gap-4">
+    <div className="flex-shrink-0 border-b border-gray-200 bg-emerald-50/40">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1.5 px-6 py-1.5 text-left text-xs font-semibold uppercase tracking-wide text-emerald-700 hover:bg-emerald-100/60"
+        title={open ? 'Свернуть заявки' : 'Развернуть заявки'}
+      >
+        <span className="text-[10px] leading-none">{open ? '▾' : '▸'}</span>
+        📋 Заявки на подбор — {names}
+        {open ? (
+          <span className="font-normal normal-case tracking-normal text-gray-500">
+            зарплата отдела делится по этим процентам (обычный каскад не применяется)
+          </span>
+        ) : (
+          <span className="font-normal normal-case tracking-normal text-gray-500">
+            — свёрнуто · заявок: {fmtInt(totalApplications)}
+            {totalMoney > 0 && ` · распределено: ${fmtInt(Math.round(totalMoney))} ₽`}
+          </span>
+        )}
+      </button>
+      {/* Свёрнутый блок остаётся в DOM (набранное не теряется), но display
+          переключается КЛАССОМ: атрибут hidden не сработал бы — `display:flex`
+          из класса перебивает правило браузера для [hidden]. */}
+      <div className={`flex-col gap-4 px-6 pb-3 ${open ? 'flex' : 'hidden'}`}>
         {applications.map((dept) => (
           <DepartmentBlock
             key={dept.department_id}
@@ -186,12 +226,11 @@ function DepartmentBlock({
 
   return (
     <div>
+      {/* Название отдела и пояснение — в заголовке всего блока (он же кнопка
+          сворачивания); здесь остаются только кнопки сохранения. */}
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700">
-          📋 Заявки на подбор — {dept.department_name ?? 'отдел'}
-        </span>
-        <span className="text-xs text-gray-500">
-          зарплата отдела делится по этим процентам (обычный каскад не применяется)
+        <span className="text-xs font-medium text-gray-500">
+          {dept.department_name ?? 'отдел'}
         </span>
         {canEdit && (
           <span className="ml-auto flex items-center gap-2">
