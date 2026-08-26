@@ -31,7 +31,7 @@ import { usePersistentState } from '../hooks/usePersistentState';
 import { UI_KEYS } from '../utils/persist';
 import { TimesheetCompanyView } from './TimesheetCompanyView';
 import { ApplicationsPanel } from '../components/ApplicationsPanel';
-import type { AbsenceKind, AutofillPreview, DepartmentApplications, NightFund, NightShift } from '../types/api';
+import type { AbsenceKind, ApplicationsDistributionRow, AutofillPreview, DepartmentApplications, NightFund, NightShift } from '../types/api';
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
@@ -250,6 +250,8 @@ export type MonthResponse = {
   night_funds?: NightFund[];
   /** заявки на подбор отделов с флагом «распределение по заявкам» */
   applications?: DepartmentApplications[];
+  /** суммы распределения по юрлицам для строк таких отделов (считает бэк) */
+  applications_distribution?: ApplicationsDistributionRow[];
   payroll: PayrollSummary | null;
   periods: Period[];
   adjustments?: Adjustment[];
@@ -591,7 +593,14 @@ export function TimesheetPage() {
         setData((prev) =>
           withPayroll || !prev
             ? monthData
-            : { ...monthData, payroll: prev.payroll }
+            : {
+                ...monthData,
+                payroll: prev.payroll,
+                // Суммы распределения считаются вместе с расчётом: без него бэк
+                // присылает пустой список, и колонки «Распределение» мигали бы
+                // прочерками на каждую введённую цифру.
+                applications_distribution: prev.applications_distribution,
+              }
         );
         setCalendar(cal);
         return true;
@@ -1174,7 +1183,51 @@ export function TimesheetPage() {
   // заглушка ИТОГО, и разъехавшись, они ломают всю таблицу.
   const MONEY_COLS = 15;
   const HOUR_COLS = 8;
-  const trailingCols = canSeeMoney ? MONEY_COLS : canSeeHourStats ? HOUR_COLS : 0;
+
+  // ── Блок «Распределение» (task_hr_applications) ──
+  // Показывается только в табеле отдела «по заявкам» и только тем, кто видит
+  // деньги. Видимость завязана на сами ЗАЯВКИ, а не на присланные суммы: суммы
+  // приходят вместе с расчётом, и колонки прыгали бы после каждой правки часа.
+  const distributionOn =
+    canSeeMoney && (data?.applications ?? []).some((a) => !a.is_empty);
+  const distCompanies = distributionOn ? (data?.companies ?? []) : [];
+  const distCols = distributionOn ? distCompanies.length + 1 : 0;
+  /** posKey → {company_id: сумма} — суммы считает бэк, фронт их только рисует. */
+  const distByPos = useMemo(() => {
+    const map = new Map<string, Record<number, string>>();
+    for (const r of data?.applications_distribution ?? []) {
+      map.set(posKey(r.employee_id, r.position_id), r.amounts);
+    }
+    return map;
+  }, [data?.applications_distribution]);
+  /**
+   * Итоги распределения по юрлицам — общие (строка подвала) и ОТДЕЛЬНО по
+   * каждому отделу: в режиме «все отделы» флаг может стоять у нескольких, и
+   * одна общая сумма в блоке заявок отдела была бы враньём.
+   */
+  const distTotals = useMemo(() => {
+    const totals: Record<number, number> = {};
+    const byDept = new Map<number, { totals: Record<number, number>; grand: number }>();
+    let grand = 0;
+    for (const r of data?.applications_distribution ?? []) {
+      const dept = r.department_id;
+      if (dept != null && !byDept.has(dept)) byDept.set(dept, { totals: {}, grand: 0 });
+      const bucket = dept != null ? byDept.get(dept)! : null;
+      for (const [cid, amount] of Object.entries(r.amounts)) {
+        const value = num(amount);
+        totals[Number(cid)] = (totals[Number(cid)] ?? 0) + value;
+        grand += value;
+        if (bucket) {
+          bucket.totals[Number(cid)] = (bucket.totals[Number(cid)] ?? 0) + value;
+          bucket.grand += value;
+        }
+      }
+    }
+    return { totals, grand, byDept };
+  }, [data?.applications_distribution]);
+
+  const trailingCols =
+    (canSeeMoney ? MONEY_COLS : canSeeHourStats ? HOUR_COLS : 0) + distCols;
   const totalCols = 4 + numDays + 1 + trailingCols;
 
   /** Есть ли у рабочего места ночные смены — только тогда рисуем строку «Ночные». */
@@ -1542,6 +1595,36 @@ export function TimesheetPage() {
             >
               {pay?.is_calculable ? fmtMoney(pay?.net_payout ?? null) : '—'}
             </td>
+            {/* ── Распределение по заявкам (task_hr_applications) ──
+                 Суммы приходят с бэка теми же числами, что в ведомости; фронт
+                 «Итого начислено» из кусков расчёта не пересобирает. */}
+            {distributionOn && (() => {
+              const amounts = distByPos.get(posKey(emp.id, position.id)) ?? null;
+              const rowTotal = amounts
+                ? Object.values(amounts).reduce((acc, v) => acc + num(v), 0)
+                : 0;
+              return (
+                <>
+                  {distCompanies.map((c) => (
+                    <td
+                      key={`dist-${c.id}`}
+                      {...trailingSpan}
+                      className="border border-gray-200 px-2 py-2 text-right font-mono text-xs bg-emerald-50/30"
+                    >
+                      {amounts && num(amounts[c.id]) > 0
+                        ? fmtMoney(String(amounts[c.id]))
+                        : '—'}
+                    </td>
+                  ))}
+                  <td
+                    {...trailingSpan}
+                    className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-emerald-800 bg-emerald-100/60"
+                  >
+                    {rowTotal > 0 ? fmtMoney(String(rowTotal)) : '—'}
+                  </td>
+                </>
+              );
+            })()}
           </>
           );
         })()}
@@ -1838,6 +1921,7 @@ export function TimesheetPage() {
         year={year}
         month={month}
         canEdit={canSeeMoney}
+        totalsByDepartment={distributionOn ? distTotals.byDept : undefined}
         onSaved={reload}
       />
 
@@ -2065,6 +2149,28 @@ export function TimesheetPage() {
                   </th>
                 </>
               )}
+              {/* Распределение начисленного по юрлицам — по заявкам на подбор */}
+              {distributionOn && (
+                <>
+                  {distCompanies.map((c) => (
+                    <th
+                      key={`dist-h-${c.id}`}
+                      className="sticky top-0 bg-emerald-50 border border-gray-200 px-2 py-2 text-right font-medium text-emerald-800"
+                      style={{ minWidth: 90, zIndex: 20 }}
+                      title={`Распределение по заявкам: ${c.name}`}
+                    >
+                      {c.code}
+                    </th>
+                  ))}
+                  <th
+                    className="sticky top-0 bg-emerald-100 border border-gray-200 px-2 py-2 text-right font-semibold text-emerald-900"
+                    style={{ minWidth: 100, zIndex: 20 }}
+                    title="Итого распределено — равно «Итого ₽» строки"
+                  >
+                    ИТОГО
+                  </th>
+                </>
+              )}
             </tr>
           </thead>
 
@@ -2198,6 +2304,25 @@ export function TimesheetPage() {
                     <td key={i} className="border border-gray-300 px-2 py-2" />
                   ))
                 ))}
+                {/* Итоги распределения по юрлицам — как строка сумм в файле HR.
+                    Считаются по ВСЕМ строкам месяца, как и остальные итоги. */}
+                {distributionOn && (
+                  <>
+                    {distCompanies.map((c) => (
+                      <td
+                        key={`dist-t-${c.id}`}
+                        className="border border-gray-300 px-2 py-2 text-right font-mono font-semibold text-emerald-800 bg-emerald-100"
+                      >
+                        {distTotals.totals[c.id] > 0
+                          ? fmtMoney(String(distTotals.totals[c.id]))
+                          : '—'}
+                      </td>
+                    ))}
+                    <td className="border border-gray-300 px-2 py-2 text-right font-mono font-bold text-emerald-900 bg-emerald-200/70">
+                      {distTotals.grand > 0 ? fmtMoney(String(distTotals.grand)) : '—'}
+                    </td>
+                  </>
+                )}
               </tr>
             )}
 
