@@ -48,15 +48,15 @@ def applications_department_ids(
     return {r[0] for r in query.all()}
 
 
-def load_application_counts(
+def load_applications(
     db: Session, dept_ids: list[int] | set[int], year: int, month: int
-) -> dict[int, dict[int, int]]:
-    """{department_id: {company_id: заявок}} за КОНКРЕТНЫЙ месяц.
+) -> dict[int, dict[int, tuple[int, int]]]:
+    """{department_id: {company_id: (в работе, закрытые)}} за КОНКРЕТНЫЙ месяц.
 
     Заявки помесячные: в наборе только строки этого года и месяца, прошлый месяц
     на распределение не влияет.
     """
-    result: dict[int, dict[int, int]] = {}
+    result: dict[int, dict[int, tuple[int, int]]] = {}
     ids = {d for d in dept_ids if d is not None}
     if not ids:
         return result
@@ -71,8 +71,24 @@ def load_application_counts(
     )
     for r in rows:
         if r.count > 0:
-            result.setdefault(r.department_id, {})[r.company_id] = r.count
+            result.setdefault(r.department_id, {})[r.company_id] = (
+                r.in_progress or 0, r.closed or 0,
+            )
     return result
+
+
+def load_application_counts(
+    db: Session, dept_ids: list[int] | set[int], year: int, month: int
+) -> dict[int, dict[int, int]]:
+    """{department_id: {company_id: ВСЕГО заявок}} — то, чем считается распределение.
+
+    Всего = в работе + закрытые: обе части равноправны, платит отдел за все
+    отработанные заявки, а не только за закрытые.
+    """
+    return {
+        dept_id: {cid: work + closed for cid, (work, closed) in by_company.items()}
+        for dept_id, by_company in load_applications(db, dept_ids, year, month).items()
+    }
 
 
 def application_weights(counts: dict[int, int]) -> dict[int, Decimal]:
@@ -118,7 +134,7 @@ def department_applications_state(
     flagged = applications_department_ids(db, dept_ids)
     if not flagged:
         return []
-    counts_by_dept = load_application_counts(db, flagged, year, month)
+    parts_by_dept = load_applications(db, flagged, year, month)
     names = dict(
         db.query(Department.id, Department.name)
         .filter(Department.id.in_(flagged))
@@ -126,7 +142,8 @@ def department_applications_state(
     )
     state: list[DepartmentApplicationsRead] = []
     for dept_id in sorted(flagged):
-        counts = counts_by_dept.get(dept_id, {})
+        parts = parts_by_dept.get(dept_id, {})
+        counts = {cid: work + closed for cid, (work, closed) in parts.items()}
         percents = application_percents(counts)
         state.append(DepartmentApplicationsRead(
             department_id=dept_id,
@@ -135,10 +152,16 @@ def department_applications_state(
             month=month,
             applications=[
                 ApplicationShareRead(
-                    company_id=cid, count=counts[cid], percent=percents.get(cid, _ZERO)
+                    company_id=cid,
+                    in_progress=parts[cid][0],
+                    closed=parts[cid][1],
+                    count=counts[cid],
+                    percent=percents.get(cid, _ZERO),
                 )
-                for cid in sorted(counts)
+                for cid in sorted(parts)
             ],
+            total_in_progress=sum(work for work, _ in parts.values()),
+            total_closed=sum(closed for _, closed in parts.values()),
             total_applications=applications_total(counts),
             is_empty=not counts,
         ))
@@ -161,13 +184,14 @@ def set_department_applications(
         DepartmentApplication.month == month,
     ).delete(synchronize_session=False)
     for item in items:
-        if item.count <= 0:
+        if (item.in_progress or 0) + (item.closed or 0) <= 0:
             continue
         db.add(DepartmentApplication(
             department_id=department_id,
             company_id=item.company_id,
             year=year,
             month=month,
-            count=item.count,
+            in_progress=item.in_progress or 0,
+            closed=item.closed or 0,
             created_by_id=actor_id,
         ))

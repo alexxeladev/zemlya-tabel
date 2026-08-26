@@ -69,6 +69,7 @@ from app.services.applications import (
     set_department_applications,
 )
 from app.services.payroll_statement import (
+    build_applications_distribution,
     build_payroll_statement,
     build_payroll_summary,
 )
@@ -510,7 +511,10 @@ def set_applications(
     log_action(
         db, actor, "department_applications", dept.id, "set",
         after={"year": payload.year, "month": payload.month,
-               "applications": {i.company_id: i.count for i in payload.applications}},
+               "applications": {
+                   i.company_id: {"in_progress": i.in_progress, "closed": i.closed}
+                   for i in payload.applications
+               }},
     )
     db.commit()
     state = department_applications_state(db, [dept.id], payload.year, payload.month)
@@ -670,6 +674,15 @@ def get_month(
         payroll = _build_payroll_summary(
             db, employees, entries, year, month, actor, department_id
         )
+    # Суммы распределения по заявкам — для блока «Распределение» в табеле.
+    # Только когда расчёт вообще считался: делить нечего, пока нет начисленного.
+    applications_distribution = (
+        build_applications_distribution(
+            db, payroll, positions_by_employee, year, month
+        )
+        if applications and payroll is not None
+        else []
+    )
     # include_payroll от employee игнорируем молча — проверка принудительная на
     # бэке, а не «по просьбе» фронта.
 
@@ -686,6 +699,7 @@ def get_month(
         night_shifts=night_shifts,
         night_funds=night_funds,
         applications=applications,
+        applications_distribution=applications_distribution,
         payroll=payroll,
         adjustments=adjustments,
     )

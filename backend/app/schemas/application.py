@@ -6,15 +6,21 @@ from pydantic import BaseModel, Field
 
 
 class ApplicationCountInput(BaseModel):
-    """Число заявок на подбор, отработанных для юрлица за месяц."""
+    """Заявки на подбор для юрлица за месяц: в работе и закрытые.
+
+    Общее число не передаётся — оно всегда сумма этих двух (см. модель).
+    """
 
     company_id: int
-    count: int = Field(ge=0)
+    in_progress: int = Field(default=0, ge=0)
+    closed: int = Field(default=0, ge=0)
 
 
 class ApplicationShareRead(ApplicationCountInput):
-    """Заявки компании вместе с вычисленным из них процентом распределения."""
+    """Заявки компании + вычисленные общее число и процент распределения."""
 
+    # Всего заявок = в работе + закрытые; это и есть база распределения.
+    count: int
     percent: Decimal
 
 
@@ -30,6 +36,8 @@ class DepartmentApplicationsRead(BaseModel):
     year: int
     month: int
     applications: list[ApplicationShareRead]
+    total_in_progress: int
+    total_closed: int
     total_applications: int
     # Заявки за месяц не заведены → отдел временно распределяется по обычному
     # каскаду, и это надо показать: молча посчитать «как у всех» нельзя.
@@ -44,3 +52,19 @@ class DepartmentApplicationsUpdate(BaseModel):
     year: int = Field(ge=2000, le=2100)
     month: int = Field(ge=1, le=12)
     applications: list[ApplicationCountInput]
+
+
+class ApplicationsDistributionRow(BaseModel):
+    """Распределение начисленного рабочего места по юрлицам — для показа В ТАБЕЛЕ
+    (task_hr_applications).
+
+    Считается на бэке теми же числами, что ведомость: фронт не пересобирает
+    «Итого начислено» из кусков расчёта и не может разойтись с /statement.
+    """
+
+    employee_id: int
+    position_id: int | None = None
+    department_id: int | None = None
+    accrued_total: Decimal
+    # company_id → сумма; сумма значений ровно равна accrued_total
+    amounts: dict[int, Decimal]
