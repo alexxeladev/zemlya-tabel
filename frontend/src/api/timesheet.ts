@@ -1,4 +1,4 @@
-import type { Absence, AbsenceKind, AuditLogEntry, AutofillPreview, CompanyShare, NightShift, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
+import type { Absence, AbsenceKind, AuditLogEntry, AutofillPreview, CompanyShare, DepartmentApplications, NightShift, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
 export const timesheetApi = {
@@ -158,6 +158,31 @@ export const timesheetApi = {
     await apiClient.delete(`/api/timesheet/distribution/${employeeId}/${year}/${month}`, {
       params: positionId != null ? { position_id: positionId } : undefined,
     })
+  },
+
+  // ── Заявки на подбор (task_hr_applications) ──
+  // Только для отделов с флагом «распределение по заявкам»: их зарплата делится
+  // по числу заявок вместо каскада процентов. Набор помесячный и заменяется
+  // целиком — что отправили, то и будет.
+  async getApplications(
+    year: number, month: number, departmentId?: number,
+  ): Promise<DepartmentApplications[]> {
+    const params: Record<string, unknown> = {}
+    if (departmentId !== undefined) params.department_id = departmentId
+    const { data } = await apiClient.get<DepartmentApplications[]>(
+      `/api/timesheet/${year}/${month}/applications`, { params },
+    )
+    return data
+  },
+
+  async setApplications(input: {
+    department_id: number; year: number; month: number
+    applications: Array<{ company_id: number; count: number }>
+  }): Promise<DepartmentApplications> {
+    const { data } = await apiClient.put<DepartmentApplications>(
+      '/api/timesheet/applications', input,
+    )
+    return data
   },
 
   async exportStatementExcel(year: number, month: number, departmentId?: number): Promise<Blob> {

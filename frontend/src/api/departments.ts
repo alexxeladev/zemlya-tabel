@@ -18,6 +18,8 @@ export const createDepartment = (data: {
   head_company_id?: number | null
   /** фонд ночных смен на месяц; не задан — дефолт 100 000 */
   night_shift_fund?: string | null
+  /** делить зарплату отдела по заявкам на подбор вместо каскада процентов */
+  uses_applications_distribution?: boolean
 }) => apiClient.post<Department>('/api/departments', data).then((r) => r.data)
 
 export const updateDepartment = (
@@ -27,6 +29,7 @@ export const updateDepartment = (
     code: string
     head_company_id: number | null
     night_shift_fund: string
+    uses_applications_distribution: boolean
     is_active: boolean
   }>,
 ) => apiClient.patch<Department>(`/api/departments/${id}`, data).then((r) => r.data)

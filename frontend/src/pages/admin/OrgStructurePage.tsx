@@ -46,6 +46,8 @@ type DepartmentForm = {
   head_company_id: number | null
   /** фонд ночных смен на месяц; из него считаются ставка и лимит числа смен */
   night_shift_fund: string
+  /** делить зарплату отдела по заявкам на подбор вместо каскада процентов */
+  uses_applications_distribution: boolean
 }
 
 /** Ставка ночной смены = фонд ÷ календарные дни месяца, лимит смен = число дней
@@ -123,6 +125,14 @@ function DepartmentNode({ dept, onEdit, onDelete, onManagers, onOpenEmployee }: 
               title="Фонд ночных смен: из него считаются ставка смены и лимит их числа за месяц"
             >
               🌙 {Math.round(Number(dept.night_shift_fund)).toLocaleString('ru-RU')} ₽/мес
+            </span>
+          )}
+          {dept.uses_applications_distribution && (
+            <span
+              className="text-xs text-emerald-600"
+              title="Зарплата отдела распределяется по числу заявок на подбор за месяц, а не по каскаду процентов"
+            >
+              📋 по заявкам
             </span>
           )}
         </button>
@@ -300,6 +310,7 @@ export function OrgStructurePage() {
       code: deptForm.code.trim(),
       head_company_id: deptForm.head_company_id,
       night_shift_fund: String(Number(deptForm.night_shift_fund.replace(',', '.')) || 0),
+      uses_applications_distribution: deptForm.uses_applications_distribution,
     }
     if (!payload.name || !payload.code) {
       toast.error('Название и код обязательны')
@@ -381,6 +392,7 @@ export function OrgStructurePage() {
         code: d.code,
         head_company_id: d.head_company_id,
         night_shift_fund: d.night_shift_fund ?? '100000',
+        uses_applications_distribution: d.uses_applications_distribution,
       }),
     onDelete: setDeleteDeptTarget,
     onManagers: setManagersFor,
@@ -419,7 +431,10 @@ export function OrgStructurePage() {
             }
             onDeleteCompany={setDeleteCompanyTarget}
             onAddDepartment={(companyId) =>
-              openDeptForm({ name: '', code: '', head_company_id: companyId, night_shift_fund: '100000' })
+              openDeptForm({
+                name: '', code: '', head_company_id: companyId,
+                night_shift_fund: '100000', uses_applications_distribution: false,
+              })
             }
             {...deptNodeProps}
           />
@@ -579,6 +594,31 @@ export function OrgStructurePage() {
                 )}
               </p>
             </Field>
+
+            {/* Распределение по заявкам на подбор (task_hr_applications).
+                Флаг, а не имя отдела: правило может понадобиться не только HR. */}
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded border-gray-300"
+                checked={deptForm.uses_applications_distribution}
+                onChange={(e) =>
+                  setDeptForm({
+                    ...deptForm,
+                    uses_applications_distribution: e.target.checked,
+                  })
+                }
+              />
+              <span className="text-sm text-gray-700">
+                Распределение по заявкам на подбор
+                <span className="mt-0.5 block text-[11px] text-gray-400">
+                  Зарплата сотрудников отдела делится между юрлицами по числу заявок,
+                  отработанных за месяц (заявки вводятся в табеле отдела). Каскад ниже
+                  для такого отдела НЕ применяется — он остаётся запасным вариантом на
+                  месяцы, когда заявки не заведены.
+                </span>
+              </span>
+            </label>
 
             {/* Дефолт распределения затрат по юрлицам (task_distribution_v2 ч.3).
                 Это и есть «на кого работают» в деньгах — в отличие от головной
