@@ -5,7 +5,10 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.absence import AbsenceRead
-from app.schemas.application import DepartmentApplicationsRead
+from app.schemas.application import (
+    ApplicationsDistributionRow,
+    DepartmentApplicationsRead,
+)
 from app.schemas.company import CompanyRead
 from app.schemas.employee import EmployeeRead
 from app.schemas.night_shift import NightFundRead, NightShiftRead
@@ -66,6 +69,9 @@ class TimesheetMonthResponse(BaseModel):
     # Приходят вместе с табелем, чтобы блок ввода не требовал второго запроса;
     # отделов без флага здесь нет, и у нефинансовых ролей список пуст.
     applications: list[DepartmentApplicationsRead] = []
+    # Суммы распределения по юрлицам для строк таких отделов — считаются на бэке
+    # теми же числами, что ведомость (пусто, если расчёт не запрашивали).
+    applications_distribution: list[ApplicationsDistributionRow] = []
     payroll: PayrollSummaryRead | None = None
     adjustments: list[AdjustmentRead] = []
 
