@@ -22,6 +22,11 @@ class DepartmentApplication(Base):
     сумма заявок месяца. Заявки заводятся заново каждый месяц, поэтому ключ —
     (отдел, компания, год, месяц), а не «настройка отдела».
 
+    Хранятся ДВЕ части — «в работе» и «закрытые», как в исходном файле HR;
+    общее число заявок (`count`) — их сумма и считается, а не хранится: два
+    источника одного числа рано или поздно разойдутся. Распределение считается
+    от ОБЩЕГО числа, обе части в нём равноправны.
+
     Строки существуют ТОЛЬКО там, где заявки введены: пустой набор за месяц
     означает «заявок нет» → отдел уходит на обычный каскад распределения.
     """
@@ -35,9 +40,20 @@ class DepartmentApplication(Base):
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     month: Mapped[int] = mapped_column(Integer, nullable=False)
-    # Число заявок — целое и неотрицательное; ноль хранить незачем, такие строки
-    # не пишутся (иначе «нет заявок» и «0 заявок» стали бы разными состояниями).
-    count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Заявки в работе и закрытые за месяц — целые неотрицательные. Строка, где
+    # обе части нулевые, не пишется (иначе «нет заявок» и «0 заявок» стали бы
+    # разными состояниями).
+    in_progress: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    closed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    @property
+    def count(self) -> int:
+        """Всего заявок = в работе + закрытые. База распределения."""
+        return (self.in_progress or 0) + (self.closed or 0)
 
     created_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("employees.id"), nullable=True
