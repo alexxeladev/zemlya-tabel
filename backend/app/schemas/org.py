@@ -26,6 +26,9 @@ class OrgDepartmentRead(BaseModel):
     # ставка ночной смены и лимит их числа. Дерево видит только admin, поэтому
     # сумма отдаётся как есть.
     night_shift_fund: Optional[Decimal] = None
+    # Зарплата отдела делится по заявкам на подбор вместо каскада процентов
+    # (task_hr_applications) — признак включается прямо в карточке отдела.
+    uses_applications_distribution: bool = False
     # Менеджеры и табельщики отдела: чем руководят / что ведут, а не где числятся
     # (task_org_structure ч.2, task_timekeeper_role). Кто есть кто — по `role`.
     managers: list[OrgEmployeeRead]
