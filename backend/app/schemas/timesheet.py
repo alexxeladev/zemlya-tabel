@@ -5,6 +5,7 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.absence import AbsenceRead
+from app.schemas.application import DepartmentApplicationsRead
 from app.schemas.company import CompanyRead
 from app.schemas.employee import EmployeeRead
 from app.schemas.night_shift import NightFundRead, NightShiftRead
@@ -60,6 +61,11 @@ class TimesheetMonthResponse(BaseModel):
     # состояние фонда отделов — из него считаются ставка и лимит числа смен.
     night_shifts: list[NightShiftRead] = []
     night_funds: list[NightFundRead] = []
+    # Заявки на подбор отделов с флагом «распределение по заявкам»
+    # (task_hr_applications): ими делится зарплата отдела вместо каскада.
+    # Приходят вместе с табелем, чтобы блок ввода не требовал второго запроса;
+    # отделов без флага здесь нет, и у нефинансовых ролей список пуст.
+    applications: list[DepartmentApplicationsRead] = []
     payroll: PayrollSummaryRead | None = None
     adjustments: list[AdjustmentRead] = []
 

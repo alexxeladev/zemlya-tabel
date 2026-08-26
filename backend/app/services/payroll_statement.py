@@ -32,6 +32,12 @@ from app.services.absences import (
     schedules_by_employee,
     sick_days_used_before_month,
 )
+from app.services.applications import (
+    application_percents,
+    application_weights,
+    applications_department_ids,
+    load_application_counts,
+)
 from app.services.company_shares import (
     load_department_shares,
     load_employee_shares,
@@ -301,6 +307,10 @@ SOURCE_MONTH = "month"          # ручной % за конкретный ме�
 SOURCE_EMPLOYEE = "employee"    # распределение в карточке сотрудника
 SOURCE_DEPARTMENT = "department"  # дефолт отдела
 SOURCE_HOURS = "hours"          # авто по фактическим часам табеля
+# Отдел с флагом «распределение по заявкам» (task_hr_applications) — заявки на
+# подбор ЗАМЕНЯЮТ каскад целиком, поэтому это не ещё один его уровень, а ветка
+# выше него: см. `_applications_shares`.
+SOURCE_APPLICATIONS = "applications"
 
 
 def resolve_shares(
@@ -327,6 +337,22 @@ def resolve_shares(
         if sum(shares.values(), _ZERO) > _ZERO:
             return shares, source
     return {}, SOURCE_HOURS
+
+
+def _applications_context(
+    db: Session, department_ids: list[int | None], year: int, month: int
+) -> tuple[set[int], dict[int, dict[int, int]]]:
+    """(отделы с флагом, {department_id: {company_id: заявок}} за ЭТОТ месяц) —
+    task_hr_applications.
+
+    Флаг и заявки возвращаются РАЗДЕЛЬНО: отдел с флагом, но без заявок месяца —
+    это не «как все», а отдельное состояние (уходит на каскад с предупреждением).
+    Оба набора пустые → в ведомости ничего не меняется, всё идёт по каскаду.
+    """
+    flagged = applications_department_ids(db, [d for d in department_ids if d])
+    if not flagged:
+        return set(), {}
+    return flagged, load_application_counts(db, flagged, year, month)
 
 
 def distribute_by_percent(
@@ -435,6 +461,12 @@ def build_payroll_statement(
     dept_shares = load_department_shares(
         db, [pos.department_id for pos in position_by_id.values() if pos.department_id]
     )
+    # Заявки на подбор (task_hr_applications): для отделов с флагом они ЗАМЕНЯЮТ
+    # каскад целиком. Загружаются один раз на всю ведомость — набор общий для
+    # всех сотрудников отдела.
+    applications_departments, applications_by_dept = _applications_context(
+        db, [pos.department_id for pos in position_by_id.values()], year, month
+    )
 
     # Обоснования премий/KPI/аванса — только для отчётности, в расчёт не входят.
     adjustment_reasons = load_adjustment_reasons(
@@ -461,25 +493,53 @@ def build_payroll_statement(
         )
         main_company = position.company if position else None
 
-        shares, source = resolve_shares(
-            position_id=p.position_id,
-            department_id=position.department_id if position else None,
-            month_overrides=override_shares,
-            employee_shares=employee_shares,
-            department_shares=dept_shares,
-        )
-        is_overridden = source == SOURCE_MONTH
-        is_auto = source == SOURCE_HOURS
+        position_dept_id = position.department_id if position else None
+        # Отдел с флагом «распределение по заявкам» (HR) делится по заявкам на
+        # подбор, а не по каскаду: проценты одни на весь отдел. Заявки за месяц
+        # не заведены — предупреждаем и уходим на обычный каскад, иначе правка
+        # флага молча обнулила бы распределение отдела.
+        app_counts = applications_by_dept.get(position_dept_id) or {}
+        distribution_note = None
 
-        if not is_auto:
-            dist_amounts = distribute_by_percent(
-                accrued, shares, main_company.id if main_company else None
+        if app_counts:
+            source = SOURCE_APPLICATIONS
+            is_overridden = False
+            is_auto = False
+            shares = application_percents(app_counts)
+            # Суммы — от ЧИСЛА заявок напрямую (не от округлённого процента):
+            # доля компании = начислено × заявки / Σзаявок, остаток — основной
+            # компании. Округление то же самое, что в каскаде (`distribute`).
+            dist_amounts = distribute(
+                accrued,
+                application_weights(app_counts),
+                main_company.id if main_company else None,
             )
         else:
-            # Ни на одном уровне каскада % не задан → авто по фактическим часам.
-            shares, dist_amounts = _auto_shares_by_hours(
-                accrued, p.breakdown_by_company, main_company,
+            shares, source = resolve_shares(
+                position_id=p.position_id,
+                department_id=position_dept_id,
+                month_overrides=override_shares,
+                employee_shares=employee_shares,
+                department_shares=dept_shares,
             )
+            is_overridden = source == SOURCE_MONTH
+            is_auto = source == SOURCE_HOURS
+
+            if position_dept_id in applications_departments:
+                distribution_note = (
+                    "Заявки на подбор за месяц не заданы — "
+                    "распределение по обычному каскаду"
+                )
+
+            if not is_auto:
+                dist_amounts = distribute_by_percent(
+                    accrued, shares, main_company.id if main_company else None
+                )
+            else:
+                # Ни на одном уровне каскада % не задан → авто по фактическим часам.
+                shares, dist_amounts = _auto_shares_by_hours(
+                    accrued, p.breakdown_by_company, main_company,
+                )
         percent_sum = sum(shares.values(), _ZERO)
 
         distribution = [
@@ -558,6 +618,7 @@ def build_payroll_statement(
             is_overridden=is_overridden,
             is_auto_distributed=is_auto,
             distribution_source=source,
+            distribution_note=distribution_note,
             percent_sum=percent_sum,
             distribution=distribution,
             distribution_total=sum(dist_amounts.values(), _ZERO),

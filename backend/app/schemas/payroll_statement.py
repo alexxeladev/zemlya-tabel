@@ -132,8 +132,13 @@ class StatementRow(BaseModel):
     is_overridden: bool           # проценты распределения переопределены на месяц
     is_auto_distributed: bool     # распределено авто по фактическим часам (ручной % не задан)
     # Уровень каскада, откуда взято распределение:
-    # month (правка на месяц) > employee (карточка) > department (отдел) > hours (авто)
+    # month (правка на месяц) > employee (карточка) > department (отдел) > hours (авто).
+    # Отдельно от каскада — applications: отдел с флагом «распределение по
+    # заявкам» (task_hr_applications) делится по числу заявок на подбор.
     distribution_source: str
+    # Пояснение к распределению для человека. Заполняется, когда отдел помечен
+    # «по заявкам», но заявок за месяц нет: молча посчитать «как у всех» нельзя.
+    distribution_note: str | None = None
     percent_sum: Decimal          # сумма процентов (для подсветки ≠ 100)
     distribution: list[StatementCompanyAmount]
     distribution_total: Decimal

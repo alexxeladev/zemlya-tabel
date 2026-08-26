@@ -11,6 +11,7 @@ from app.core.deps import get_current_user
 from app.database import get_db
 from app.models.audit_log import AuditLog
 from app.models.companies import Company
+from app.models.departments import Department
 from app.models.employee_adjustments import EmployeeAdjustment
 from app.models.employees import Employee
 from app.models.loan_deductions import LoanDeduction
@@ -24,6 +25,10 @@ from app.schemas.payout import (
 )
 from app.schemas.payroll import (
     PayrollSummaryRead,
+)
+from app.schemas.application import (
+    DepartmentApplicationsRead,
+    DepartmentApplicationsUpdate,
 )
 from app.schemas.payroll_statement import (
     DistributionOverrideInput,
@@ -59,6 +64,10 @@ from app.services.night_shifts import (
     load_night_context,
     set_night_shift,
 )
+from app.services.applications import (
+    department_applications_state,
+    set_department_applications,
+)
 from app.services.payroll_statement import (
     build_payroll_statement,
     build_payroll_summary,
@@ -73,6 +82,7 @@ from app.services.org_access import (
     can_see_finances,
     hides_finances,
     is_department_scoped,
+    managed_department_ids,
 )
 from app.services.positions import department_ids_of, visible_positions
 from app.services.timesheet import (
@@ -108,6 +118,26 @@ def _require_dept_access(actor: Employee, department_id: int | None) -> None:
         return
     if not can_access_department(actor, department_id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+
+
+def _check_year_month(year: int, month: int) -> None:
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
+        )
+
+
+def _applications_department_scope(
+    actor: Employee, department_id: int | None
+) -> list[int] | None:
+    """Отделы, чьи заявки на подбор отдавать: выбранный, все свои у менеджера,
+    None («все с флагом») у admin/accountant. Отделы БЕЗ флага отсеет сам сервис.
+    """
+    if department_id is not None:
+        return [department_id]
+    if is_department_scoped(actor):
+        return sorted(managed_department_ids(actor))
+    return None
 
 
 def _check_cell_access(
@@ -411,6 +441,82 @@ def delete_distribution_override(
     db.commit()
 
 
+# ── Заявки на подбор (task_hr_applications) ───────────────────────────────────
+#
+# Отдел с флагом `uses_applications_distribution` (HR) делит зарплату своих
+# сотрудников по числу отработанных за месяц заявок, а не по каскаду. Заявки —
+# управленческая настройка распределения, поэтому права те же, что у процентов
+# в ведомости: финансовые роли, менеджер — только свои отделы. Статус периода
+# не при чём: это не факт времени, а правило разнесения затрат.
+
+@router.get("/{year}/{month}/applications", response_model=list[DepartmentApplicationsRead])
+def get_applications(
+    year: int,
+    month: int,
+    department_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Заявки на подбор за месяц и вычисленные из них проценты — по отделам с
+    флагом «распределение по заявкам». Отделов без флага в выдаче нет."""
+    _require_finance_role(actor)
+    _check_year_month(year, month)
+    _require_dept_access(actor, department_id)
+    return department_applications_state(
+        db, _applications_department_scope(actor, department_id), year, month
+    )
+
+
+@router.put("/applications", response_model=DepartmentApplicationsRead)
+def set_applications(
+    payload: DepartmentApplicationsUpdate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Задать заявки отдела за месяц целиком (что прислали, то и будет).
+
+    Только для отдела с флагом: без него заявки некуда применить, и молча
+    сохранённый набор был бы данными-призраком.
+    """
+    _require_finance_role(actor)
+    _check_year_month(payload.year, payload.month)
+    _require_dept_access(actor, payload.department_id)
+    dept = db.get(Department, payload.department_id)
+    if not dept:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Department not found"
+        )
+    if not dept.uses_applications_distribution:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Отдел «{dept.name}» не распределяется по заявкам — "
+                "включите признак в карточке отдела"
+            ),
+        )
+    seen: set[int] = set()
+    for item in payload.applications:
+        _check_company_exists(db, item.company_id)
+        if item.company_id in seen:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Компания указана дважды",
+            )
+        seen.add(item.company_id)
+
+    set_department_applications(
+        db, dept.id, payload.year, payload.month, payload.applications, actor.id
+    )
+    log_action(
+        db, actor, "department_applications", dept.id, "set",
+        after={"year": payload.year, "month": payload.month,
+               "applications": {i.company_id: i.count for i in payload.applications}},
+    )
+    db.commit()
+    state = department_applications_state(db, [dept.id], payload.year, payload.month)
+    return state[0]
+
+
 @router.get("/{year}/{month}/statement/export/excel")
 def export_statement_excel(
     year: int,
@@ -539,6 +645,16 @@ def get_month(
 
     payroll = None
     adjustments: list[AdjustmentRead] = []
+    # Заявки на подбор: блок ввода в табеле отдела с флагом. Распределение — это
+    # деньги, поэтому набор отдаётся только финансовым ролям; отделы берутся из
+    # тех, что реально попали в выдачу.
+    applications = (
+        department_applications_state(
+            db, _applications_department_scope(actor, department_id), year, month
+        )
+        if can_see_finances(actor)
+        else []
+    )
     if can_see_finances(actor):
         adjustments = _load_adjustments(db, employees, year, month)
         if include_payroll:
@@ -569,6 +685,7 @@ def get_month(
         absences=absences,
         night_shifts=night_shifts,
         night_funds=night_funds,
+        applications=applications,
         payroll=payroll,
         adjustments=adjustments,
     )
