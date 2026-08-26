@@ -41,6 +41,7 @@ def _to_dict(obj: Department) -> dict:
         "code": obj.code,
         "head_company_id": obj.head_company_id,
         "night_shift_fund": str(obj.night_shift_fund),
+        "uses_applications_distribution": obj.uses_applications_distribution,
         "is_active": obj.is_active,
     }
 
@@ -111,6 +112,8 @@ def create_department(
     if payload.night_shift_fund is not None:
         _check_night_fund(payload.night_shift_fund)
         dept.night_shift_fund = payload.night_shift_fund
+    if payload.uses_applications_distribution is not None:
+        dept.uses_applications_distribution = payload.uses_applications_distribution
     db.add(dept)
     db.flush()
     log_action(db, actor, "department", dept.id, "create", after=_to_dict(dept))
@@ -153,6 +156,10 @@ def update_department(
         # это 0. Пришедший null трактуем как «не менять».
         if changes["night_shift_fund"] is None:
             changes.pop("night_shift_fund")
+    if changes.get("uses_applications_distribution") is None:
+        # Флаг «по заявкам» — обязательная колонка: пришедший null означает
+        # «не менять», как и у фонда.
+        changes.pop("uses_applications_distribution", None)
     for field, value in changes.items():
         setattr(dept, field, value)
     db.flush()

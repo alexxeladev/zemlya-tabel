@@ -46,6 +46,16 @@ class Department(Base):
         nullable=False,
     )
 
+    # Распределение зарплаты по ЗАЯВКАМ НА ПОДБОР (task_hr_applications).
+    # Флаг, а не имя отдела: «HR» — это про конкретный отдел сегодня, а правило
+    # («делим по числу отработанных заявок») может понадобиться и другому.
+    # Включён → проценты по юрлицам берутся из `department_applications` месяца
+    # и ЗАМЕНЯЮТ обычный каскад для ВСЕХ сотрудников отдела. Выключен (дефолт) —
+    # отдел живёт по каскаду, как и раньше.
+    uses_applications_distribution: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[str] = mapped_column(server_default=func.now())
     updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())

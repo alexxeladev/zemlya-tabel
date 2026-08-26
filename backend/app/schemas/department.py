@@ -19,6 +19,8 @@ class DepartmentBase(BaseModel):
 class DepartmentCreate(DepartmentBase):
     # Фонд ночных смен на месяц; не задан — дефолт модели (100 000).
     night_shift_fund: Optional[Decimal] = None
+    # Распределять зарплату отдела по заявкам на подбор (task_hr_applications).
+    uses_applications_distribution: Optional[bool] = None
 
 
 class DepartmentRead(DepartmentBase):
@@ -29,6 +31,9 @@ class DepartmentRead(DepartmentBase):
     # Из фонда вычисляется ставка ночной смены и лимит их числа за месяц
     # (task_night_shifts_rework) — деньги, поэтому табельщику не отдаётся.
     night_shift_fund: Optional[Decimal] = None
+    # Зарплата отдела делится по заявкам на подбор, а не по каскаду
+    # (task_hr_applications). Не деньги, а правило — видно всем, кто видит отдел.
+    uses_applications_distribution: bool = False
 
 
 class DepartmentUpdate(BaseModel):
@@ -36,6 +41,7 @@ class DepartmentUpdate(BaseModel):
     code: Optional[str] = None
     head_company_id: Optional[int] = None
     night_shift_fund: Optional[Decimal] = None
+    uses_applications_distribution: Optional[bool] = None
     is_active: Optional[bool] = None
 
 
