@@ -25,6 +25,8 @@ _SOURCE_LABELS = {
     "employee": "проценты из карточки сотрудника",
     "department": "дефолт отдела",
     "hours": "распределено по часам (авто)",
+    # Отдел с флагом «распределение по заявкам» (task_hr_applications)
+    "applications": "по заявкам на подбор",
 }
 
 _MONTHS = [
@@ -202,6 +204,10 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
         source_label = _SOURCE_LABELS.get(r.distribution_source)
         if source_label and r.distribution:
             note = (note + "; " if note else "") + source_label
+        # Отдел «по заявкам», но заявок за месяц нет — распределение ушло на
+        # каскад, и в выгрузке это должно быть видно (task_hr_applications).
+        if r.distribution_note:
+            note = (note + "; " if note else "") + r.distribution_note
         c = ws.cell(row=row, column=note_col, value=note)
         c.font = normal
         c.border = border
