@@ -16,6 +16,7 @@ from app.models.companies import Company
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
+from app.schemas.application import ApplicationsDistributionRow
 from app.schemas.payroll import (
     CompanyBreakdownRead,
     EmployeePayrollRead,
@@ -339,6 +340,22 @@ def resolve_shares(
     return {}, SOURCE_HOURS
 
 
+def accrued_total(p: EmployeePayrollRead) -> Decimal:
+    """«Итого начислено» строки — БАЗА распределения по юрлицам.
+
+    Одно место на всю систему: ведомость и блок распределения в табеле обязаны
+    делить одно и то же число, иначе экран табеля и /statement разойдутся.
+    Оклад считается вместе с обеими повышенными категориями (вне графика и
+    праздничные): отдельных колонок под них в форме финдира нет, а в базу
+    распределения они входить обязаны.
+    """
+    return (
+        p.base_amount + p.off_schedule_amount + p.holiday_amount
+        + p.overtime_amount + p.vacation_amount + p.sick_amount
+        + p.night_amount + p.premium_amount + p.kpi_amount
+    )
+
+
 def _applications_context(
     db: Session, department_ids: list[int | None], year: int, month: int
 ) -> tuple[set[int], dict[int, dict[int, int]]]:
@@ -420,6 +437,57 @@ def _reason_lines(items: list[tuple[Decimal, str]] | None) -> list[str]:
     ]
 
 
+# ── Распределение по заявкам для ТАБЕЛЯ (task_hr_applications) ────────────────
+
+def build_applications_distribution(
+    db: Session,
+    summary: PayrollSummaryRead,
+    positions_by_employee: dict[int, list[EmployeePosition]],
+    year: int,
+    month: int,
+) -> list[ApplicationsDistributionRow]:
+    """Суммы распределения по юрлицам для строк табеля отдела «по заявкам».
+
+    Считается поверх УЖЕ посчитанного расчёта (`build_payroll_summary`) теми же
+    `accrued_total` и `distribute`, что и ведомость — цифры в табеле и в
+    /statement обязаны совпадать, а не «примерно сходиться».
+
+    В выдачу попадают только рабочие места отделов с флагом И только там, где
+    заявки за месяц заданы: без заявок распределение идёт обычным каскадом, и
+    показывать его в этом блоке было бы враньём.
+    """
+    position_by_id = {
+        pos.id: pos for positions in positions_by_employee.values() for pos in positions
+    }
+    dept_ids = [pos.department_id for pos in position_by_id.values()]
+    flagged, applications_by_dept = _applications_context(db, dept_ids, year, month)
+    if not flagged or not applications_by_dept:
+        return []
+
+    rows: list[ApplicationsDistributionRow] = []
+    for p in summary.employees:
+        position = position_by_id.get(p.position_id)
+        if position is None:
+            continue
+        counts = applications_by_dept.get(position.department_id) or {}
+        if not counts:
+            continue
+        accrued = accrued_total(p)
+        amounts = distribute(
+            accrued,
+            application_weights(counts),
+            position.company_id,
+        )
+        rows.append(ApplicationsDistributionRow(
+            employee_id=p.employee_id,
+            position_id=p.position_id,
+            department_id=position.department_id,
+            accrued_total=accrued,
+            amounts=amounts,
+        ))
+    return rows
+
+
 # ── Сводная ведомость ─────────────────────────────────────────────────────────
 
 def build_payroll_statement(
@@ -487,10 +555,7 @@ def build_payroll_statement(
         # Отпускные/больничные и надбавка за ночные — часть «Итого начислено» и,
         # значит, базы распределения по юрлицам (ни отсутствие, ни ночная смена
         # к юрлицу не привязаны — их разносит каскад процентов).
-        accrued = (
-            base_salary + p.overtime_amount + p.vacation_amount + p.sick_amount
-            + p.night_amount + p.premium_amount + p.kpi_amount
-        )
+        accrued = accrued_total(p)
         main_company = position.company if position else None
 
         position_dept_id = position.department_id if position else None
