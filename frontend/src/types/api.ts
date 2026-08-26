@@ -147,9 +147,15 @@ export interface DepartmentShares {
  */
 export type DistributionSource = 'month' | 'employee' | 'department' | 'hours' | 'applications'
 
-/** Заявки на подбор, отработанные отделом для юрлица за месяц. */
+/**
+ * Заявки на подбор, отработанные отделом для юрлица за месяц.
+ * Хранятся две части; `count` (всего) — их сумма, считается на бэке.
+ */
 export interface ApplicationShare {
   company_id: number
+  in_progress: number
+  closed: number
+  /** всего = в работе + закрытые; это и есть база распределения */
   count: number
   /** заявки компании / сумма заявок × 100, до сотых; сумма ровно 100.00 */
   percent: string
@@ -162,9 +168,25 @@ export interface DepartmentApplications {
   year: number
   month: number
   applications: ApplicationShare[]
+  total_in_progress: number
+  total_closed: number
   total_applications: number
   /** заявки за месяц не заведены → отдел временно идёт по обычному каскаду */
   is_empty: boolean
+}
+
+/**
+ * Распределение начисленного рабочего места по юрлицам — для блока
+ * «Распределение» в табеле. Считает бэк теми же числами, что ведомость:
+ * фронт не пересобирает «Итого начислено» из кусков расчёта.
+ */
+export interface ApplicationsDistributionRow {
+  employee_id: number
+  position_id: number | null
+  department_id: number | null
+  accrued_total: string
+  /** company_id → сумма; сумма значений ровно равна accrued_total */
+  amounts: Record<number, string>
 }
 
 export interface StatementCompanyRef {

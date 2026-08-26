@@ -177,7 +177,7 @@ export const timesheetApi = {
 
   async setApplications(input: {
     department_id: number; year: number; month: number
-    applications: Array<{ company_id: number; count: number }>
+    applications: Array<{ company_id: number; in_progress: number; closed: number }>
   }): Promise<DepartmentApplications> {
     const { data } = await apiClient.put<DepartmentApplications>(
       '/api/timesheet/applications', input,
