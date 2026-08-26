@@ -36,17 +36,36 @@ const rowKey = (row: Pick<StatementRow, 'employee_id' | 'position_id'>): string 
 
 // Откуда взято распределение по юрлицам (каскад task_distribution_v2 ч.3):
 // месячная правка > карточка сотрудника > дефолт отдела > авто по часам.
+// applications — вне каскада: отдел с флагом «распределение по заявкам»
+// (task_hr_applications) делится по числу заявок, каскад к нему не применяется.
 const SOURCE_LABEL: Record<DistributionSource, string> = {
   month: 'правка на месяц',
   employee: 'из карточки',
   department: 'дефолт отдела',
   hours: 'авто по часам',
+  applications: 'по заявкам',
 }
 const SOURCE_STYLE: Record<DistributionSource, string> = {
   month: 'text-indigo-500',
   employee: 'text-gray-500',
   department: 'text-teal-600',
   hours: 'italic text-gray-400',
+  applications: 'font-medium text-emerald-600',
+}
+
+/**
+ * Строка отдела, который делится по заявкам на подбор (task_hr_applications).
+ * Проценты приходят из заявок месяца, вводятся в табеле отдела и каскад
+ * заменяют — поэтому здесь такая строка только показывается.
+ */
+function isApplicationsRow(row: StatementRow): boolean {
+  return row.distribution_source === 'applications'
+}
+
+/** Процент компании из заявок — показывается плейсхолдером, править нельзя. */
+function applicationsPct(row: StatementRow, companyId: number): string {
+  const found = row.distribution.find((d) => d.company_id === companyId)
+  return found ? String(Math.round(num(found.percent) * 100) / 100) : '0'
 }
 
 function buildEdits(stmt: PayrollStatement): Edits {
@@ -57,6 +76,10 @@ function buildEdits(stmt: PayrollStatement): Edits {
     // Авто-распределённые строки (ручной % не задан) НЕ префиллим — поля остаются
     // пустыми (плейсхолдер), чтобы видна была разница «авто по часам» vs «ручной».
     if (row.is_auto_distributed) continue
+    // Строки отдела «по заявкам» тоже: их проценты приходят из заявок месяца и
+    // правятся в табеле отдела, а не здесь (правка тут молча ничего не дала бы —
+    // заявки перекрывают каскад).
+    if (isApplicationsRow(row)) continue
     for (const d of row.distribution) {
       e[key][d.company_id] = d.percent
     }
@@ -158,7 +181,7 @@ export function PayrollPage() {
   // «Итого начислено», остаток — основной компании. Иначе экран и Excel
   // разъезжаются (350010 против 350000).
   const rowAmounts = (row: StatementRow): Record<number, number> => {
-    if (isAutoRow(row)) {
+    if (isAutoRow(row) || isApplicationsRow(row)) {
       const m: Record<number, number> = {}
       for (const d of row.distribution) m[d.company_id] = num(d.amount)
       return m
@@ -398,6 +421,7 @@ export function PayrollPage() {
                 if (auto) for (const d of row.distribution) autoByCompany[d.company_id] = d
                 const amounts = rowAmounts(row)
                 // Ввод % вручную (ещё не сохранён) — это уже правка на месяц.
+                const byApplications = isApplicationsRow(row)
                 const sourceKey: DistributionSource =
                   auto ? 'hours' : (pctSum > 0 && row.distribution_source === 'hours'
                     ? 'month' : row.distribution_source)
@@ -548,12 +572,16 @@ export function PayrollPage() {
                               min={0}
                               max={100}
                               step="0.1"
-                              disabled={!canEdit}
-                              value={pct}
+                              disabled={!canEdit || byApplications}
+                              value={byApplications ? '' : pct}
                               onChange={(ev) => setPercent(key, c.id, ev.target.value)}
                               className={`w-12 rounded border px-1 py-0.5 text-right text-[11px] ${pctWarn ? 'border-amber-400 bg-amber-50' : 'border-gray-300'} ${autoEntry ? 'border-dashed text-gray-400 placeholder:text-gray-400' : ''} disabled:bg-gray-100`}
-                              placeholder={autoPctLabel}
-                              title={autoEntry ? 'Авто по часам — введите % чтобы задать вручную' : undefined}
+                              placeholder={byApplications ? applicationsPct(row, c.id) : autoPctLabel}
+                              title={
+                                byApplications
+                                  ? 'Процент из заявок на подбор — правится в табеле отдела'
+                                  : autoEntry ? 'Авто по часам — введите % чтобы задать вручную' : undefined
+                              }
                             />
                             <span className="text-gray-400">%</span>
                           </div>
@@ -568,7 +596,7 @@ export function PayrollPage() {
                       {pctWarn && <div className="text-[10px] text-amber-600">Σ%={pctSum}</div>}
                     </td>
                     <td className="px-2 py-1.5 text-center whitespace-nowrap">
-                      {canEdit && (
+                      {canEdit && !byApplications && (
                         <div className="flex items-center justify-center gap-1">
                           <button
                             disabled={savingKey === key}
@@ -589,10 +617,16 @@ export function PayrollPage() {
                           )}
                         </div>
                       )}
-                      {/* Откуда взято распределение — каскад ч.3 */}
+                      {/* Откуда взято распределение — каскад ч.3 (или заявки) */}
                       <div className={`mt-0.5 text-[9px] ${SOURCE_STYLE[sourceKey]}`}>
                         {SOURCE_LABEL[sourceKey]}
                       </div>
+                      {/* Отдел «по заявкам», но заявок за месяц нет → каскад */}
+                      {row.distribution_note && (
+                        <div className="mt-0.5 text-[9px] text-amber-600" title={row.distribution_note}>
+                          ⚠ заявки не заданы
+                        </div>
+                      )}
                     </td>
                   </tr>
                 )

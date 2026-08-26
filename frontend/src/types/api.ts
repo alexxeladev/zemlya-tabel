@@ -139,8 +139,33 @@ export interface DepartmentShares {
   percent_sum: string
 }
 
-/** Уровень каскада, откуда взято распределение по юрлицам. */
-export type DistributionSource = 'month' | 'employee' | 'department' | 'hours'
+/**
+ * Откуда взято распределение по юрлицам.
+ * Каскад: month (правка на месяц) > employee (карточка) > department > hours.
+ * applications — отдел с флагом «распределение по заявкам»
+ * (task_hr_applications): каскад для него не применяется вовсе.
+ */
+export type DistributionSource = 'month' | 'employee' | 'department' | 'hours' | 'applications'
+
+/** Заявки на подбор, отработанные отделом для юрлица за месяц. */
+export interface ApplicationShare {
+  company_id: number
+  count: number
+  /** заявки компании / сумма заявок × 100, до сотых; сумма ровно 100.00 */
+  percent: string
+}
+
+/** Заявки отдела за месяц + проценты, по которым делится зарплата отдела. */
+export interface DepartmentApplications {
+  department_id: number
+  department_name: string | null
+  year: number
+  month: number
+  applications: ApplicationShare[]
+  total_applications: number
+  /** заявки за месяц не заведены → отдел временно идёт по обычному каскаду */
+  is_empty: boolean
+}
 
 export interface StatementCompanyRef {
   id: number
@@ -215,6 +240,8 @@ export interface StatementRow {
   is_overridden: boolean
   is_auto_distributed: boolean
   distribution_source: DistributionSource
+  /** пояснение: отдел «по заявкам», но заявок за месяц нет → каскад */
+  distribution_note: string | null
   percent_sum: string
   distribution: StatementCompanyAmount[]
   distribution_total: string
@@ -446,6 +473,8 @@ export interface Department {
   head_company_id: number | null
   /** месячный фонд ночных смен: из него считаются ставка и лимит числа смен */
   night_shift_fund: string | null
+  /** зарплата отдела делится по заявкам на подбор, а не по каскаду процентов */
+  uses_applications_distribution: boolean
   is_active: boolean
 }
 
@@ -483,6 +512,8 @@ export interface OrgDepartment {
   head_company_id: number | null
   /** фонд ночных смен на месяц: задаёт ставку смены и лимит их числа */
   night_shift_fund: string | null
+  /** зарплата отдела делится по заявкам на подбор (task_hr_applications) */
+  uses_applications_distribution: boolean
   managers: OrgEmployee[]
   /** Количество сотрудников — чтобы свёрнутый узел не рендерил список. */
   employee_count: number

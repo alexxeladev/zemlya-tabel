@@ -30,7 +30,8 @@ import { usePeriodStore } from '../store/period';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { UI_KEYS } from '../utils/persist';
 import { TimesheetCompanyView } from './TimesheetCompanyView';
-import type { AbsenceKind, AutofillPreview, NightFund, NightShift } from '../types/api';
+import { ApplicationsPanel } from '../components/ApplicationsPanel';
+import type { AbsenceKind, AutofillPreview, DepartmentApplications, NightFund, NightShift } from '../types/api';
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
@@ -247,6 +248,8 @@ export type MonthResponse = {
   night_shifts?: NightShift[];
   /** фонд ночных смен по отделам: ставка, лимит смен и остаток */
   night_funds?: NightFund[];
+  /** заявки на подбор отделов с флагом «распределение по заявкам» */
+  applications?: DepartmentApplications[];
   payroll: PayrollSummary | null;
   periods: Period[];
   adjustments?: Adjustment[];
@@ -1825,6 +1828,18 @@ export function TimesheetPage() {
           </span>
         </div>
       </div>
+
+      {/* ───── Заявки на подбор (task_hr_applications) ─────
+           Показывается только для отделов с флагом «распределение по заявкам»
+           (у остальных блока нет вовсе) и только тем, кто видит распределение. */}
+      <ApplicationsPanel
+        applications={data.applications ?? []}
+        companies={data.companies}
+        year={year}
+        month={month}
+        canEdit={canSeeMoney}
+        onSaved={reload}
+      />
 
       {/* ───── Скролл-контейнер с таблицей ───── */}
       <div className="flex-1 relative min-h-0 min-w-0">
