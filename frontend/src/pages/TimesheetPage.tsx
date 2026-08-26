@@ -24,6 +24,7 @@ import { timesheetApi } from '../api/timesheet';
 import { apiClient } from '../api/client';
 import { listDepartments } from '../api/departments';
 import { companyColorByIndex } from '../utils/colors';
+import { companyLabel } from '../utils/companies';
 import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
 import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
 import { usePeriodStore } from '../store/period';
@@ -1189,27 +1190,30 @@ export function TimesheetPage() {
   // деньги. Видимость завязана на сами ЗАЯВКИ, а не на присланные суммы: суммы
   // приходят вместе с расчётом, и колонки прыгали бы после каждой правки часа.
   const distributionOn =
-    canSeeMoney && (data?.applications ?? []).some((a) => !a.is_empty);
-  const distCompanies = distributionOn ? (data?.companies ?? []) : [];
+    canSeeMoney && (data.applications ?? []).some((a) => !a.is_empty);
+  const distCompanies = distributionOn ? data.companies : [];
   const distCols = distributionOn ? distCompanies.length + 1 : 0;
+  // Ниже — БЕЗ useMemo: этот участок идёт после ранних return-ов (гейт отдела,
+  // загрузка, пустой ответ), а хук после условного выхода ломает порядок хуков
+  // и роняет страницу. Данных тут десятки строк, считать их каждый рендер дёшево.
   /** posKey → {company_id: сумма} — суммы считает бэк, фронт их только рисует. */
-  const distByPos = useMemo(() => {
+  const distByPos = (() => {
     const map = new Map<string, Record<number, string>>();
-    for (const r of data?.applications_distribution ?? []) {
+    for (const r of data.applications_distribution ?? []) {
       map.set(posKey(r.employee_id, r.position_id), r.amounts);
     }
     return map;
-  }, [data?.applications_distribution]);
+  })();
   /**
    * Итоги распределения по юрлицам — общие (строка подвала) и ОТДЕЛЬНО по
    * каждому отделу: в режиме «все отделы» флаг может стоять у нескольких, и
    * одна общая сумма в блоке заявок отдела была бы враньём.
    */
-  const distTotals = useMemo(() => {
+  const distTotals = (() => {
     const totals: Record<number, number> = {};
     const byDept = new Map<number, { totals: Record<number, number>; grand: number }>();
     let grand = 0;
-    for (const r of data?.applications_distribution ?? []) {
+    for (const r of data.applications_distribution ?? []) {
       const dept = r.department_id;
       if (dept != null && !byDept.has(dept)) byDept.set(dept, { totals: {}, grand: 0 });
       const bucket = dept != null ? byDept.get(dept)! : null;
@@ -1224,7 +1228,7 @@ export function TimesheetPage() {
       }
     }
     return { totals, grand, byDept };
-  }, [data?.applications_distribution]);
+  })();
 
   const trailingCols =
     (canSeeMoney ? MONEY_COLS : canSeeHourStats ? HOUR_COLS : 0) + distCols;
@@ -2155,11 +2159,11 @@ export function TimesheetPage() {
                   {distCompanies.map((c) => (
                     <th
                       key={`dist-h-${c.id}`}
-                      className="sticky top-0 bg-emerald-50 border border-gray-200 px-2 py-2 text-right font-medium text-emerald-800"
-                      style={{ minWidth: 90, zIndex: 20 }}
+                      className="sticky top-0 bg-emerald-50 border border-gray-200 px-2 py-2 text-right font-medium text-emerald-800 leading-tight"
+                      style={{ minWidth: 96, maxWidth: 130, zIndex: 20 }}
                       title={`Распределение по заявкам: ${c.name}`}
                     >
-                      {c.code}
+                      {companyLabel(c)}
                     </th>
                   ))}
                   <th

@@ -3,6 +3,7 @@ import { timesheetApi } from '../api/timesheet'
 import { toast } from '../store/toasts'
 import type { DepartmentApplications } from '../types/api'
 import { companyColorByIndex } from '../utils/colors'
+import { companyLabel } from '../utils/companies'
 import { distribute } from '../utils/distribution'
 import { Button } from './Button'
 
@@ -225,11 +226,11 @@ function DepartmentBlock({
                 return (
                   <th
                     key={c.id}
-                    className="border border-emerald-200 bg-emerald-50 px-2 py-1 text-right font-mono font-semibold"
-                    style={{ color: col.color, minWidth: 84 }}
+                    className="border border-emerald-200 bg-emerald-50 px-2 py-1 text-right font-semibold leading-tight"
+                    style={{ color: col.color, minWidth: 96, maxWidth: 130 }}
                     title={c.name}
                   >
-                    {c.code}
+                    {companyLabel(c)}
                   </th>
                 )
               })}
