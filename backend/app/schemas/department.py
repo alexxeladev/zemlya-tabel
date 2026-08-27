@@ -111,6 +111,8 @@ class DepartmentMovePreview(BaseModel):
     stale_share_position_count: int
     #: Дефолт распределения самого отдела не включает целевую компанию.
     department_shares_stale: bool
+    #: Ячеек часов в незакрытых месяцах, которые сменят юрлицо на целевое.
+    entries_to_reattribute: int
 
 
 class DepartmentMoveResult(BaseModel):
@@ -120,3 +122,4 @@ class DepartmentMoveResult(BaseModel):
     employees_affected: int
     closed_months_frozen: int
     override_rows_written: int
+    entries_reattributed: int

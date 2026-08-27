@@ -362,6 +362,7 @@ def _preview_response(preview) -> DepartmentMovePreview:
         ],
         stale_share_position_count=preview.stale_share_position_count,
         department_shares_stale=preview.department_shares_stale,
+        entries_to_reattribute=preview.entries_to_reattribute,
     )
 
 
@@ -409,4 +410,5 @@ def do_department_move(
         employees_affected=result.employees_affected,
         closed_months_frozen=result.closed_months_frozen,
         override_rows_written=result.override_rows_written,
+        entries_reattributed=result.entries_reattributed,
     )

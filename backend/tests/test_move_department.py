@@ -505,3 +505,168 @@ class TestFreezePrecision:
         original = distribute(Decimal("734500"), weights, 5)
         coarse = distribute(Decimal("100"), original, None, Decimal("0.001"))
         assert distribute(Decimal("734500"), coarse, 10**6) != original
+
+
+# ── Часы незакрытых месяцев переезжают вместе с отделом ───────────────────────
+
+class TestEntryReattribution:
+    """Компания лежит в САМОЙ ячейке, поэтому смены компании позиции мало: без
+    перепривязки заполненный текущий месяц остался бы на прежнем юрлице, и
+    деньги за него ушли бы старой компании. Закрытые месяцы при этом не трогаем."""
+
+    def _june(self, db, org, staff, company_id, days=None):
+        w = staff["worker"]
+        for day in (days or JUNE_WORKDAYS[:10]):
+            db.add(TimesheetEntry(employee_id=w.id, position_id=w.primary_position.id,
+                                  work_date=date(2026, 6, day), company_id=company_id, hours=8))
+        db.commit()
+
+    def _companies_of(self, db, emp_id, year, month):
+        rows = db.query(TimesheetEntry).filter(TimesheetEntry.employee_id == emp_id).all()
+        return {e.company_id for e in rows
+                if e.work_date.year == year and e.work_date.month == month}
+
+    def test_open_month_hours_move_to_new_company(
+        self, client: TestClient, db_session, org, admin, staff
+    ):
+        _fill_may(db_session, org, staff)
+        self._june(db_session, org, staff, org["old"].id)
+        w = staff["worker"]
+        assert self._companies_of(db_session, w.id, 2026, 6) == {org["old"].id}
+
+        token = get_token(client, "mvadmin@example.com", "admin123")
+        body = _move(client, token, org["stroy"].id, org["new"].id).json()
+        assert body["entries_reattributed"] > 0
+
+        db_session.expire_all()
+        assert self._companies_of(db_session, w.id, 2026, 6) == {org["new"].id}
+
+    def test_closed_month_hours_stay(
+        self, client: TestClient, db_session, org, admin, staff
+    ):
+        """Май закрыт — его ячейки остаются на старом юрлице."""
+        _fill_may(db_session, org, staff)
+        self._june(db_session, org, staff, org["old"].id)
+        w = staff["worker"]
+        before = self._companies_of(db_session, w.id, 2026, 5)
+
+        token = get_token(client, "mvadmin@example.com", "admin123")
+        _move(client, token, org["stroy"].id, org["new"].id)
+
+        db_session.expire_all()
+        assert self._companies_of(db_session, w.id, 2026, 5) == before
+        assert org["new"].id not in self._companies_of(db_session, w.id, 2026, 5)
+
+    def test_hours_on_third_company_untouched(
+        self, client: TestClient, db_session, org, admin, staff
+    ):
+        """Работа на СТОРОННЕЕ юрлицо — не «часы отдела», её не переносим."""
+        _fill_may(db_session, org, staff)
+        w = staff["worker"]
+        db_session.add(TimesheetEntry(
+            employee_id=w.id, position_id=w.primary_position.id,
+            work_date=date(2026, 6, JUNE_WORKDAYS[0]), company_id=org["other"].id, hours=8))
+        db_session.commit()
+
+        token = get_token(client, "mvadmin@example.com", "admin123")
+        _move(client, token, org["stroy"].id, org["new"].id)
+
+        db_session.expire_all()
+        assert org["other"].id in self._companies_of(db_session, w.id, 2026, 6)
+
+    def test_collision_sums_hours(
+        self, client: TestClient, db_session, org, admin, staff
+    ):
+        """В тот же день на то же место уже есть ячейка целевого юрлица —
+        часы складываются, unique не нарушается."""
+        _fill_may(db_session, org, staff)
+        w = staff["worker"]
+        day = JUNE_WORKDAYS[0]
+        db_session.add_all([
+            TimesheetEntry(employee_id=w.id, position_id=w.primary_position.id,
+                           work_date=date(2026, 6, day), company_id=org["old"].id, hours=5),
+            TimesheetEntry(employee_id=w.id, position_id=w.primary_position.id,
+                           work_date=date(2026, 6, day), company_id=org["new"].id, hours=3),
+        ])
+        db_session.commit()
+
+        token = get_token(client, "mvadmin@example.com", "admin123")
+        assert _move(client, token, org["stroy"].id, org["new"].id).status_code == 200
+
+        db_session.expire_all()
+        rows = db_session.query(TimesheetEntry).filter(
+            TimesheetEntry.employee_id == w.id,
+            TimesheetEntry.work_date == date(2026, 6, day)).all()
+        assert len(rows) == 1
+        assert rows[0].company_id == org["new"].id
+        assert rows[0].hours == 8
+
+    def test_legacy_null_position_entries_move(
+        self, client: TestClient, db_session, org, admin, staff
+    ):
+        """Ячейка без position_id читается как основная позиция — переезжает с ней."""
+        _fill_may(db_session, org, staff)
+        w = staff["worker"]
+        db_session.add(TimesheetEntry(
+            employee_id=w.id, position_id=None,
+            work_date=date(2026, 6, JUNE_WORKDAYS[1]), company_id=org["old"].id, hours=8))
+        db_session.commit()
+
+        token = get_token(client, "mvadmin@example.com", "admin123")
+        _move(client, token, org["stroy"].id, org["new"].id)
+
+        db_session.expire_all()
+        legacy = db_session.query(TimesheetEntry).filter(
+            TimesheetEntry.employee_id == w.id,
+            TimesheetEntry.position_id.is_(None)).one()
+        assert legacy.company_id == org["new"].id
+
+    def test_side_position_entries_untouched(
+        self, client: TestClient, db_session, org, admin, staff
+    ):
+        """Часы подработки в чужом отделе остаются на своей компании."""
+        _fill_may(db_session, org, staff)
+        c, side = staff["combiner"], staff["side"]
+        db_session.add(TimesheetEntry(
+            employee_id=c.id, position_id=side.id,
+            work_date=date(2026, 6, JUNE_WORKDAYS[0]), company_id=org["other"].id, hours=4))
+        db_session.commit()
+
+        token = get_token(client, "mvadmin@example.com", "admin123")
+        _move(client, token, org["stroy"].id, org["new"].id)
+
+        db_session.expire_all()
+        row = db_session.query(TimesheetEntry).filter(
+            TimesheetEntry.position_id == side.id,
+            TimesheetEntry.work_date == date(2026, 6, JUNE_WORKDAYS[0])).one()
+        assert row.company_id == org["other"].id
+
+    def test_preview_counts_and_changes_nothing(
+        self, client: TestClient, db_session, org, admin, staff
+    ):
+        _fill_may(db_session, org, staff)
+        self._june(db_session, org, staff, org["old"].id)
+        token = get_token(client, "mvadmin@example.com", "admin123")
+        p = client.get(f"/api/departments/{org['stroy'].id}/move-preview",
+                       params={"target_company_id": org["new"].id},
+                       headers=_h(token)).json()
+        assert p["entries_to_reattribute"] == 10   # только июнь, май закрыт
+
+        db_session.expire_all()
+        w = staff["worker"]
+        assert self._companies_of(db_session, w.id, 2026, 6) == {org["old"].id}
+
+    def test_closed_month_statement_still_identical(
+        self, client: TestClient, db_session, org, admin, staff
+    ):
+        """Перепривязка часов не должна сломать главное свойство: закрытый месяц
+        считается ровно так же."""
+        _fill_may(db_session, org, staff)
+        self._june(db_session, org, staff, org["old"].id)
+        ids = [staff["worker"].id, staff["combiner"].id, staff["bonus"].id]
+        before = _statement(db_session, ids, 2026, 5)
+
+        token = get_token(client, "mvadmin@example.com", "admin123")
+        _move(client, token, org["stroy"].id, org["new"].id)
+
+        assert _statement(db_session, ids, 2026, 5) == before
