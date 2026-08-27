@@ -15,6 +15,10 @@ from app.schemas.department import (
     DepartmentManagerRead,
     DepartmentManagersRead,
     DepartmentManagersUpdate,
+    DepartmentMoveMonth,
+    DepartmentMovePreview,
+    DepartmentMoveRequest,
+    DepartmentMoveResult,
     DepartmentRead,
     DepartmentSharesRead,
     DepartmentSharesUpdate,
@@ -22,6 +26,11 @@ from app.schemas.department import (
 )
 from app.schemas.payroll_statement import CompanyShareInput
 from app.services.company_shares import SharesValidationError, validate_shares
+from app.services.department_move import (
+    MoveError,
+    build_preview,
+    move_department,
+)
 from app.services.org_access import (
     hides_finances,
     is_department_scoped,
@@ -323,3 +332,81 @@ def set_department_shares(
                after={s.company_id: str(s.percent) for s in positive})
     db.commit()
     return _shares_response(db, dept_id)
+
+
+# ── Перенос отдела в другую компанию (task_move_department) ───────────────────
+
+def _move_target(db: Session, dept_id: int, target_company_id: int):
+    dept = db.get(Department, dept_id)
+    if not dept:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Department not found")
+    target = db.get(Company, target_company_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
+    return dept, target
+
+
+def _preview_response(preview) -> DepartmentMovePreview:
+    return DepartmentMovePreview(
+        department_id=preview.department_id,
+        department_name=preview.department_name,
+        source_company_id=preview.source_company_id,
+        source_company_name=preview.source_company_name,
+        target_company_id=preview.target_company_id,
+        target_company_name=preview.target_company_name,
+        employee_count=preview.employee_count,
+        position_count=preview.position_count,
+        untouched_position_count=preview.untouched_position_count,
+        closed_months=[
+            DepartmentMoveMonth(year=y, month=m) for y, m in preview.closed_months
+        ],
+        stale_share_position_count=preview.stale_share_position_count,
+        department_shares_stale=preview.department_shares_stale,
+    )
+
+
+@router.get("/{dept_id}/move-preview", response_model=DepartmentMovePreview)
+def preview_department_move(
+    dept_id: int,
+    target_company_id: int,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Что будет затронуто переносом: сколько сотрудников и рабочих мест переедет,
+    сколько подработок в других отделах останется на месте, какие закрытые месяцы
+    будут зафиксированы. Ничего не меняет."""
+    dept, target = _move_target(db, dept_id, target_company_id)
+    return _preview_response(build_preview(db, dept, target))
+
+
+@router.post("/{dept_id}/move", response_model=DepartmentMoveResult)
+def do_department_move(
+    dept_id: int,
+    payload: DepartmentMoveRequest,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Перенести отдел в другую компанию: головная компания отдела + компания его
+    рабочих мест, с текущего месяца вперёд.
+
+    Закрытые месяцы перед сменой фиксируются месячным override-ом, поэтому их
+    расклад по юрлицам остаётся ровно таким, каким его уже видела бухгалтерия.
+    Всё одной транзакцией: при сбое не остаётся ни половины переноса, ни
+    половины заморозки."""
+    dept, target = _move_target(db, dept_id, payload.target_company_id)
+    try:
+        result = move_department(db, dept, target, actor)
+    except MoveError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        ) from e
+    db.commit()
+    return DepartmentMoveResult(
+        department_id=dept_id,
+        target_company_id=target.id,
+        positions_moved=result.positions_moved,
+        employees_affected=result.employees_affected,
+        closed_months_frozen=result.closed_months_frozen,
+        override_rows_written=result.override_rows_written,
+    )

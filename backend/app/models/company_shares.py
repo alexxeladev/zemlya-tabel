@@ -94,7 +94,13 @@ class CompanyShareOverride(Base):
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     month: Mapped[int] = mapped_column(Integer, nullable=False)
-    percent: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+    #: Шесть знаков после запятой, а не три, как у остальных наборов:
+    #: перенос отдела в другую компанию (task_move_department) замораживает
+    #: расклад закрытых месяцев через этот override, вычисляя проценты из уже
+    #: посчитанных сумм. При трёх знаках обратный пересчёт расходился с
+    #: исходными суммами на единицы рублей — то есть «заморозка» сама двигала бы
+    #: историю. Ручной ввод в ведомости остаётся двухзначным.
+    percent: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
 
     created_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("employees.id"), nullable=True

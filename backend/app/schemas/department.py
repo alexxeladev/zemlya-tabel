@@ -80,3 +80,43 @@ class DepartmentSharesRead(BaseModel):
 
 class DepartmentSharesUpdate(BaseModel):
     shares: list[CompanyShareInput]
+
+
+# ── Перенос отдела в другую компанию (task_move_department) ───────────────────
+
+class DepartmentMoveRequest(BaseModel):
+    target_company_id: int
+
+
+class DepartmentMoveMonth(BaseModel):
+    year: int
+    month: int
+
+
+class DepartmentMovePreview(BaseModel):
+    """Что будет затронуто переносом — показывается в диалоге до подтверждения."""
+    department_id: int
+    department_name: str
+    source_company_id: Optional[int] = None
+    source_company_name: Optional[str] = None
+    target_company_id: int
+    target_company_name: str
+    employee_count: int
+    position_count: int
+    #: Рабочие места тех же людей в ДРУГИХ отделах — они не переносятся.
+    untouched_position_count: int
+    #: Закрытые месяцы отдела: их расклад по юрлицам будет зафиксирован как есть.
+    closed_months: list[DepartmentMoveMonth]
+    #: У скольких позиций задан явный %, не включающий целевую компанию.
+    stale_share_position_count: int
+    #: Дефолт распределения самого отдела не включает целевую компанию.
+    department_shares_stale: bool
+
+
+class DepartmentMoveResult(BaseModel):
+    department_id: int
+    target_company_id: int
+    positions_moved: int
+    employees_affected: int
+    closed_months_frozen: int
+    override_rows_written: int
