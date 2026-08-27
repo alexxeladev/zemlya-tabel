@@ -49,6 +49,10 @@ class StatementCompanyRef(BaseModel):
     id: int
     code: str
     name: str
+    # Короткое имя для заголовка колонки (ч.2): код в шапке ведомости человеку
+    # ничего не говорит. Полное имя остаётся в `name` — оно идёт в подсказку.
+    display_name: str = ""
+    sort_order: int = 0
 
 
 class StatementCompanyAmount(BaseModel):
@@ -83,6 +87,10 @@ class StatementRow(BaseModel):
     base_shifts: int = 0
     norm_hours: Decimal | None
     fact_hours: Decimal
+    # Плановые и фактические ДНИ (смены) месяца — в деньгах не участвуют, но в
+    # ведомости стоят рядом с часами: по ним видно, из чего сложился факт.
+    norm_days: int | None = None
+    fact_days: int = 0
     overtime_coefficient: Decimal
     overtime_hours: Decimal
     overtime_amount: Decimal
@@ -152,6 +160,12 @@ class PayrollStatementRead(BaseModel):
     month: int
     companies: list[StatementCompanyRef]
     rows: list[StatementRow]
+
+    # Шапка выгрузки (task_vedomost_format ч.3): для какого юрлица и какого
+    # подразделения сформирована ведомость. Считаются при сборке — в Excel
+    # ходить в БД за ними нельзя, экспортёр работает только со схемой.
+    organization: str = ""
+    subdivision: str = ""
 
     total_overtime_amount: Decimal
     total_base_salary: Decimal
