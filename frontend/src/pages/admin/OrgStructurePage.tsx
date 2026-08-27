@@ -13,7 +13,7 @@
  * (в узле только счётчик), иначе при 100+ сотрудниках дерево разворачивается в
  * гигантский DOM.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createCompany, updateCompany, deleteCompany } from '../../api/companies'
 import {
@@ -23,6 +23,8 @@ import {
   setDepartmentManagers,
   getDepartmentShares,
   setDepartmentShares,
+  previewDepartmentMove,
+  moveDepartment,
 } from '../../api/departments'
 import { listCompanies } from '../../api/companies'
 import { listEmployees } from '../../api/employees'
@@ -30,7 +32,14 @@ import { getOrgTree } from '../../api/org'
 import { ApiError } from '../../api/client'
 import { useApi } from '../../hooks/useApi'
 import { toast } from '../../store/toasts'
-import type { CompanyShare, OrgCompany, OrgDepartment, OrgEmployee } from '../../types/api'
+import type {
+  Company,
+  CompanyShare,
+  DepartmentMovePreview,
+  OrgCompany,
+  OrgDepartment,
+  OrgEmployee,
+} from '../../types/api'
 import { SharesEditor, type SharesMap } from '../../components/SharesEditor'
 import { Badge } from '../../components/Badge'
 import { Button } from '../../components/Button'
@@ -98,10 +107,18 @@ interface DeptNodeProps {
   onEdit: (d: OrgDepartment) => void
   onDelete: (d: OrgDepartment) => void
   onManagers: (d: OrgDepartment) => void
+  onMove: (d: OrgDepartment) => void
   onOpenEmployee: (id: number) => void
 }
 
-function DepartmentNode({ dept, onEdit, onDelete, onManagers, onOpenEmployee }: DeptNodeProps) {
+function DepartmentNode({
+  dept,
+  onEdit,
+  onDelete,
+  onManagers,
+  onMove,
+  onOpenEmployee,
+}: DeptNodeProps) {
   const [open, setOpen] = useState(false)
 
   return (
@@ -140,6 +157,9 @@ function DepartmentNode({ dept, onEdit, onDelete, onManagers, onOpenEmployee }: 
         <div className="ml-auto flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
           <Button size="sm" variant="ghost" onClick={() => onManagers(dept)}>
             Ответственные
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => onMove(dept)}>
+            Перенести
           </Button>
           <Button size="sm" variant="ghost" onClick={() => onEdit(dept)}>
             Изменить
@@ -261,6 +281,8 @@ export function OrgStructurePage() {
   const [companyForm, setCompanyForm] = useState<CompanyForm | null>(null)
   const [deptForm, setDeptForm] = useState<DepartmentForm | null>(null)
   const [managersFor, setManagersFor] = useState<OrgDepartment | null>(null)
+  // Перенос отдела в другую компанию (task_move_department).
+  const [moveFor, setMoveFor] = useState<OrgDepartment | null>(null)
   // Дефолт распределения по юрлицам на уровне отдела (task_distribution_v2 ч.3):
   // редактируется здесь же, чтобы вместе с вкладкой «Отделы» не потерялся.
   const { data: allCompanies } = useApi(listCompanies)
@@ -396,6 +418,7 @@ export function OrgStructurePage() {
       }),
     onDelete: setDeleteDeptTarget,
     onManagers: setManagersFor,
+    onMove: setMoveFor,
     onOpenEmployee: openEmployee,
   }
 
@@ -643,6 +666,18 @@ export function OrgStructurePage() {
         )}
       </Modal>
 
+      {moveFor && (
+        <MoveDepartmentModal
+          dept={moveFor}
+          companies={allCompanies ?? []}
+          onClose={() => setMoveFor(null)}
+          onMoved={() => {
+            setMoveFor(null)
+            refetch()
+          }}
+        />
+      )}
+
       {managersFor && (
         <ManagersModal
           dept={managersFor}
@@ -787,5 +822,184 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <label className="text-sm font-medium text-gray-700">{label}</label>
       {children}
     </div>
+  )
+}
+
+
+// ── Перенос отдела в другую компанию (task_move_department) ──────────────────
+
+/** Месяц закрытого периода — «05.2026». */
+function fmtMonth(m: { year: number; month: number }): string {
+  return `${String(m.month).padStart(2, '0')}.${m.year}`
+}
+
+/**
+ * Диалог переноса. Предпросмотр тянется с бэка при каждом выборе компании —
+ * считать «сколько позиций переедет» на фронте нельзя: дерево знает про
+ * сотрудников отдела, но не про их рабочие места в других отделах, а именно они
+ * и НЕ должны переехать.
+ */
+function MoveDepartmentModal({
+  dept,
+  companies,
+  onClose,
+  onMoved,
+}: {
+  dept: OrgDepartment
+  companies: Company[]
+  onClose: () => void
+  onMoved: () => void
+}) {
+  const [target, setTarget] = useState<number | null>(null)
+  const [preview, setPreview] = useState<DepartmentMovePreview | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  // Целевая компания — любая активная, кроме текущей головной: перенос «в себя»
+  // бэк отвергает.
+  const options = useMemo(
+    () => companies.filter((c) => c.is_active && c.id !== dept.head_company_id),
+    [companies, dept.head_company_id],
+  )
+
+  useEffect(() => {
+    if (target == null) {
+      setPreview(null)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    previewDepartmentMove(dept.id, target)
+      .then((p) => {
+        if (!cancelled) setPreview(p)
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setPreview(null)
+          toast.error(err(e))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dept.id, target])
+
+  const submit = async () => {
+    if (target == null) return
+    setSaving(true)
+    try {
+      const res = await moveDepartment(dept.id, target)
+      toast.success(
+        `Отдел перенесён: рабочих мест ${res.positions_moved}` +
+          (res.closed_months_frozen > 0
+            ? `, закреплено закрытых месяцев ${res.closed_months_frozen}`
+            : ''),
+      )
+      onMoved()
+    } catch (e) {
+      toast.error(err(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={`Перенести отдел «${dept.name}»`}
+      actions={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={saving}>
+            Отмена
+          </Button>
+          <Button onClick={submit} disabled={target == null || saving || loading}>
+            {saving ? 'Переносим…' : 'Перенести'}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <Field label="Целевая компания">
+          <select
+            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+            value={target ?? ''}
+            onChange={(e) => setTarget(e.target.value ? Number(e.target.value) : null)}
+          >
+            <option value="">— выберите компанию —</option>
+            {options.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        {loading && <p className="text-sm text-gray-500">Считаем, что будет затронуто…</p>}
+
+        {preview && !loading && (
+          <>
+            <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm">
+              <p className="text-gray-900">
+                Отдел <b>{preview.department_name}</b>
+                {preview.source_company_name && (
+                  <> из «{preview.source_company_name}»</>
+                )}{' '}
+                → компания <b>{preview.target_company_name}</b>
+              </p>
+              <p className="mt-1 text-gray-600">
+                Сотрудников: <b>{preview.employee_count}</b>, рабочих мест переедет:{' '}
+                <b>{preview.position_count}</b>
+              </p>
+              {preview.untouched_position_count > 0 && (
+                <p className="mt-1 text-gray-600">
+                  Рабочих мест этих же людей в других отделах:{' '}
+                  <b>{preview.untouched_position_count}</b> — останутся на своих компаниях
+                </p>
+              )}
+            </div>
+
+            {/* Смена расчётной привязки — главное, что нужно понимать до нажатия */}
+            <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <p>
+                Смена действует <b>с текущего месяца вперёд</b>: незакрытый и будущие
+                периоды будут считаться на новую компанию.
+              </p>
+              {preview.closed_months.length > 0 && (
+                <p className="mt-1">
+                  Закрытых месяцев: <b>{preview.closed_months.length}</b> (
+                  {preview.closed_months.map(fmtMonth).join(', ')}) — их расклад по
+                  юрлицам будет зафиксирован как есть и не изменится.
+                </p>
+              )}
+            </div>
+
+            {(preview.stale_share_position_count > 0 || preview.department_shares_stale) && (
+              <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                <p className="font-medium">Проверьте распределение по юрлицам</p>
+                {preview.stale_share_position_count > 0 && (
+                  <p className="mt-1">
+                    У {preview.stale_share_position_count} рабочих мест в карточке задан
+                    явный процент, и «{preview.target_company_name}» в него не входит.
+                    Перенос проценты не меняет, а стоят они в каскаде выше расчёта по
+                    часам — зарплата продолжит уходить на прежние юрлица, пока их не
+                    поправят вручную.
+                  </p>
+                )}
+                {preview.department_shares_stale && (
+                  <p className="mt-1">
+                    У самого отдела задан дефолт распределения без «
+                    {preview.target_company_name}» — его тоже стоит пересмотреть.
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </Modal>
   )
 }

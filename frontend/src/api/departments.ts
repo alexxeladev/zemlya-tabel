@@ -2,6 +2,8 @@ import type {
   CompanyShare,
   Department,
   DepartmentManagers,
+  DepartmentMovePreview,
+  DepartmentMoveResult,
   DepartmentShares,
 } from '../types/api'
 import { apiClient } from './client'
@@ -52,3 +54,21 @@ export const getDepartmentShares = (id: number) =>
 
 export const setDepartmentShares = (id: number, shares: CompanyShare[]) =>
   apiClient.put<DepartmentShares>(`/api/departments/${id}/company-shares`, { shares }).then((r) => r.data)
+
+
+// ── Перенос отдела в другую компанию (task_move_department) ──────────────────
+/** Что будет затронуто переносом. Ничего не меняет — только для диалога. */
+export const previewDepartmentMove = (id: number, targetCompanyId: number) =>
+  apiClient
+    .get<DepartmentMovePreview>(`/api/departments/${id}/move-preview`, {
+      params: { target_company_id: targetCompanyId },
+    })
+    .then((r) => r.data)
+
+/** Перенести отдел: головная компания + компании рабочих мест ЭТОГО отдела. */
+export const moveDepartment = (id: number, targetCompanyId: number) =>
+  apiClient
+    .post<DepartmentMoveResult>(`/api/departments/${id}/move`, {
+      target_company_id: targetCompanyId,
+    })
+    .then((r) => r.data)
