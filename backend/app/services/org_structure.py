@@ -17,6 +17,7 @@ from app.schemas.org import (
     OrgEmployeeRead,
     OrgTreeRead,
 )
+from app.services.company_order import company_order_by
 
 
 def _employee_read(emp: Employee) -> OrgEmployeeRead:
@@ -37,7 +38,7 @@ def _by_name(items: list[Employee]) -> list[Employee]:
 def build_org_tree(db: Session, include_inactive: bool = False) -> OrgTreeRead:
     """Собрать дерево целиком за несколько запросов (без N+1)."""
     dept_q = db.query(Department).options(selectinload(Department.managers))
-    comp_q = db.query(Company)
+    comp_q = db.query(Company).order_by(*company_order_by())
     emp_q = db.query(Employee).filter(Employee.is_system_admin == False)  # noqa: E712
     if not include_inactive:
         dept_q = dept_q.filter(Department.is_active == True)  # noqa: E712
@@ -80,6 +81,8 @@ def build_org_tree(db: Session, include_inactive: bool = False) -> OrgTreeRead:
                 code=c.code,
                 name=c.name,
                 inn=c.inn,
+                short_name=c.short_name,
+                sort_order=c.sort_order,
                 is_active=c.is_active,
                 departments=[
                     dept_read(d)

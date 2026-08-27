@@ -20,9 +20,11 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from app.models.companies import Company
 from app.models.department_applications import DepartmentApplication
 from app.models.departments import Department
 from app.schemas.application import ApplicationShareRead, DepartmentApplicationsRead
+from app.services.company_order import company_order_by, order_index
 from app.services.distribution import PERCENT_STEP, distribute
 
 _ZERO = Decimal("0")
@@ -140,6 +142,10 @@ def department_applications_state(
         .filter(Department.id.in_(flagged))
         .all()
     )
+    # Колонки юрлиц — в настроенном порядке справочника (ч.1).
+    company_order = order_index(
+        cid for (cid,) in db.query(Company.id).order_by(*company_order_by()).all()
+    )
     state: list[DepartmentApplicationsRead] = []
     for dept_id in sorted(flagged):
         parts = parts_by_dept.get(dept_id, {})
@@ -158,7 +164,9 @@ def department_applications_state(
                     count=counts[cid],
                     percent=percents.get(cid, _ZERO),
                 )
-                for cid in sorted(parts)
+                for cid in sorted(
+                    parts, key=lambda c: (company_order.get(c, len(company_order)), c)
+                )
             ],
             total_in_progress=sum(work for work, _ in parts.values()),
             total_closed=sum(closed for _, closed in parts.values()),

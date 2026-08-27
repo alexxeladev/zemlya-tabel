@@ -11,12 +11,18 @@ from app.core.deps import get_current_user
 from app.database import get_db
 from app.models.audit_log import AuditLog
 from app.models.companies import Company
+from app.models.company_shares import CompanyShareOverride
 from app.models.departments import Department
 from app.models.employee_adjustments import EmployeeAdjustment
 from app.models.employees import Employee
 from app.models.loan_deductions import LoanDeduction
+from app.models.production_calendars import ProductionCalendar
 from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.absence import AbsenceInput, AbsenceRead
+from app.schemas.application import (
+    DepartmentApplicationsRead,
+    DepartmentApplicationsUpdate,
+)
 from app.schemas.night_shift import NightFundRead, NightShiftInput, NightShiftRead
 from app.schemas.payout import (
     AdjustmentCreate,
@@ -25,10 +31,6 @@ from app.schemas.payout import (
 )
 from app.schemas.payroll import (
     PayrollSummaryRead,
-)
-from app.schemas.application import (
-    DepartmentApplicationsRead,
-    DepartmentApplicationsUpdate,
 )
 from app.schemas.payroll_statement import (
     DistributionOverrideInput,
@@ -49,8 +51,6 @@ from app.schemas.timesheet_period import (
     TasksResponse,
     TimesheetPeriodRead,
 )
-from app.models.company_shares import CompanyShareOverride
-from app.models.production_calendars import ProductionCalendar
 from app.services.absences import (
     absence_code,
     get_month_absences,
@@ -58,25 +58,21 @@ from app.services.absences import (
     schedules_by_employee,
     set_absence,
 )
+from app.services.applications import (
+    department_applications_state,
+    set_department_applications,
+)
+from app.services.company_order import company_order_by, order_index
+from app.services.finance_masking import (
+    mask_employees,
+    mask_payroll_summary,
+    mask_positions_by_employee,
+)
 from app.services.night_shifts import (
     NightLimitExceeded,
     get_month_night_shifts,
     load_night_context,
     set_night_shift,
-)
-from app.services.applications import (
-    department_applications_state,
-    set_department_applications,
-)
-from app.services.payroll_statement import (
-    build_applications_distribution,
-    build_payroll_statement,
-    build_payroll_summary,
-)
-from app.services.finance_masking import (
-    mask_employees,
-    mask_payroll_summary,
-    mask_positions_by_employee,
 )
 from app.services.org_access import (
     can_access_department,
@@ -84,6 +80,11 @@ from app.services.org_access import (
     hides_finances,
     is_department_scoped,
     managed_department_ids,
+)
+from app.services.payroll_statement import (
+    build_applications_distribution,
+    build_payroll_statement,
+    build_payroll_summary,
 )
 from app.services.positions import department_ids_of, visible_positions
 from app.services.timesheet import (
@@ -576,13 +577,18 @@ def get_month(
     _require_dept_access(actor, department_id)
 
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
-    companies = db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
+    companies = (
+        db.query(Company).filter(Company.is_active == True)  # noqa: E712
+        .order_by(*company_order_by()).all()
+    )
     # Периоды — ДО загрузки часов: они могут коммитить (lazy-создание при первом
     # заходе в месяц), а коммит обесценил бы уже загруженные ячейки, и каждая
     # перезагружалась бы отдельным запросом.
     periods = _build_periods_for_response(db, employees, year, month, actor)
     entries = get_month_entries(db, employees, year, month)
-    extra_companies = compute_extra_companies_by_employee(employees, entries)
+    extra_companies = compute_extra_companies_by_employee(
+        employees, entries, order_index(c.id for c in companies)
+    )
     # Больничные сверх годового лимита помечаем сразу в выдаче: лимит считается
     # хронологически по всему году, ячейка сама этого знать не может.
     cal_for_year = db.query(ProductionCalendar).filter_by(year=year).first()
