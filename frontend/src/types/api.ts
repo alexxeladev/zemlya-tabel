@@ -565,6 +565,36 @@ export interface Company {
   is_active: boolean
 }
 
+/** Перенос отдела в другую компанию (task_move_department): что будет затронуто.
+ *  Закрытые месяцы перед сменой фиксируются как есть, поэтому прошлое не едет. */
+export interface DepartmentMovePreview {
+  department_id: number
+  department_name: string
+  source_company_id: number | null
+  source_company_name: string | null
+  target_company_id: number
+  target_company_name: string
+  employee_count: number
+  position_count: number
+  /** рабочие места тех же людей в ДРУГИХ отделах — они остаются на своих компаниях */
+  untouched_position_count: number
+  /** закрытые месяцы отдела: их расклад по юрлицам будет зафиксирован */
+  closed_months: { year: number; month: number }[]
+  /** у скольких позиций задан явный %, не включающий целевую компанию */
+  stale_share_position_count: number
+  /** дефолт распределения самого отдела не включает целевую компанию */
+  department_shares_stale: boolean
+}
+
+export interface DepartmentMoveResult {
+  department_id: number
+  target_company_id: number
+  positions_moved: number
+  employees_affected: number
+  closed_months_frozen: number
+  override_rows_written: number
+}
+
 /** Тип оплаты позиции: оклад / смены × ставка / часы × ставка за час */
 export type PayType = 'salary' | 'per_shift' | 'hourly'
 
