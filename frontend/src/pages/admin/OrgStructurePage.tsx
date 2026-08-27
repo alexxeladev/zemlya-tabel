@@ -15,7 +15,12 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { createCompany, updateCompany, deleteCompany } from '../../api/companies'
+import {
+  createCompany,
+  updateCompany,
+  deleteCompany,
+  reorderCompanies,
+} from '../../api/companies'
 import {
   createDepartment,
   updateDepartment,
@@ -47,7 +52,16 @@ import { Confirm } from '../../components/Confirm'
 import { Modal } from '../../components/Modal'
 import { PageHeader } from '../../components/PageHeader'
 
-type CompanyForm = { id?: number; code: string; name: string; inn: string }
+type CompanyForm = {
+  id?: number
+  code: string
+  name: string
+  inn: string
+  /** короткое название для узких колонок; пусто — выводится из name */
+  short_name: string
+  /** порядок перечисления юрлиц; правится и стрелками в дереве */
+  sort_order: string
+}
 type DepartmentForm = {
   id?: number
   name: string
@@ -211,6 +225,10 @@ function DepartmentNode({
 
 interface CompanyNodeProps extends Omit<DeptNodeProps, 'dept'> {
   company: OrgCompany
+  /** переставить юрлицо в общем порядке (не путать с onMove — там перенос отдела) */
+  onReorder: (dir: -1 | 1) => void
+  canMoveUp: boolean
+  canMoveDown: boolean
   onEditCompany: (c: OrgCompany) => void
   onDeleteCompany: (c: OrgCompany) => void
   onAddDepartment: (companyId: number) => void
@@ -219,6 +237,9 @@ interface CompanyNodeProps extends Omit<DeptNodeProps, 'dept'> {
 function CompanyNode({
   company,
   onEditCompany,
+  onReorder,
+  canMoveUp,
+  canMoveDown,
   onDeleteCompany,
   onAddDepartment,
   ...deptProps
@@ -241,6 +262,29 @@ function CompanyNode({
             {company.departments.length} отд. · {total} чел.
           </span>
         </button>
+
+        {/* Порядок юрлица в общем списке — он же порядок колонок и чипов
+            во всех экранах и выгрузках (task_vedomost_format ч.1). */}
+        <div className="flex flex-col leading-none">
+          <button
+            type="button"
+            title="Выше в общем порядке юрлиц"
+            disabled={!canMoveUp}
+            onClick={() => onReorder(-1)}
+            className="px-1 text-[10px] text-gray-400 hover:text-gray-700 disabled:opacity-25"
+          >
+            ▲
+          </button>
+          <button
+            type="button"
+            title="Ниже в общем порядке юрлиц"
+            disabled={!canMoveDown}
+            onClick={() => onReorder(1)}
+            className="px-1 text-[10px] text-gray-400 hover:text-gray-700 disabled:opacity-25"
+          >
+            ▼
+          </button>
+        </div>
 
         <div className="ml-auto flex gap-1">
           <Button size="sm" variant="secondary" onClick={() => onAddDepartment(company.id)}>
@@ -296,12 +340,28 @@ export function OrgStructurePage() {
 
   const openEmployee = (id: number) => navigate(`/admin/employees?employee_id=${id}`)
 
+  /** Переставить юрлицо на одну позицию. Шлём ПОЛНЫЙ порядок: он один на всю
+   *  систему, и частичная правка оставила бы совпадающие sort_order. */
+  const moveCompany = async (index: number, dir: -1 | 1) => {
+    const target = index + dir
+    if (target < 0 || target >= companies.length) return
+    const ids = companies.map((c) => c.id)
+    ;[ids[index], ids[target]] = [ids[target], ids[index]]
+    try {
+      await reorderCompanies(ids)
+      refetch()
+    } catch (e) {
+      toast.error(err(e))
+    }
+  }
+
   const saveCompany = async () => {
     if (!companyForm) return
     const payload = {
       code: companyForm.code.trim(),
       name: companyForm.name.trim(),
       inn: companyForm.inn.trim() || null,
+      short_name: companyForm.short_name.trim() || null,
     }
     if (!payload.code || !payload.name) {
       toast.error('Код и название обязательны')
@@ -310,7 +370,13 @@ export function OrgStructurePage() {
     setSaving(true)
     try {
       if (companyForm.id) {
-        await updateCompany(companyForm.id, payload)
+        // Порядок правится и стрелками в дереве; из формы он идёт только когда
+        // админ вписал число руками.
+        const order = parseInt(companyForm.sort_order, 10)
+        await updateCompany(companyForm.id, {
+          ...payload,
+          ...(Number.isFinite(order) ? { sort_order: order } : {}),
+        })
         toast.success('Компания обновлена')
       } else {
         await createCompany(payload)
@@ -431,7 +497,7 @@ export function OrgStructurePage() {
         title="Оргструктура"
         description="Компания → Отдел → Сотрудники. Головная компания отдела — группировка в дереве; на расчёт ЗП и мультикомпанию сотрудников не влияет."
         action={
-          <Button onClick={() => setCompanyForm({ code: '', name: '', inn: '' })}>
+          <Button onClick={() => setCompanyForm({ code: '', name: '', inn: '', short_name: '', sort_order: '' })}>
             + Компания
           </Button>
         }
@@ -440,16 +506,21 @@ export function OrgStructurePage() {
       {isLoading && <p className="text-sm text-gray-500">Загрузка…</p>}
 
       <div className="flex flex-col gap-2">
-        {companies.map((c) => (
+        {companies.map((c, i) => (
           <CompanyNode
             key={c.id}
             company={c}
+            onReorder={(dir) => moveCompany(i, dir)}
+            canMoveUp={i > 0}
+            canMoveDown={i < companies.length - 1}
             onEditCompany={(comp) =>
               setCompanyForm({
                 id: comp.id,
                 code: comp.code,
                 name: comp.name,
                 inn: comp.inn ?? '',
+                short_name: comp.short_name ?? '',
+                sort_order: String(comp.sort_order ?? 0),
               })
             }
             onDeleteCompany={setDeleteCompanyTarget}
@@ -534,6 +605,30 @@ export function OrgStructurePage() {
                 placeholder="необязательно"
               />
             </Field>
+            <Field label="Короткое название (для узких колонок)">
+              <input
+                className={inputCls}
+                value={companyForm.short_name}
+                onChange={(e) => setCompanyForm({ ...companyForm, short_name: e.target.value })}
+                placeholder="пусто — выводится из названия"
+              />
+            </Field>
+            {companyForm.id && (
+              <Field label="Порядок в списке юрлиц">
+                <input
+                  className={inputCls}
+                  type="number"
+                  value={companyForm.sort_order}
+                  onChange={(e) =>
+                    setCompanyForm({ ...companyForm, sort_order: e.target.value })
+                  }
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Порядок колонок и подписей юрлиц во всех экранах и выгрузках.
+                  Быстрее переставлять стрелками ▲▼ в дереве.
+                </p>
+              </Field>
+            )}
           </div>
         )}
       </Modal>

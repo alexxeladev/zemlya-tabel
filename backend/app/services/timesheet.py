@@ -86,14 +86,16 @@ def get_month_entries(
 def compute_extra_companies_by_employee(
     employees: list[Employee],
     entries: list[TimesheetEntry],
+    company_order: dict[int, int] | None = None,
 ) -> dict[int, list[int]]:
     """Юрлица сотрудника помимо основного — по одному проходу по ячейкам.
 
     Раньше на каждого сотрудника сканировался ВЕСЬ список ячеек месяца, то есть
     O(сотрудники × ячейки): на 200 сотрудниках это 1,2 млн итераций и ~10 с из
     13 с всего запроса табеля. Результат тот же: ключ есть у каждого сотрудника
-    (в том числе без часов), основная компания из списка исключена, порядок
-    возрастающий.
+    (в том числе без часов), основная компания из списка исключена. Порядок —
+    настроенный в справочнике (`company_order`: id → место, из
+    services/company_order); без него, как и раньше, по возрастанию id.
     """
     companies_by_emp: dict[int, set[int]] = {emp.id: set() for emp in employees}
     for entry in entries:
@@ -107,7 +109,13 @@ def compute_extra_companies_by_employee(
         emp_company_ids = companies_by_emp[emp.id]
         if emp.default_company_id is not None:
             emp_company_ids.discard(emp.default_company_id)
-        result[emp.id] = sorted(emp_company_ids)
+        result[emp.id] = sorted(
+            emp_company_ids,
+            key=lambda cid: (
+                (company_order.get(cid, len(company_order)), cid)
+                if company_order is not None else (0, cid)
+            ),
+        )
     return result
 
 

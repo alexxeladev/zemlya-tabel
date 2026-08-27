@@ -789,7 +789,15 @@ def calculate_position_payroll(
         # Часы переработки по компании — пропорционально часам компании
         # (целочисленным методом наибольших остатков, сумма = overtime_hours).
         overtime_hours_parts = _distribute_whole_rubles(overtime_hours, company_hours)
-        for cid in sorted(company_hours.keys()):
+        # Порядок разбивки — настроенный в справочнике (task_vedomost_format
+        # ч.1): companies_by_id приходит из запроса с company_order_by(), то
+        # есть его ключи уже идут как надо. Функция остаётся чистой — за
+        # порядком в БД она не ходит.
+        _company_order = {cid: i for i, cid in enumerate(companies_by_id)}
+        for cid in sorted(
+            company_hours.keys(),
+            key=lambda c: (_company_order.get(c, len(_company_order)), c),
+        ):
             comp_hours = company_hours[cid]
             proportion = comp_hours / total_hours
             percent = (proportion * _HUNDRED).quantize(_PERCENT_Q, rounding=ROUND_HALF_EVEN)

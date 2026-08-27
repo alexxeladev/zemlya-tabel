@@ -16,6 +16,7 @@ from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
 from app.services.absences import absence_code, get_month_absences
 from app.services.calendar import get_month_data, parse_days_string
+from app.services.company_order import company_order_by, sort_company_ids
 from app.services.positions import visible_positions
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 from app.services.work_schedule import (
@@ -212,7 +213,11 @@ def generate_t13_excel(
 
     # Компании
     companies_by_id: dict[int, Company] = {
-        c.id: c for c in db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
+        c.id: c
+        for c in (
+            db.query(Company).filter(Company.is_active == True)  # noqa: E712
+            .order_by(*company_order_by()).all()
+        )
     }
 
     # Рабочие места, видимые актору (task_positions ч.B): в табеле отдела —
@@ -257,14 +262,18 @@ def generate_t13_excel(
     for emp in employees:
         blocks: list[tuple[EmployeePosition | None, list[int | None]]] = []
         for position in positions_by_emp.get(emp.id, []):
-            used = sorted({
-                cid
-                for (eid, pid, _day), by_company in entries_index.items()
-                if eid == emp.id and pid == position.id
-                for cid in by_company
-            })
+            # Порядок строк-юрлиц — настроенный в справочнике (ч.1), а не по id.
+            used = sort_company_ids(
+                {
+                    cid
+                    for (eid, pid, _day), by_company in entries_index.items()
+                    if eid == emp.id and pid == position.id
+                    for cid in by_company
+                },
+                companies_by_id,
+            )
             if used:
-                blocks.append((position, list(used)))
+                blocks.append((position, used))
         if not blocks and emp.id in absence_days_by_emp:
             # Часов нет, но есть коды отсутствий — сотрудника всё равно показываем
             # (месяц в отпуске/на больничном обязан попасть в табель). Отсутствие

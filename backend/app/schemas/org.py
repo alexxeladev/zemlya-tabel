@@ -43,6 +43,10 @@ class OrgCompanyRead(BaseModel):
     code: str
     name: str
     inn: Optional[str] = None
+    # Короткое название и порядок (task_vedomost_format ч.1/ч.2) — правятся
+    # в этом же дереве, поэтому приходят вместе с ним.
+    short_name: Optional[str] = None
+    sort_order: int = 0
     is_active: bool
     departments: list[OrgDepartmentRead]
 

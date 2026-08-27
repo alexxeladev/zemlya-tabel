@@ -193,6 +193,9 @@ export interface StatementCompanyRef {
   id: number
   code: string
   name: string
+  /** короткое имя для заголовка колонки; полное — в name (идёт в подсказку) */
+  display_name: string
+  sort_order: number
 }
 
 export interface StatementCompanyAmount {
@@ -547,6 +550,10 @@ export interface OrgCompany {
   code: string
   name: string
   inn: string | null
+  /** короткое название для узких колонок; пусто — выводится из name */
+  short_name: string | null
+  /** порядок перечисления юрлиц — общий для всех экранов и выгрузок */
+  sort_order: number
   is_active: boolean
   departments: OrgDepartment[]
 }
@@ -562,6 +569,10 @@ export interface Company {
   code: string
   name: string
   inn: string | null
+  short_name: string | null
+  sort_order: number
+  /** короткое имя, уже разрешённое бэком: short_name → name без правовой формы → код */
+  display_name: string
   is_active: boolean
 }
 
