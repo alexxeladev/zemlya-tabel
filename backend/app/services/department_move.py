@@ -45,6 +45,7 @@ from app.models.company_shares import (
 from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
+from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
 from app.services.distribution import distribute
 from app.services.payroll_statement import build_payroll_statement
@@ -81,6 +82,8 @@ class MovePreview:
     stale_share_position_count: int = 0
     #: Дефолт распределения отдела не включает целевую компанию.
     department_shares_stale: bool = False
+    #: Ячеек часов в НЕзакрытых месяцах, которые сменят юрлицо со старого на целевое.
+    entries_to_reattribute: int = 0
 
 
 @dataclass
@@ -91,6 +94,8 @@ class MoveResult:
     #: и ноль — если расклад там уже задан руками бухгалтером.
     closed_months_frozen: int
     override_rows_written: int
+    #: Ячеек часов, перепривязанных со старого юрлица на целевое.
+    entries_reattributed: int = 0
 
 
 def _target_positions(db: Session, department_id: int) -> list[EmployeePosition]:
@@ -197,6 +202,7 @@ def build_preview(
         dept_share_companies and target_company.id not in dept_share_companies
     )
     source = db.get(Company, dept.head_company_id) if dept.head_company_id else None
+    months = closed_months(db, dept.id)
     return MovePreview(
         department_id=dept.id,
         department_name=dept.name,
@@ -207,11 +213,19 @@ def build_preview(
         employee_count=len(employees),
         position_count=len(positions),
         untouched_position_count=untouched,
-        closed_months=closed_months(db, dept.id),
+        closed_months=months,
         stale_share_position_count=_stale_share_positions(
             db, positions, target_company.id
         ),
         department_shares_stale=dept_shares_stale,
+        entries_to_reattribute=(
+            _reattribute_entries(
+                db, employees, {p.id for p in positions}, dept.head_company_id,
+                target_company.id, set(months), apply=False,
+            )
+            if dept.head_company_id is not None
+            else 0
+        ),
     )
 
 
@@ -263,18 +277,21 @@ def _freeze_month(
             continue
         if (row.employee_id, row.position_id) in already:
             continue
-        if row.accrued_total is None or row.accrued_total <= _ZERO:
-            # Начислять нечего — фиксировать тоже нечего: расклад нуля от
-            # компании не зависит.
-            continue
-        amounts = {
-            d.company_id: d.amount for d in row.distribution if d.amount > _ZERO
-        }
-        if not amounts:
-            continue
         # Проценты — из СУММ, а не из исходных весов: так обратный пересчёт
         # (`distribute` от процентов) возвращает ровно те же рубли.
-        percents = distribute(_HUNDRED, amounts, None, FREEZE_PERCENT_STEP)
+        weights = {
+            d.company_id: d.amount for d in row.distribution if d.amount > _ZERO
+        }
+        if not weights:
+            # Начислений нет (0 ₽) — сумму фиксировать нечем, но ПРИВЯЗКА строки
+            # к юрлицу всё равно поехала бы: у строки без часов расклад берётся
+            # от основной компании, а она меняется. Фиксируем по процентам.
+            weights = {
+                d.company_id: d.percent for d in row.distribution if d.percent > _ZERO
+            }
+        if not weights:
+            continue
+        percents = distribute(_HUNDRED, weights, None, FREEZE_PERCENT_STEP)
         for company_id, percent in percents.items():
             db.add(
                 CompanyShareOverride(
@@ -289,6 +306,103 @@ def _freeze_month(
             )
             written += 1
     return written
+
+
+def _entry_position_ids(
+    employees: list[Employee], moved_position_ids: set[int]
+) -> dict[int, set[int | None]]:
+    """{employee_id: {position_id, ...}} — какие position_id ячеек принадлежат
+    переносимым рабочим местам.
+
+    `position_id IS NULL` — ячейка, заведённая до появления позиций: она читается
+    как ОСНОВНАЯ позиция (`Employee.position_by_id`). Если основная позиция
+    сотрудника переезжает, такие ячейки обязаны переехать вместе с ней, иначе
+    часть часов молча останется на старом юрлице.
+    """
+    result: dict[int, set[int | None]] = {}
+    for emp in employees:
+        ids: set[int | None] = {
+            p.id for p in emp.positions if p.id in moved_position_ids
+        }
+        if not ids:
+            continue
+        primary = emp.primary_position
+        if primary is not None and primary.id in moved_position_ids:
+            ids.add(None)
+        result[emp.id] = ids
+    return result
+
+
+def _reattribute_entries(
+    db: Session,
+    employees: list[Employee],
+    moved_position_ids: set[int],
+    source_company_id: int,
+    target_company_id: int,
+    closed: set[tuple[int, int]],
+    apply: bool,
+) -> int:
+    """Перевести уже введённые часы со СТАРОГО юрлица отдела на целевое —
+    в месяцах, которые НЕ закрыты. Возвращает число затронутых ячеек.
+
+    Зачем вообще: компания лежит в самой ячейке, и без этого весь заполненный
+    текущий месяц остался бы на прежнем юрлице — то есть «с текущего месяца
+    вперёд» не выполнялось бы, деньги за август ушли бы старой компании.
+
+    Что НЕ трогаем:
+      * закрытые месяцы — там расклад заморожен (и по нему уже отчитались);
+      * ячейки на ДРУГИХ юрлицах — это осознанная работа сотрудника на сторону,
+        а не «часы отдела»; переносим только то, что было на старой головной.
+
+    Столкновение: если в тот же день на то же рабочее место уже есть ячейка
+    целевого юрлица, часы СКЛАДЫВАЮТСЯ в неё, а исходная удаляется — иначе
+    нарушится unique (employee, position, date, company). Человек в этот день
+    отработал и то, и другое, и после переезда всё это — часы целевой компании.
+    """
+    by_employee = _entry_position_ids(employees, moved_position_ids)
+    if not by_employee:
+        return 0
+
+    rows = (
+        db.query(TimesheetEntry)
+        .filter(
+            TimesheetEntry.employee_id.in_(by_employee.keys()),
+            TimesheetEntry.company_id == source_company_id,
+        )
+        .all()
+    )
+
+    # Ячейки целевого юрлица тех же ключей — чтобы поймать столкновение.
+    existing_target: dict[tuple[int, int | None, object], TimesheetEntry] = {}
+    if apply:
+        for entry in (
+            db.query(TimesheetEntry)
+            .filter(
+                TimesheetEntry.employee_id.in_(by_employee.keys()),
+                TimesheetEntry.company_id == target_company_id,
+            )
+            .all()
+        ):
+            existing_target[(entry.employee_id, entry.position_id, entry.work_date)] = entry
+
+    touched = 0
+    for entry in rows:
+        if entry.position_id not in by_employee[entry.employee_id]:
+            continue
+        if (entry.work_date.year, entry.work_date.month) in closed:
+            continue
+        touched += 1
+        if not apply:
+            continue
+        key = (entry.employee_id, entry.position_id, entry.work_date)
+        collision = existing_target.get(key)
+        if collision is not None:
+            collision.hours = min(24, collision.hours + entry.hours)
+            db.delete(entry)
+        else:
+            entry.company_id = target_company_id
+            existing_target[key] = entry
+    return touched
 
 
 def move_department(
@@ -318,6 +432,15 @@ def move_department(
         for year, month in months:
             written += _freeze_month(db, employees, moved_ids, year, month, actor)
 
+    # Часы НЕзакрытых месяцев переезжают вместе с отделом: компания лежит в самой
+    # ячейке, и без этого заполненный текущий месяц остался бы на прежнем юрлице.
+    reattributed = 0
+    if employees and moved_ids and dept.head_company_id is not None:
+        reattributed = _reattribute_entries(
+            db, employees, moved_ids, dept.head_company_id, target_company.id,
+            set(months), apply=True,
+        )
+
     before = {
         "head_company_id": dept.head_company_id,
         "position_ids": sorted(moved_ids),
@@ -340,6 +463,7 @@ def move_department(
             "employees_affected": len(employees),
             "closed_months_frozen": len(months),
             "override_rows_written": written,
+            "entries_reattributed": reattributed,
         },
         reason=f"Перенос отдела «{dept.name}» в компанию «{target_company.name}»",
     )
@@ -348,4 +472,5 @@ def move_department(
         employees_affected=len(employees),
         closed_months_frozen=len(months),
         override_rows_written=written,
+        entries_reattributed=reattributed,
     )

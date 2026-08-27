@@ -584,6 +584,8 @@ export interface DepartmentMovePreview {
   stale_share_position_count: number
   /** дефолт распределения самого отдела не включает целевую компанию */
   department_shares_stale: boolean
+  /** ячеек часов в незакрытых месяцах, которые сменят юрлицо на целевое */
+  entries_to_reattribute: number
 }
 
 export interface DepartmentMoveResult {
@@ -593,6 +595,7 @@ export interface DepartmentMoveResult {
   employees_affected: number
   closed_months_frozen: number
   override_rows_written: number
+  entries_reattributed: number
 }
 
 /** Тип оплаты позиции: оклад / смены × ставка / часы × ставка за час */

@@ -894,6 +894,9 @@ function MoveDepartmentModal({
       const res = await moveDepartment(dept.id, target)
       toast.success(
         `Отдел перенесён: рабочих мест ${res.positions_moved}` +
+          (res.entries_reattributed > 0
+            ? `, ячеек часов ${res.entries_reattributed}`
+            : '') +
           (res.closed_months_frozen > 0
             ? `, закреплено закрытых месяцев ${res.closed_months_frozen}`
             : ''),
@@ -968,11 +971,18 @@ function MoveDepartmentModal({
                 Смена действует <b>с текущего месяца вперёд</b>: незакрытый и будущие
                 периоды будут считаться на новую компанию.
               </p>
+              {preview.entries_to_reattribute > 0 && (
+                <p className="mt-1">
+                  Уже введённых ячеек часов сменят юрлицо на «
+                  {preview.target_company_name}»: <b>{preview.entries_to_reattribute}</b>.
+                  Часы, отработанные на другие юрлица, остаются как есть.
+                </p>
+              )}
               {preview.closed_months.length > 0 && (
                 <p className="mt-1">
                   Закрытых месяцев: <b>{preview.closed_months.length}</b> (
-                  {preview.closed_months.map(fmtMonth).join(', ')}) — их расклад по
-                  юрлицам будет зафиксирован как есть и не изменится.
+                  {preview.closed_months.map(fmtMonth).join(', ')}) — их часы и расклад
+                  по юрлицам не тронем, они останутся как посчитаны.
                 </p>
               )}
             </div>
