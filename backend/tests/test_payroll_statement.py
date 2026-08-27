@@ -13,6 +13,7 @@ from app.models.employees import Employee
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
+from app.services.company_order import company_display_name
 from app.services.distribution import distribute, split_equally
 from app.services.payroll_statement import distribute_by_percent
 from tests.conftest import get_token
@@ -685,12 +686,15 @@ class TestScreenMatchesExcel:
         # Excel считает те же суммы (единый источник распределения)
         x = client.get("/api/timesheet/2026/5/statement/export/excel", headers=_h(client, token))
         ws = load_workbook(BytesIO(x.content)).active
-        header_row, first_data_row = 4, 5
+        # Раскладка листа — по образцу финдира (task_vedomost_format ч.3):
+        # шапка 1–5, заголовки колонок в 7-й, итоги в 8-й, сотрудники с 9-й.
+        # Колонки юрлиц подписаны НАЗВАНИЕМ, а не кодом (ч.2).
+        header_row, first_data_row = 7, 9
         col_by_company = {
             c.id: idx
             for idx, cell in enumerate(ws[header_row], start=1)
             for c in six
-            if cell.value == f"{c.code}\n{c.name}"
+            if cell.value == company_display_name(c)
         }
         excel = {
             cid: Decimal(str(ws.cell(row=first_data_row, column=col).value))

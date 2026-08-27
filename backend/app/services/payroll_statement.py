@@ -13,6 +13,7 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app.models.companies import Company
+from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
@@ -38,6 +39,11 @@ from app.services.applications import (
     application_weights,
     applications_department_ids,
     load_application_counts,
+)
+from app.services.company_order import (
+    company_display_name,
+    company_order_by,
+    order_index,
 )
 from app.services.company_shares import (
     load_department_shares,
@@ -126,7 +132,10 @@ def build_payroll_summary(
     cal = db.query(ProductionCalendar).filter_by(year=year).first()
     calendar_data = cal.data if cal else None
 
-    companies = db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
+    companies = (
+        db.query(Company).filter(Company.is_active == True)  # noqa: E712
+        .order_by(*company_order_by()).all()
+    )
     companies_by_id = {c.id: (c.code, c.name) for c in companies}
 
     entries_by_employee: dict[int, list] = {}
@@ -490,6 +499,31 @@ def build_applications_distribution(
 
 # ── Сводная ведомость ─────────────────────────────────────────────────────────
 
+# Организация в шапке, когда ведомость собрана не по одному отделу (а значит,
+# однозначного юрлица у неё нет).
+ORGANIZATION_FALLBACK = "ДЕВЕЛОПМЕНТ ГРУППА «ЗЕМЛЯ МО»"
+SUBDIVISION_ALL = "Все подразделения"
+
+
+def _statement_heading(db: Session, department_id: int | None) -> tuple[str, str]:
+    """Организация и подразделение для шапки выгрузки (task_vedomost_format ч.3).
+
+    Выгрузка по одному отделу подписывается его ГОЛОВНОЙ компанией — тем самым
+    ярлыком дерева оргструктуры, что и в «Оргструктуре». На расчёт это не
+    влияет: компании начислений берутся из часов и процентов распределения.
+    Выгрузка по всем отделам (или отдел без головной компании) подписывается
+    группой — однозначного юрлица у неё нет.
+    """
+    if department_id is None:
+        return ORGANIZATION_FALLBACK, SUBDIVISION_ALL
+    dept = db.get(Department, department_id)
+    if dept is None:
+        return ORGANIZATION_FALLBACK, SUBDIVISION_ALL
+    company = db.get(Company, dept.head_company_id) if dept.head_company_id else None
+    return (company.name if company else ORGANIZATION_FALLBACK), dept.name
+
+
+
 def build_payroll_statement(
     db: Session,
     employees: list[Employee],
@@ -515,10 +549,17 @@ def build_payroll_statement(
 
     companies = (
         db.query(Company).filter(Company.is_active == True)  # noqa: E712
-        .order_by(Company.id).all()
+        .order_by(*company_order_by()).all()
     )
+    # Порядок юрлиц (ч.1) — один на всю ведомость: колонки, строки разбивки
+    # и итоги обязаны идти одинаково.
+    company_order = order_index(c.id for c in companies)
     company_refs = [
-        StatementCompanyRef(id=c.id, code=c.code, name=c.name) for c in companies
+        StatementCompanyRef(
+            id=c.id, code=c.code, name=c.name,
+            display_name=company_display_name(c), sort_order=c.sort_order,
+        )
+        for c in companies
     ]
 
     # Каскад приоритетов: месячный % > карточка (позиция) > отдел > авто по часам.
@@ -613,7 +654,10 @@ def build_payroll_statement(
                 percent=shares[cid],
                 amount=dist_amounts.get(cid, _ZERO),
             )
-            for cid in sorted(shares.keys())
+            for cid in sorted(
+                shares.keys(),
+                key=lambda c: (company_order.get(c, len(company_order)), c),
+            )
         ]
         for cid, amt in dist_amounts.items():
             distribution_totals[cid] = distribution_totals.get(cid, _ZERO) + amt
@@ -652,6 +696,8 @@ def build_payroll_statement(
             base_shifts=p.base_shifts,
             norm_hours=p.norm_hours,
             fact_hours=p.total_hours,
+            norm_days=p.norm_days,
+            fact_days=p.fact_days,
             overtime_coefficient=overtime_coeff,
             overtime_hours=p.overtime_hours,
             overtime_amount=p.overtime_amount,
@@ -691,9 +737,12 @@ def build_payroll_statement(
             note=p.reason_if_not_calculable,
         ))
 
+    organization, subdivision = _statement_heading(db, department_id)
     return PayrollStatementRead(
         year=year,
         month=month,
+        organization=organization,
+        subdivision=subdivision,
         companies=company_refs,
         rows=rows,
         total_overtime_amount=sum((r.overtime_amount for r in rows), _ZERO),
