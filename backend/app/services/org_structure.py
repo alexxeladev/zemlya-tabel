@@ -17,7 +17,7 @@ from app.schemas.org import (
     OrgEmployeeRead,
     OrgTreeRead,
 )
-from app.services.company_order import company_order_by
+from app.services.company_order import company_order_by, sort_companies
 
 
 def _employee_read(emp: Employee) -> OrgEmployeeRead:
@@ -89,7 +89,10 @@ def build_org_tree(db: Session, include_inactive: bool = False) -> OrgTreeRead:
                     for d in sorted(depts_by_company.get(c.id, []), key=lambda d: d.name)
                 ],
             )
-            for c in sorted(companies, key=lambda c: c.name)
+            # Порядок юрлиц — настроенный в справочнике (task_vedomost_format
+            # ч.1). Сортировка по имени ЗДЕСЬ затирала ORDER BY запроса, и
+            # стрелки ▲▼ в дереве не двигали компании вовсе.
+            for c in sort_companies(companies)
         ],
         departments_without_company=[
             dept_read(d)

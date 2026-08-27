@@ -34,6 +34,7 @@ from app.models.employees import Employee
 from app.models.schedules import Schedule
 from app.schemas.employee import EmployeeCreate
 from app.schemas.employee_import import EmployeeImportResult, ImportRowRead
+from app.services.company_order import company_order_by
 from app.services.employees import build_employee
 
 # Строка-пример помечается этим текстом в первой колонке; парсер такие строки
@@ -129,7 +130,10 @@ def _write_reference_sheet(wb: Workbook, db: Session) -> None:
     ws = wb.create_sheet("Справочники")
     bold = Font(name="Arial", size=10, bold=True)
 
-    companies = db.query(Company).filter(Company.is_active.is_(True)).order_by(Company.name).all()
+    companies = (
+        db.query(Company).filter(Company.is_active.is_(True))
+        .order_by(*company_order_by()).all()
+    )
     departments = (
         db.query(Department).filter(Department.is_active.is_(True)).order_by(Department.name).all()
     )

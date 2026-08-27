@@ -272,6 +272,55 @@ class TestCompanyOrder:
         assert resp.status_code == 200
         assert [c["code"] for c in resp.json()["companies"]] == ["zmo", "sd", "ghs"]
 
+    def test_org_tree_follows_configured_order(
+        self, client: TestClient, admin, companies, calendar, worker
+    ):
+        """Дерево «Оргструктуры» — то место, где порядок и правится стрелками.
+
+        Регрессия: build_org_tree пересортировывал компании ПО ИМЕНИ поверх
+        ORDER BY запроса, и стрелки ▲▼ не двигали узлы вовсе.
+        """
+        token = get_token(client, "admin@example.com", "admin123")
+        client.put(
+            "/api/companies/order",
+            json={"company_ids": [c.id for c in reversed(companies)]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        resp = client.get("/api/org/tree", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200
+        assert [c["code"] for c in resp.json()["companies"]] == ["zmo", "sd", "ghs"]
+
+    def test_import_template_reference_sheet_follows_configured_order(
+        self, client: TestClient, admin, companies
+    ):
+        """Список юрлиц в шаблоне импорта — тот же порядок (он там подсказка,
+        по которой заполняют файл)."""
+        from io import BytesIO
+
+        import openpyxl
+
+        token = get_token(client, "admin@example.com", "admin123")
+        client.put(
+            "/api/companies/order",
+            json={"company_ids": [c.id for c in reversed(companies)]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        resp = client.get(
+            "/api/employees/import/template",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        ws = openpyxl.load_workbook(BytesIO(resp.content))["Справочники"]
+        # Юрлица перечислены как «код — название»: код здесь не украшение, а
+        # принимаемый парсером ключ, поэтому в этом листе он остаётся.
+        listed = [
+            c.value for col in ws.iter_cols(values_only=False) for c in col
+            if isinstance(c.value, str) and " — " in c.value and c.value.endswith('"')
+        ]
+        assert listed == [
+            'zmo — ООО "ЗМО"', 'sd — ООО "Стройдепартамент"', 'ghs — ООО "ГХС"',
+        ]
+
     def test_timesheet_companies_follow_configured_order(
         self, client: TestClient, admin, companies, calendar, worker
     ):
