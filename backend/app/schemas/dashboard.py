@@ -48,6 +48,8 @@ class CompanyPayrollRead(BaseModel):
     company_id: int
     company_code: str
     company_name: str
+    # Короткое имя для подписи на графике (ч.2); полное остаётся в company_name.
+    company_display_name: str = ""
     total: Decimal
 
 

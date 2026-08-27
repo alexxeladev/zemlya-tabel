@@ -97,7 +97,13 @@ export type Adjustment = {
   reason: string;
 };
 
-export type Company = { id: number; code: string; name: string };
+export type Company = {
+  id: number;
+  code: string;
+  name: string;
+  /** короткое имя с бэка (short_name → name без правовой формы → код) */
+  display_name?: string;
+};
 
 export type Absence = {
   employee_id: number;
@@ -1765,8 +1771,8 @@ export function TimesheetPage() {
             >
               <option value="">Все компании</option>
               {data.companies.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.code} — {c.name}
+                <option key={c.id} value={c.id} title={c.name}>
+                  {companyLabel(c)}
                 </option>
               ))}
             </select>
@@ -1885,7 +1891,7 @@ export function TimesheetPage() {
                   className="inline-block w-2 h-2 rounded-full"
                   style={{ background: col.color }}
                 />
-                {c.code} — {c.name}
+                {companyLabel(c)}
               </span>
             );
           })}
@@ -2368,9 +2374,13 @@ export function TimesheetPage() {
                 key={c.id}
                 className="flex items-center gap-4 px-3 py-1.5 text-xs border-b border-gray-100"
               >
-                <span className="flex items-center gap-1.5 w-52 font-mono" style={{ color: col.color }}>
+                <span
+                  className="flex items-center gap-1.5 w-52 truncate"
+                  style={{ color: col.color }}
+                  title={c.name}
+                >
                   <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ background: col.color }} />
-                  {c.code} — {c.name}
+                  {companyLabel(c)}
                 </span>
                 <span className="w-16 text-center font-mono font-semibold" style={{ color: col.color }}>
                   {fmtHours(hours)} ч

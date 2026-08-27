@@ -35,6 +35,11 @@ from app.services.absences import (
     schedules_by_employee,
     sick_days_used_before_month,
 )
+from app.services.company_order import (
+    company_display_name,
+    company_order_by,
+    order_index,
+)
 from app.services.night_shifts import load_night_context
 from app.services.org_access import (
     can_see_finances,
@@ -258,17 +263,24 @@ def _payroll_by_department(db: Session, results: _MonthResults) -> list[Departme
 
 
 def _payroll_by_company(
-    results: _MonthResults, companies_by_id: dict[int, tuple[str, str]]
+    results: _MonthResults,
+    companies_by_id: dict[int, tuple[str, str]],
+    companies: list[Company],
 ) -> list[CompanyPayrollRead]:
     totals: dict[int, Decimal] = {}
     for *_, p in results:
         for bd in p.breakdown_by_company:
             totals[bd.company_id] = totals.get(bd.company_id, _ZERO) + bd.total
     out = []
-    for cid in sorted(totals):
+    # Порядок юрлиц — настроенный в справочнике: companies_by_id собран из
+    # запроса с company_order_by(), то есть его ключи уже идут как надо.
+    index = order_index(companies_by_id)
+    display = {c.id: company_display_name(c) for c in companies}
+    for cid in sorted(totals, key=lambda c: (index.get(c, len(index)), c)):
         code, name = companies_by_id.get(cid, ("", f"Компания #{cid}"))
         out.append(CompanyPayrollRead(
-            company_id=cid, company_code=code, company_name=name, total=totals[cid],
+            company_id=cid, company_code=code, company_name=name,
+            company_display_name=display.get(cid, name), total=totals[cid],
         ))
     return out
 
@@ -445,7 +457,10 @@ def build_dashboard(
     include_money = can_see_finances(actor)
     is_employee = actor.role == "employee"
 
-    companies = db.query(Company).filter(Company.is_active == True).all()  # noqa: E712
+    companies = (
+        db.query(Company).filter(Company.is_active == True)  # noqa: E712
+        .order_by(*company_order_by()).all()
+    )
     companies_by_id = {c.id: (c.code, c.name) for c in companies}
     calendars_cache: dict[int, dict | None] = {}
 
@@ -478,7 +493,8 @@ def build_dashboard(
             _payroll_by_department(db, current) if include_money else []
         ),
         payroll_by_company=(
-            _payroll_by_company(current, companies_by_id) if include_money else []
+            _payroll_by_company(current, companies_by_id, companies)
+            if include_money else []
         ),
         periods=None if is_employee else _periods_block(db, actor, months),
         trend=_trend(

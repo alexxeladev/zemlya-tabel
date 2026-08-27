@@ -22,6 +22,7 @@
 import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { companyColorByIndex } from '../utils/colors';
 import { absenceMeta } from '../utils/absences';
+import { companyLabel } from '../utils/companies';
 import type { AbsenceKind } from '../types/api';
 import {
   PeriodBadge,
@@ -423,7 +424,7 @@ export function TimesheetCompanyView(props: Props) {
                       </option>
                       {avail.map((c) => (
                         <option key={c.id} value={c.id}>
-                          {c.code} — {c.name}
+                          {companyLabel(c)}
                         </option>
                       ))}
                     </select>

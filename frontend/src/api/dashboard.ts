@@ -39,6 +39,8 @@ export interface CompanyPayroll {
   company_id: number
   company_code: string
   company_name: string
+  /** короткое имя для подписи на графике; полное — в company_name */
+  company_display_name: string
   total: string
 }
 

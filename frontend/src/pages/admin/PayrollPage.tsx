@@ -8,6 +8,7 @@ import { timesheetApi } from '../../api/timesheet'
 import { apiClient } from '../../api/client'
 import { formatHours, formatMoney } from '../../utils/money'
 import { distribute } from '../../utils/distribution'
+import { companyLabel } from '../../utils/companies'
 import { usePeriodStore } from '../../store/period'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { UI_KEYS } from '../../utils/persist'
@@ -323,7 +324,7 @@ export function PayrollPage() {
           >
             <option value="">Все компании</option>
             {companies.map((c) => (
-              <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
+              <option key={c.id} value={c.id} title={c.name}>{companyLabel(c)}</option>
             ))}
           </select>
           {/* Менеджеру с несколькими отделами селектор нужен так же, как
@@ -394,7 +395,7 @@ export function PayrollPage() {
                 <th className="px-2 py-2 text-center font-semibold text-emerald-700 min-w-[90px]">К выплате</th>
                 {companies.map((c) => (
                   <th key={c.id} className="px-2 py-2 text-center font-medium bg-indigo-50 min-w-[110px]" title={c.name}>
-                    {c.code} %/₽
+                    {companyLabel(c)} %/₽
                   </th>
                 ))}
                 <th className="px-2 py-2 text-center font-medium">Σ распред.</th>
