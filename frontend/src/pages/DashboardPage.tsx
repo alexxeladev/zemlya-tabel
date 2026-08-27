@@ -373,7 +373,8 @@ function PayrollBlock({ data }: { data: DashboardData }) {
   const byCompany = data.payroll_by_company
     .filter((c) => num(c.total) > 0)
     .map((c, i) => ({
-      name: c.company_name,
+      name: c.company_display_name || c.company_name,
+      fullName: c.company_name,
       code: c.company_code,
       value: num(c.total),
       fill: companyColorByIndex(i).color,
