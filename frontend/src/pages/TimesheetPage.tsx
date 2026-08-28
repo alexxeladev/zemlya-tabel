@@ -16,7 +16,7 @@
 // При смене компании в слоте — два запроса (удалить старый, создать новый).
 // При hours=0 — слот удаляется (бэк удаляет запись).
 
-import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { Fragment, memo, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toasts';
@@ -159,7 +159,7 @@ export type EmployeePayroll = {
   /** работа в нерабочий праздничный день календаря */
   holiday_hours?: string;
   /** salary — оклад; per_shift — смены × ставка */
-  pay_type?: 'salary' | 'per_shift';
+  pay_type?: 'salary' | 'per_shift' | 'hourly';
   shift_rate?: string | null;
   worked_shifts?: number;
   norm_shifts?: number | null;
@@ -259,6 +259,8 @@ export type MonthResponse = {
   applications?: DepartmentApplications[];
   /** суммы распределения по юрлицам для строк таких отделов (считает бэк) */
   applications_distribution?: ApplicationsDistributionRow[];
+  /** доп. юрлица сотрудника (кроме основного), где у него есть часы */
+  extra_companies_by_employee?: Record<number, number[]>;
   payroll: PayrollSummary | null;
   periods: Period[];
   adjustments?: Adjustment[];
@@ -300,6 +302,54 @@ export function positionIdParam(position: Position | null | undefined): number |
 
 export function posKey(employeeId: number, positionId: number | null | undefined): string {
   return `${employeeId}:${positionId ?? 0}`;
+}
+
+/**
+ * Рабочее место, к которому относится ячейка. `position_id IS NULL` — строка,
+ * заведённая до появления позиций: она принадлежит ОСНОВНОЙ (так же её
+ * разрешает `_resolve_position_id` на бэке). Нужна при локальном патче
+ * состояния, где `primaryPositionIdByEmp` недоступен: значение берётся из
+ * того же снимка `data`, который правим.
+ */
+/** Один поповер на страницу вместо <select> в каждой ячейке (см. openCompanyPicker). */
+type PickerItem = {
+  key: string; label: string; hint?: string; color?: string; active?: boolean;
+};
+type PickerState = {
+  x: number; y: number; title: string;
+  items: PickerItem[];
+  onPick: (key: string) => void;
+};
+
+/** Общая ссылка на пустой список слотов: новый [] на каждый рендер ломал бы memo. */
+const EMPTY_SLOTS: TimesheetEntry[] = [];
+
+function effectivePositionId(
+  positionId: number | null | undefined,
+  employeeId: number,
+  positionsByEmployee: Record<number, Position[]> | undefined,
+): number | null {
+  if (positionId != null) return positionId;
+  const list = positionsByEmployee?.[employeeId] ?? [];
+  const primary = list.find((p) => p.is_primary) ?? list[0];
+  return primary?.id ?? null;
+}
+
+/**
+ * Дописать юрлицо в `extra_companies_by_employee` после появления часов по
+ * нему. Обычно это делал ответ месяца; при локальном патче список надо
+ * поддержать самим, иначе новая компания не получит строку в виде
+ * «по компаниям». Порядок — возрастающий, как отдаёт бэк.
+ */
+function withExtraCompany(
+  prev: MonthResponse, employeeId: number, companyId: number,
+): Record<number, number[]> {
+  const map = prev.extra_companies_by_employee ?? {};
+  const emp = prev.employees.find((e) => e.id === employeeId);
+  if (emp?.default_company_id === companyId) return map;
+  const current = map[employeeId] ?? [];
+  if (current.includes(companyId)) return map;
+  return { ...map, [employeeId]: [...current, companyId].sort((a, b) => a - b) };
 }
 
 /**
@@ -569,6 +619,11 @@ export function TimesheetPage() {
   // несходящиеся цифры.
   const [payrollStale, setPayrollStale] = useState(false);
   const payrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Актуальные данные для колбэков, которые обязаны быть СТАБИЛЬНЫМИ: любая
+  // зависимость от `data` пересоздаёт колбэк на каждую правку, а вместе с ним
+  // рушится React.memo на ячейках дней (task_timesheet_perf2).
+  const dataRef = useRef<MonthResponse | null>(null);
+  dataRef.current = data;
 
   // ── Загрузка данных ──
   // Часы и деньги грузятся раздельно: расчёт ЗП — самая дорогая часть ответа, а
@@ -628,18 +683,66 @@ export function TimesheetPage() {
     await fetchMonth(true);
   }, [fetchMonth]);
 
-  // После правки часов: сразу перечитываем часы, суммы — через паузу, чтобы
-  // серия правок не гоняла расчёт по всему отделу на каждую цифру.
-  const afterEdit = useCallback(async () => {
-    await fetchMonth(false);
+  // Пересчёт ТОЛЬКО сумм, без перечитывания месяца. `/payroll` отдаёт один
+  // расчёт (на отдел в 70 человек — 120 КБ против 440 КБ у месяца), и, что
+  // важнее, entries/employees/companies сохраняют идентичность — мемоизированные
+  // ячейки дней не перерисовываются вовсе.
+  // Два исключения, где нужен весь месяц:
+  //   • табельщик — на `/payroll` у него 403 (это финансовый эндпойнт), часы
+  //     он получает из ответа месяца с вычищенными деньгами;
+  //   • отделы «по заявкам» — суммы распределения считаются только вместе с
+  //     месяцем, отдельного эндпойнта у них нет.
+  const refreshPayroll = useCallback(async (): Promise<boolean> => {
+    if (!deptChosen || !canSeeHourStats) return false;
+    if (!canSeeMoney) return fetchMonth(true);
+    if ((dataRef.current?.applications ?? []).length > 0) return fetchMonth(true);
+    try {
+      const payroll = await timesheetApi.getPayroll(
+        year, month, departmentFilter ?? undefined,
+      );
+      setData((prev) => (prev ? { ...prev, payroll } : prev));
+      return true;
+    } catch (err: any) {
+      toast.error('Не удалось пересчитать суммы: ' + (err?.message ?? err));
+      return false;
+    }
+  }, [year, month, departmentFilter, canSeeMoney, canSeeHourStats, deptChosen, fetchMonth]);
+
+  // Премия / KPI / аванс / правка займа: перечитываем ТОЛЬКО список начислений
+  // и суммы. Раньше здесь стоял reload() — полный месяц с расчётом (на «всех
+  // отделах» это 1,9 МБ и секунда сервера) плюс полная перерисовка таблицы.
+  const refreshAdjustments = useCallback(async () => {
+    if (!canSeeMoney) return;
+    try {
+      const adjustments = await timesheetApi.getAdjustments(
+        year, month, departmentFilter ?? undefined,
+      );
+      setData((prev) => (prev ? { ...prev, adjustments } : prev));
+    } catch (err: any) {
+      toast.error('Не удалось обновить начисления: ' + (err?.message ?? err));
+    }
+  }, [year, month, departmentFilter, canSeeMoney]);
+
+  const afterAdjustment = useCallback(async () => {
+    await refreshAdjustments();
+    await refreshPayroll();
+  }, [refreshAdjustments, refreshPayroll]);
+
+  // После правки часов месяц НЕ перечитывается: состояние правится локально
+  // ответом бэка (patchEntry / patchAbsence ниже). Раньше здесь стоял
+  // fetchMonth(false) — на отдел в 70 человек это 400 КБ несжатого JSON и
+  // полная перерисовка таблицы на КАЖДУЮ введённую цифру.
+  // Остаётся только отложенный пересчёт сумм, чтобы серия правок не гоняла
+  // расчёт по всему отделу на каждую цифру.
+  const afterEdit = useCallback(() => {
     if (!canSeeHourStats) return;
     setPayrollStale(true);
     if (payrollTimer.current) clearTimeout(payrollTimer.current);
     payrollTimer.current = setTimeout(() => {
       // Пометку снимаем только при успехе: после ошибки суммы остались старыми
-      fetchMonth(true).then((ok) => { if (ok) setPayrollStale(false); });
+      refreshPayroll().then((ok) => { if (ok) setPayrollStale(false); });
     }, PAYROLL_REFRESH_DELAY_MS);
-  }, [fetchMonth, canSeeHourStats]);
+  }, [refreshPayroll, canSeeHourStats]);
 
   useEffect(() => {
     reload();
@@ -699,6 +802,16 @@ export function TimesheetPage() {
   );
 
   // ── Индекс entries: `empId:posId:day` → слоты компаний этого дня ──
+  // Слоты внутри дня упорядочены по настроенному порядку юрлиц: раньше порядок
+  // повторял выдачу бэка, и после локальной правки (patchEntry дописывает
+  // запись в конец) чипы в ячейке могли поменяться местами. Заодно порядок
+  // делает сравнение `sameSlots` в DayCell устойчивым.
+  const companyRank = useMemo(() => {
+    const map = new Map<number, number>();
+    (data?.companies ?? []).forEach((c, i) => map.set(c.id, i));
+    return map;
+  }, [data]);
+
   const entriesByPosDay = useMemo(() => {
     const map = new Map<string, TimesheetEntry[]>();
     if (!data) return map;
@@ -709,8 +822,14 @@ export function TimesheetPage() {
       if (arr) arr.push(e);
       else map.set(key, [e]);
     }
+    for (const arr of map.values()) {
+      if (arr.length > 1) {
+        arr.sort((a, b) =>
+          (companyRank.get(a.company_id) ?? 0) - (companyRank.get(b.company_id) ?? 0));
+      }
+    }
     return map;
-  }, [data, entryPositionId]);
+  }, [data, entryPositionId, companyRank]);
 
   // ── Индекс отсутствий: `empId:day` → код дня (в дне либо часы, либо код) ──
   const absenceByEmpDay = useMemo(() => {
@@ -900,6 +1019,44 @@ export function TimesheetPage() {
     }
   }, [departments, canSelectDept, deptChoice, setDeptChoice]);
 
+  // ── Локальные патчи состояния после мутации ──
+  // Ответ бэка вписывается прямо в `data`; месяц целиком не перечитывается.
+  // Правила взаимоисключения ПОВТОРЯЮТ серверные (единственный источник правды —
+  // `services/timesheet._upsert_cell_no_commit` и `services/absences.set_absence`):
+  // часы дня снимают код отсутствия, но НЕ трогают ночные смены.
+  const patchEntry = useCallback(
+    (
+      employeeId: number, positionId: number | null | undefined,
+      workDate: string, companyId: number, saved: TimesheetEntry | null,
+    ) => {
+      setData((prev) => {
+        if (!prev) return prev;
+        const posOf = (pid: number | null | undefined) =>
+          effectivePositionId(pid, employeeId, prev.positions_by_employee);
+        const target = saved?.position_id ?? posOf(positionId);
+        const entries = prev.entries.filter((e) => !(
+          e.employee_id === employeeId &&
+          e.work_date === workDate &&
+          e.company_id === companyId &&
+          posOf(e.position_id) === target
+        ));
+        if (saved) entries.push(saved);
+        return {
+          ...prev,
+          entries,
+          absences: saved
+            ? (prev.absences ?? []).filter(
+                (a) => !(a.employee_id === employeeId && a.work_date === workDate))
+            : prev.absences,
+          extra_companies_by_employee: saved
+            ? withExtraCompany(prev, employeeId, companyId)
+            : prev.extra_companies_by_employee,
+        };
+      });
+    },
+    []
+  );
+
   // ── Действия со слотами ──
   // Часы всегда пишутся на КОНКРЕТНОЕ рабочее место: у совместителя это
   // разные графики, нормы и юрлица (task_positions ч.B). positionId не задан
@@ -909,20 +1066,22 @@ export function TimesheetPage() {
       employeeId: number, day: number, companyId: number, hours: number,
       positionId?: number,
     ) => {
+      const workDate = dateStr(year, month, day);
       try {
-        await timesheetApi.saveCell({
+        const saved = await timesheetApi.saveCell({
           employee_id: employeeId,
           position_id: positionId ?? null,
-          work_date: dateStr(year, month, day),
+          work_date: workDate,
           company_id: companyId,
           hours,
         });
-        await afterEdit();
+        patchEntry(employeeId, positionId ?? null, workDate, companyId, saved);
+        afterEdit();
       } catch (err: any) {
         toast.error('Не удалось сохранить: ' + (err?.message ?? err));
       }
     },
-    [year, month, afterEdit]
+    [year, month, afterEdit, patchEntry]
   );
 
   // Поставить/снять код отсутствия. Бэк сам удалит часы этого дня —
@@ -935,12 +1094,18 @@ export function TimesheetPage() {
           work_date: dateStr(year, month, day),
           kind,
         });
-        await afterEdit();
+        // Здесь месяц перечитывается ЦЕЛИКОМ, в отличие от часов. Причина —
+        // флаг `over_limit` (больничный сверх годового лимита): он считается
+        // хронологически по ВСЕМУ году, PUT /absence его не возвращает, и
+        // правка одного дня может переставить пометку в других месяцах.
+        // Коды ставят на порядок реже, чем часы, — цена приемлемая.
+        await fetchMonth(false);
+        afterEdit();
       } catch (err: any) {
         toast.error('Не удалось сохранить отметку: ' + (err?.message ?? err));
       }
     },
-    [year, month, afterEdit]
+    [year, month, afterEdit, fetchMonth]
   );
 
   const changeSlotCompany = useCallback(
@@ -949,53 +1114,116 @@ export function TimesheetPage() {
       hours: number, positionId?: number,
     ) => {
       try {
-        await timesheetApi.saveCell({
+        const workDate = dateStr(year, month, day);
+        const removed = await timesheetApi.saveCell({
           employee_id: employeeId,
           position_id: positionId ?? null,
-          work_date: dateStr(year, month, day),
+          work_date: workDate,
           company_id: oldCompanyId,
           hours: 0,
         });
-        await timesheetApi.saveCell({
+        patchEntry(employeeId, positionId ?? null, workDate, oldCompanyId, removed);
+        const saved = await timesheetApi.saveCell({
           employee_id: employeeId,
           position_id: positionId ?? null,
-          work_date: dateStr(year, month, day),
+          work_date: workDate,
           company_id: newCompanyId,
           hours,
         });
-        await afterEdit();
+        patchEntry(employeeId, positionId ?? null, workDate, newCompanyId, saved);
+        afterEdit();
       } catch (err: any) {
         toast.error('Не удалось сменить компанию: ' + (err?.message ?? err));
       }
     },
-    [year, month, afterEdit]
+    [year, month, afterEdit, patchEntry]
   );
 
-  const addSlot = useCallback(
-    (emp: Employee, position: Position, day: number) => {
-      if (!data) return;
-      const positionId = positionIdParam(position);
-      const existing = entriesByPosDay.get(`${posKey(emp.id, position.id)}:${day}`) ?? [];
-      const used = new Set(existing.map((e) => e.company_id));
+  // Добавить слот. Принимает ИДЕНТИФИКАТОРЫ, а не объекты, и читает данные из
+  // `dataRef` — иначе колбэк зависел бы от `data`, пересоздавался на каждую
+  // правку и обнулял React.memo на ячейках дней.
+  const addSlotByIds = useCallback(
+    (employeeId: number, positionId: number | undefined, day: number) => {
+      const snap = dataRef.current;
+      if (!snap) return;
+      const emp = snap.employees.find((e) => e.id === employeeId);
+      if (!emp) return;
+      const list = snap.positions_by_employee?.[employeeId] ?? [];
+      const position = list.find((p) => p.id === (positionId ?? 0)) ?? list.find((p) => p.is_primary) ?? list[0];
+      const workDate = dateStr(year, month, day);
+      const target = effectivePositionId(positionId ?? null, employeeId, snap.positions_by_employee);
+      const used = new Set(
+        snap.entries
+          .filter((e) =>
+            e.employee_id === employeeId &&
+            e.work_date === workDate &&
+            effectivePositionId(e.position_id, employeeId, snap.positions_by_employee) === target)
+          .map((e) => e.company_id)
+      );
       // Компания по умолчанию — основная компания ЭТОГО рабочего места:
       // у совместителя подработку обычно оплачивает другое юрлицо.
       let chosen: Company | undefined;
-      const defaultCompanyId = position.company_id ?? emp.default_company_id;
+      const defaultCompanyId = position?.company_id ?? emp.default_company_id;
       if (defaultCompanyId && !used.has(defaultCompanyId)) {
-        chosen = data.companies.find((c) => c.id === defaultCompanyId);
+        chosen = snap.companies.find((c) => c.id === defaultCompanyId);
       }
       if (!chosen) {
-        chosen = data.companies.find((c) => !used.has(c.id));
+        chosen = snap.companies.find((c) => !used.has(c.id));
       }
       if (!chosen) {
         toast.info('Нет свободных компаний');
         return;
       }
       // Часы по умолчанию — длительность смены графика ЭТОЙ позиции
-      const def = position.schedule?.hours_per_shift ?? emp.schedule?.hours_per_shift ?? 8;
-      saveSlot(emp.id, day, chosen.id, def, positionId);
+      const def = position?.schedule?.hours_per_shift ?? emp.schedule?.hours_per_shift ?? 8;
+      saveSlot(employeeId, day, chosen.id, def, positionId);
     },
-    [data, entriesByPosDay, saveSlot]
+    [year, month, saveSlot]
+  );
+
+  // ── Выпадашки ячеек вынесены в ОДИН поповер на страницу ──
+  // Раньше каждая ячейка с часами несла <select> со списком юрлиц, а каждый
+  // день — <select> с кодами отсутствия. На отделе в 73 человека это 3994
+  // <select> и 27027 <option> (замер препрода) — самый дорогой для браузера
+  // элемент. Теперь в ячейке кнопка, а список рисуется только у открытого
+  // поповера.
+  const [picker, setPicker] = useState<PickerState | null>(null);
+  const closePicker = useCallback(() => setPicker(null), []);
+
+  const openCompanyPicker = useCallback(
+    (anchor: HTMLElement, currentCompanyId: number, onPick: (companyId: number) => void) => {
+      const snap = dataRef.current;
+      if (!snap) return;
+      const r = anchor.getBoundingClientRect();
+      setPicker({
+        x: r.left, y: r.bottom + 2,
+        title: 'Юрлицо',
+        items: snap.companies.map((c) => ({
+          key: String(c.id),
+          label: c.code,
+          hint: companyLabel(c),
+          active: c.id === currentCompanyId,
+          color: getCompanyColor(c.id, snap.companies).color,
+        })),
+        onPick: (key) => onPick(Number(key)),
+      });
+    },
+    []
+  );
+
+  const openAbsencePicker = useCallback(
+    (anchor: HTMLElement, onPick: (kind: AbsenceKind) => void) => {
+      const r = anchor.getBoundingClientRect();
+      setPicker({
+        x: r.left, y: r.bottom + 2,
+        title: 'Код отсутствия',
+        items: ABSENCE_KINDS.map((a) => ({
+          key: a.kind, label: a.code, hint: a.label, color: a.color,
+        })),
+        onPick: (key) => onPick(key as AbsenceKind),
+      });
+    },
+    []
   );
 
   // ── Ночная смена: отметить/снять выход в ночь ──
@@ -1012,12 +1240,17 @@ export function TimesheetPage() {
           work_date: dateStr(year, month, day),
           value,
         });
-        await afterEdit();
+        // Месяц перечитывается целиком, как и для кодов отсутствия: остаток
+        // лимита и фонд отдела (`night_funds`) считаются по ВСЕМУ отделу и
+        // приходят только с ответом месяца — из PUT /night-shift их не взять.
+        // Ночные отмечают заметно реже, чем вводят часы.
+        await fetchMonth(false);
+        afterEdit();
       } catch (err: any) {
         toast.error(err?.message ?? String(err));
       }
     },
-    [year, month, afterEdit]
+    [year, month, afterEdit, fetchMonth]
   );
 
   // ── Excel export ──
@@ -1326,85 +1559,30 @@ export function TimesheetPage() {
         </td>
 
         {/* ── Дни ── */}
-        {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => {
-          const t = dayTypes[d];
-          const slots = entriesByPosDay.get(`${posKey(emp.id, position.id)}:${d}`) ?? [];
-          const absence = absenceByEmpDay.get(`${emp.id}:${d}`);
-          const isOff = t === 'weekend' || t === 'holiday';
-
-          const bgClass =
-            t === 'holiday'
-              ? 'bg-red-50/40'
-              : t === 'short'
-              ? 'bg-yellow-50/40'
-              : t === 'weekend'
-              ? 'bg-gray-50/60'
-              : '';
-
-          return (
-            <td
-              key={d}
-              className={`border border-gray-200 align-top p-1 ${bgClass}`}
-              // Ширина под чип целиком (код + часы + крестик) — иначе колонки
-              // дней разъезжаются по содержимому и «квадратики» выходят разными.
-              style={{ minWidth: 84 }}
-            >
-              <div className="flex flex-col gap-1">
-                {/* День с кодом отсутствия: часов в нём нет по определению.
-                    Код ставится на ВЕСЬ день человека (он отсутствует на всех
-                    работах), поэтому рисуем и снимаем его на первой строке. */}
-                {absence ? (
-                  isFirst ? (
-                    <AbsenceChip
-                      absence={absence}
-                      disabled={!periodEditable}
-                      onClear={() => setAbsence(emp.id, d, null)}
-                    />
-                  ) : null
-                ) : (
-                  <>
-                    {slots.map((slot) => (
-                      <SlotChip
-                        key={`${slot.employee_id}-${slot.work_date}-${slot.company_id}`}
-                        slot={slot}
-                        companies={data.companies}
-                        disabled={!periodEditable}
-                        onHoursChange={(h) => saveSlot(emp.id, d, slot.company_id, h, positionId)}
-                        onCompanyChange={(newCompId) =>
-                          changeSlotCompany(
-                            emp.id, d, slot.company_id, newCompId, num(slot.hours), positionId,
-                          )
-                        }
-                        onDelete={() => saveSlot(emp.id, d, slot.company_id, 0, positionId)}
-                      />
-                    ))}
-                    {periodEditable && (
-                      // Та же высота, что у чипов, и та же колонка справа —
-                      // пикер кода встаёт ровно под крестиками.
-                      <div className="flex items-center gap-1 h-[22px]">
-                        <button
-                          type="button"
-                          onClick={() => addSlot(emp, position, d)}
-                          className={
-                            'flex-1 min-w-0 h-full text-[10px] leading-none border border-dashed rounded ' +
-                            (isOff
-                              ? 'text-gray-300 border-gray-200 hover:text-amber-600 hover:border-amber-300'
-                              : 'text-gray-400 border-gray-300 hover:text-blue-600 hover:border-blue-300')
-                          }
-                          title={isOff ? 'Добавить работу в выходной/праздник' : 'Добавить слот'}
-                        >
-                          +
-                        </button>
-                        {/* Код отсутствия — на человека целиком, ставится с первой строки */}
-                        {isFirst && <AbsencePicker onPick={(kind) => setAbsence(emp.id, d, kind)} />}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </td>
-          );
-        })}
+        {/* Ячейка дня вынесена в мемоизированный DayCell: правка одной ячейки
+            больше не перерисовывает все 31×N ячеек отдела. Все колбэки ниже
+            стабильны (useCallback без зависимости от `data`), иначе memo не
+            работал бы вовсе. */}
+        {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => (
+          <DayCell
+            key={d}
+            day={d}
+            dayType={dayTypes[d]}
+            slots={entriesByPosDay.get(`${posKey(emp.id, position.id)}:${d}`) ?? EMPTY_SLOTS}
+            absence={absenceByEmpDay.get(`${emp.id}:${d}`)}
+            isFirst={isFirst}
+            editable={periodEditable}
+            companies={data.companies}
+            employeeId={emp.id}
+            positionId={positionId}
+            onSaveSlot={saveSlot}
+            onChangeCompany={changeSlotCompany}
+            onAddSlot={addSlotByIds}
+            onSetAbsence={setAbsence}
+            onOpenCompanyPicker={openCompanyPicker}
+            onOpenAbsencePicker={openAbsencePicker}
+          />
+        ))}
 
         {/* ── Итого часов по этому рабочему месту ── */}
         <td {...trailingSpan} className="border border-gray-200 px-3 py-2 text-center font-mono font-semibold bg-gray-50">
@@ -2396,6 +2574,9 @@ export function TimesheetPage() {
         </div>
       )}
 
+      {/* Единственный на страницу список выбора юрлица / кода отсутствия */}
+      <CellPicker state={picker} onClose={closePicker} />
+
       {/* ── Модал управления премиями/KPI/авансом/займом (задача 3.11a) ── */}
       {adjModal && (
         <AdjustmentsModal
@@ -2407,7 +2588,7 @@ export function TimesheetPage() {
           payroll={payrollFor(adjModal.emp, adjModal.position) ?? null}
           adjustments={adjByPos.get(posKey(adjModal.emp.id, adjModal.position.id)) ?? []}
           onClose={() => setAdjModal(null)}
-          onChanged={() => reload()}
+          onChanged={afterAdjustment}
         />
       )}
 
@@ -2747,6 +2928,209 @@ function ChipClose({
 }
 
 // ──────────────────────────────────────────────────────────────
+// CellPicker — ЕДИНСТВЕННЫЙ на страницу список выбора (юрлицо / код отсутствия)
+// ──────────────────────────────────────────────────────────────
+// До этого список рисовался внутри КАЖДОЙ ячейки: <select> с <option> на
+// юрлицо и ещё один — с кодами отсутствия. На отделе в 73 человека это
+// 3994 <select> и 27027 <option> из 48012 узлов страницы. Теперь в ячейке
+// стоит кнопка, а список существует только пока поповер открыт.
+function CellPicker({ state, onClose }: { state: PickerState | null; onClose: () => void }) {
+  useEffect(() => {
+    if (!state) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    // Прокрутка увела бы список от своей ячейки — проще закрыть.
+    window.addEventListener('scroll', onClose, true);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', onClose, true);
+    };
+  }, [state, onClose]);
+
+  if (!state) return null;
+  // Не даём списку вылезти за нижний/правый край окна.
+  const top = Math.min(state.y, window.innerHeight - 40 - state.items.length * 26);
+  const left = Math.min(state.x, window.innerWidth - 220);
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div
+        className="fixed z-50 min-w-[180px] rounded border border-gray-200 bg-white py-1 shadow-lg"
+        style={{ top: Math.max(4, top), left: Math.max(4, left) }}
+      >
+        <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-400">
+          {state.title}
+        </div>
+        {state.items.map((it) => (
+          <button
+            key={it.key}
+            type="button"
+            onClick={() => { state.onPick(it.key); onClose(); }}
+            className={
+              'flex w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-blue-50 ' +
+              (it.active ? 'bg-blue-50/60 font-semibold' : '')
+            }
+          >
+            <span className="w-9 shrink-0 font-mono font-semibold" style={{ color: it.color }}>
+              {it.label}
+            </span>
+            {it.hint && <span className="truncate text-gray-600">{it.hint}</span>}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────
+// DayCell — ячейка одного дня одного рабочего места (мемоизирована)
+// ──────────────────────────────────────────────────────────────
+// Ключевая оптимизация: правка одной ячейки перерисовывает ОДНУ ячейку, а не
+// все 31×N. Чтобы memo работал, все колбэки-пропсы обязаны быть стабильными
+// (useCallback без зависимости от `data`), а `slots` сравниваются ПО СОДЕРЖИМОМУ
+// — массив пересобирается индексом `entriesByPosDay` на каждый рендер и по
+// ссылке никогда не совпал бы.
+type DayCellProps = {
+  day: number;
+  dayType: DayType;
+  slots: TimesheetEntry[];
+  absence?: Absence;
+  isFirst: boolean;
+  editable: boolean;
+  companies: Company[];
+  employeeId: number;
+  positionId: number | undefined;
+  onSaveSlot: (empId: number, day: number, companyId: number, hours: number, positionId?: number) => void;
+  onChangeCompany: (empId: number, day: number, oldCompanyId: number, newCompanyId: number, hours: number, positionId?: number) => void;
+  onAddSlot: (empId: number, positionId: number | undefined, day: number) => void;
+  onSetAbsence: (empId: number, day: number, kind: AbsenceKind | null) => void;
+  onOpenCompanyPicker: (anchor: HTMLElement, current: number, onPick: (companyId: number) => void) => void;
+  onOpenAbsencePicker: (anchor: HTMLElement, onPick: (kind: AbsenceKind) => void) => void;
+};
+
+function sameSlots(a: TimesheetEntry[], b: TimesheetEntry[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].company_id !== b[i].company_id) return false;
+    if (a[i].hours !== b[i].hours) return false;
+    if ((a[i].position_id ?? null) !== (b[i].position_id ?? null)) return false;
+  }
+  return true;
+}
+
+const DayCell = memo(function DayCell(props: DayCellProps) {
+  const {
+    day, dayType, slots, absence, isFirst, editable, companies,
+    employeeId, positionId,
+    onSaveSlot, onChangeCompany, onAddSlot, onSetAbsence,
+    onOpenCompanyPicker, onOpenAbsencePicker,
+  } = props;
+  const isOff = dayType === 'weekend' || dayType === 'holiday';
+  const bgClass =
+    dayType === 'holiday'
+      ? 'bg-red-50/40'
+      : dayType === 'short'
+      ? 'bg-yellow-50/40'
+      : dayType === 'weekend'
+      ? 'bg-gray-50/60'
+      : '';
+
+  return (
+    <td
+      className={`border border-gray-200 align-top p-1 ${bgClass}`}
+      // Ширина под чип целиком (код + часы + крестик) — иначе колонки
+      // дней разъезжаются по содержимому и «квадратики» выходят разными.
+      style={{ minWidth: 84 }}
+    >
+      <div className="flex flex-col gap-1">
+        {/* День с кодом отсутствия: часов в нём нет по определению.
+            Код ставится на ВЕСЬ день человека (он отсутствует на всех
+            работах), поэтому рисуем и снимаем его на первой строке. */}
+        {absence ? (
+          isFirst ? (
+            <AbsenceChip
+              absence={absence}
+              disabled={!editable}
+              onClear={() => onSetAbsence(employeeId, day, null)}
+            />
+          ) : null
+        ) : (
+          <>
+            {slots.map((slot) => (
+              <SlotChip
+                key={`${slot.employee_id}-${slot.work_date}-${slot.company_id}`}
+                slot={slot}
+                companies={companies}
+                disabled={!editable}
+                onHoursChange={(h) => onSaveSlot(employeeId, day, slot.company_id, h, positionId)}
+                onCompanyChange={(newCompId) =>
+                  onChangeCompany(
+                    employeeId, day, slot.company_id, newCompId, num(slot.hours), positionId,
+                  )
+                }
+                onDelete={() => onSaveSlot(employeeId, day, slot.company_id, 0, positionId)}
+                onOpenPicker={onOpenCompanyPicker}
+              />
+            ))}
+            {editable && (
+              // Та же высота, что у чипов, и та же колонка справа —
+              // кнопка кода встаёт ровно под крестиками.
+              <div className="flex items-center gap-1 h-[22px]">
+                <button
+                  type="button"
+                  onClick={() => onAddSlot(employeeId, positionId, day)}
+                  className={
+                    'flex-1 min-w-0 h-full text-[10px] leading-none border border-dashed rounded ' +
+                    (isOff
+                      ? 'text-gray-300 border-gray-200 hover:text-amber-600 hover:border-amber-300'
+                      : 'text-gray-400 border-gray-300 hover:text-blue-600 hover:border-blue-300')
+                  }
+                  title={isOff ? 'Добавить работу в выходной/праздник' : 'Добавить слот'}
+                >
+                  +
+                </button>
+                {/* Код отсутствия — на человека целиком, ставится с первой строки */}
+                {isFirst && (
+                  <button
+                    type="button"
+                    onClick={(e) =>
+                      onOpenAbsencePicker(e.currentTarget, (kind) =>
+                        onSetAbsence(employeeId, day, kind))
+                    }
+                    className="shrink-0 w-5 h-full text-center text-[10px] leading-none text-gray-400 border border-dashed border-gray-300 rounded bg-transparent hover:text-blue-600 hover:border-blue-300 cursor-pointer"
+                    title="Поставить код отсутствия (часы этого дня будут убраны)"
+                  >
+                    ·
+                  </button>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </td>
+  );
+}, (prev, next) =>
+  prev.day === next.day &&
+  prev.dayType === next.dayType &&
+  prev.isFirst === next.isFirst &&
+  prev.editable === next.editable &&
+  prev.companies === next.companies &&
+  prev.employeeId === next.employeeId &&
+  prev.positionId === next.positionId &&
+  prev.absence?.kind === next.absence?.kind &&
+  prev.absence?.over_limit === next.absence?.over_limit &&
+  prev.onSaveSlot === next.onSaveSlot &&
+  prev.onChangeCompany === next.onChangeCompany &&
+  prev.onAddSlot === next.onAddSlot &&
+  prev.onSetAbsence === next.onSetAbsence &&
+  prev.onOpenCompanyPicker === next.onOpenCompanyPicker &&
+  prev.onOpenAbsencePicker === next.onOpenAbsencePicker &&
+  sameSlots(prev.slots, next.slots)
+);
+
+// ──────────────────────────────────────────────────────────────
 // SlotChip — один слот компании в ячейке дня
 // ──────────────────────────────────────────────────────────────
 function SlotChip({
@@ -2756,6 +3140,7 @@ function SlotChip({
   onHoursChange,
   onCompanyChange,
   onDelete,
+  onOpenPicker,
 }: {
   slot: TimesheetEntry;
   companies: Company[];
@@ -2763,8 +3148,10 @@ function SlotChip({
   onHoursChange: (hours: number) => void;
   onCompanyChange: (newCompanyId: number) => void;
   onDelete: () => void;
+  onOpenPicker: (anchor: HTMLElement, current: number, onPick: (companyId: number) => void) => void;
 }) {
   const col = getCompanyColor(slot.company_id, companies);
+  const company = companies.find((c) => c.id === slot.company_id);
   const [hours, setHours] = useState<string>(String(slot.hours ?? ''));
 
   useEffect(() => {
@@ -2794,23 +3181,20 @@ function SlotChip({
         opacity: disabled ? 0.6 : 1,
       }}
     >
-      {/* appearance-none убирает системную стрелку: она съедала половину поля
-          и обрезала код компании («kse» → «ks»). */}
-      <select
-        value={slot.company_id}
-        onChange={(e) => onCompanyChange(parseInt(e.target.value, 10))}
+      {/* Кнопка вместо <select>: список юрлиц рисуется одним поповером на всю
+          страницу (CellPicker). Раньше каждый чип нёс свой список — на отделе
+          в 73 человека это 27 тыс. <option>, больше половины DOM страницы.
+          min-w — чтобы код не схлопнулся, даже если колонка дня узкая. */}
+      <button
+        type="button"
+        onClick={(e) => onOpenPicker(e.currentTarget, slot.company_id, onCompanyChange)}
         disabled={disabled}
-        title="Компания"
-        // min-w — чтобы код не схлопнулся, даже если колонка дня узкая.
-        className="appearance-none bg-transparent border-0 outline-none cursor-pointer p-0 h-full flex-1 min-w-[26px] text-[11px] font-semibold"
+        title={`Компания: ${company ? companyLabel(company) : slot.company_id}`}
+        className="bg-transparent border-0 outline-none cursor-pointer p-0 h-full flex-1 min-w-[26px] text-left text-[11px] font-semibold disabled:cursor-default"
         style={{ color: col.color }}
       >
-        {companies.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.code}
-          </option>
-        ))}
-      </select>
+        {company?.code ?? slot.company_id}
+      </button>
       <input
         type="number"
         value={hours}
@@ -2977,27 +3361,6 @@ function NightRow({
 
 // ──────────────────────────────────────────────────────────────
 // AbsencePicker — выбор кода отсутствия вместо часов
-// ──────────────────────────────────────────────────────────────
-function AbsencePicker({ onPick }: { onPick: (kind: AbsenceKind) => void }) {
-  return (
-    <select
-      value=""
-      onChange={(e) => {
-        const v = e.target.value as AbsenceKind;
-        if (v) onPick(v);
-      }}
-      className="appearance-none shrink-0 w-5 h-full text-center text-[10px] leading-none text-gray-400 border border-dashed border-gray-300 rounded px-0 bg-transparent hover:text-blue-600 hover:border-blue-300 cursor-pointer"
-      title="Поставить код отсутствия (часы этого дня будут убраны)"
-    >
-      <option value="">·</option>
-      {ABSENCE_KINDS.map((a) => (
-        <option key={a.kind} value={a.kind}>
-          {a.code} — {a.label}
-        </option>
-      ))}
-    </select>
-  );
-}
 
 // ──────────────────────────────────────────────────────────────
 // AdjustmentsModal — у каждого столбца своя категория:

@@ -1,4 +1,4 @@
-import type { Absence, AbsenceKind, AuditLogEntry, AutofillPreview, CompanyShare, DepartmentApplications, NightShift, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
+import type { Absence, AbsenceKind, Adjustment, AuditLogEntry, AutofillPreview, CompanyShare, DepartmentApplications, NightShift, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
 export const timesheetApi = {
@@ -105,6 +105,18 @@ export const timesheetApi = {
   },
 
   // ── Премии / KPI / аванс (задача 3.11a) ──
+  // Премии/KPI/аванс за месяц. Нужен отдельно от месяца: после начисления
+  // премии перечитывать весь табель (400+ КБ) незачем — меняются только
+  // adjustments и суммы расчёта.
+  async getAdjustments(year: number, month: number, departmentId?: number): Promise<Adjustment[]> {
+    const params: Record<string, unknown> = {}
+    if (departmentId !== undefined) params.department_id = departmentId
+    const { data } = await apiClient.get<Adjustment[]>(
+      `/api/timesheet/${year}/${month}/adjustments`, { params },
+    )
+    return data
+  },
+
   async createAdjustment(input: {
     employee_id: number
     /** рабочее место, на котором заработано; не задано — основное */
