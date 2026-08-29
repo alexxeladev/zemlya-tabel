@@ -25,6 +25,7 @@ import { apiClient } from '../api/client';
 import { listDepartments } from '../api/departments';
 import { companyColorByIndex } from '../utils/colors';
 import { companyLabel } from '../utils/companies';
+import { payoutRoundingHint } from '../utils/money';
 import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
 import { useRowChecksStore } from '../store/rowChecks';
 import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
@@ -204,7 +205,7 @@ export type EmployeePayroll = {
   loan_planned_deduction?: string;
   loan_is_manual?: boolean;
   total_deductions?: string;
-  net_payout?: string;         // округлено вниз до 100 ₽
+  net_payout?: string;         // округлено до ближайшей 1000 ₽
   net_payout_exact?: string;
   rounding_tail?: string;
   breakdown_by_company: CompanyBreakdown[];
@@ -2041,11 +2042,7 @@ export function TimesheetPage() {
             </td>
             <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-right font-mono font-bold text-emerald-700 bg-emerald-50/40"
-              title={
-                num(pay?.rounding_tail) > 0
-                  ? `Округлено вниз до 100 ₽: точно ${fmtMoney(pay?.net_payout_exact ?? null)}, округление −${fmtMoney(pay?.rounding_tail ?? null)}`
-                  : undefined
-              }
+              title={payoutRoundingHint(pay?.net_payout_exact, pay?.rounding_tail)}
             >
               {pay?.is_calculable ? fmtMoney(pay?.net_payout ?? null) : '—'}
             </td>

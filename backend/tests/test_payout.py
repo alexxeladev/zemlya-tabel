@@ -272,8 +272,11 @@ class TestPayoutEndToEnd:
         assert emp["loan_is_manual"] is True
         # остаток гасится медленнее: 12000 − 300 = 11700
         assert Decimal(emp["loan_remaining"]) == Decimal("11700")
-        # к выплате = 100000 − 300
-        assert Decimal(emp["net_payout"]) == Decimal("99700")
+        # к выплате: точно 100000 − 300 = 99700, округляется до ближайшей
+        # тысячи ВВЕРХ (task_payout_rounding) — компания доплачивает 300
+        assert Decimal(emp["net_payout_exact"]) == Decimal("99700")
+        assert Decimal(emp["net_payout"]) == Decimal("100000")
+        assert Decimal(emp["rounding_tail"]) == Decimal("-300")
 
         # снять правку — вернётся плановая доля 1000
         client.delete(f"/api/timesheet/loan-override/{worker.id}/2026/5", headers=h)

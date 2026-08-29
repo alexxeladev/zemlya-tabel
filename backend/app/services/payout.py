@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
+from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal
 
 from sqlalchemy.orm import Session
 
@@ -18,8 +18,9 @@ from app.models.loan_deductions import LoanDeduction
 _ZERO = Decimal("0")
 _ONE = Decimal("1")
 
-# Шаг округления «к выплате» вниз (руководство: платим кратно 100 ₽)
-PAYOUT_ROUNDING_STEP = Decimal("100")
+# Шаг округления «к выплате»: платим кратно 1000 ₽, округляя МАТЕМАТИЧЕСКИ
+# (к ближайшей тысяче, ровно посередине — вверх). Было: вниз до 100 ₽.
+PAYOUT_ROUNDING_STEP = Decimal("1000")
 
 
 def _round(value: Decimal) -> Decimal:
@@ -118,21 +119,30 @@ class PayoutResult:
     advance_deduction: Decimal
     loan_deduction: Decimal
     total_deductions: Decimal
-    net_payout: Decimal        # округлено вниз до 100 ₽ — это и есть выплата
+    net_payout: Decimal        # округлено до 1000 ₽ — это и есть выплата
     net_payout_exact: Decimal  # точная сумма до округления (справочно)
-    rounding_tail: Decimal     # хвост = точное − округлённое, всегда ≥ 0
+    # хвост = точное − округлённое. Знак ЛЮБОЙ: округлили вниз — осело в пользу
+    # компании (+), округлили вверх — компания доплатила до тысячи (−, до 500 ₽).
+    rounding_tail: Decimal
 
 
-def floor_to_payout_step(value: Decimal) -> Decimal:
-    """Округление «к выплате» ВНИЗ до 100 ₽: 110407 → 110400, 26826 → 26800.
+def round_to_payout_step(value: Decimal) -> Decimal:
+    """Округление «к выплате» МАТЕМАТИЧЕСКИ до 1000 ₽.
 
-    Отрицательная сумма (удержания больше начисленного) не округляется:
-    floor утянул бы её ещё дальше в минус, а хвост обязан быть ≥ 0.
+    110407 → 110000 (вниз, ближе), 110700 → 111000 (вверх, ближе),
+    110500 → 111000 (ровно посередине — вверх).
+
+    ОТРИЦАТЕЛЬНАЯ сумма (удержали больше начисленного) НЕ округляется — так же,
+    как при прежнем округлении вниз, но по другой причине. Это долг сотрудника,
+    и оба направления округления одинаково неверны: −350 к ближайшей тысяче даёт
+    0 (долг исчез), а «от нуля» — −1000 (долг вырос). Правила для этого случая
+    никто не задавал, поэтому точную сумму оставляем как есть.
     """
     if value <= _ZERO:
         return value
+    # ROUND_HALF_UP на положительном частном — это и есть «посередине вверх».
     return (value / PAYOUT_ROUNDING_STEP).to_integral_value(
-        rounding=ROUND_FLOOR
+        rounding=ROUND_HALF_UP
     ) * PAYOUT_ROUNDING_STEP
 
 
@@ -147,9 +157,12 @@ def compute_payout(
     К выплате = начислено (оклад+переработка+праздничные) + премии + KPI − удержано,
     где удержано = доля займа + аванс. Все слагаемые — целые рубли.
 
-    Финальная сумма округляется ВНИЗ до 100 ₽ (промежуточные — точные).
-    Хвост (точное − округлённое) остаётся справочно: он суммируется в
-    показатель «Эффект округления» на дашборде и никуда не переносится.
+    Финальная сумма округляется МАТЕМАТИЧЕСКИ до 1000 ₽ (промежуточные — оклад,
+    переработка, премии, удержания — остаются точными).
+
+    Хвост (точное − округлённое) остаётся справочно: он суммируется в показатель
+    «Эффект округления» на дашборде и никуда не переносится. Знак у него теперь
+    любой: округление вверх означает, что компания доплатила до тысячи.
     """
     premium_amount = _round(premium_amount)
     kpi_amount = _round(kpi_amount)
@@ -157,7 +170,7 @@ def compute_payout(
     loan_deduction = _round(loan_deduction)
     total_deductions = advance_deduction + loan_deduction
     net_exact = accrued_total + premium_amount + kpi_amount - total_deductions
-    net_rounded = floor_to_payout_step(net_exact)
+    net_rounded = round_to_payout_step(net_exact)
     return PayoutResult(
         premium_amount=premium_amount,
         kpi_amount=kpi_amount,
