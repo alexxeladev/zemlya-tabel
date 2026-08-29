@@ -16,6 +16,7 @@ from app.models.departments import Department
 from app.models.employee_adjustments import EmployeeAdjustment
 from app.models.employees import Employee
 from app.models.loan_deductions import LoanDeduction
+from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
 from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.absence import AbsenceInput, AbsenceRead
@@ -39,6 +40,8 @@ from app.schemas.payroll_statement import (
 from app.schemas.timesheet import (
     AutofillPreview,
     AutofillRequest,
+    RowCheckInput,
+    RowCheckRead,
     TimesheetBatchInput,
     TimesheetBatchResponse,
     TimesheetCellInput,
@@ -87,6 +90,7 @@ from app.services.payroll_statement import (
     build_payroll_summary,
 )
 from app.services.positions import department_ids_of, visible_positions
+from app.services.row_checks import checked_position_ids, set_row_check
 from app.services.timesheet import (
     apply_autofill,
     build_autofill_preview,
@@ -692,6 +696,16 @@ def get_month(
     # include_payroll от employee игнорируем молча — проверка принудительная на
     # бэке, а не «по просьбе» фронта.
 
+    # Личные отметки «проверено» — одним запросом вместе с табелем и только
+    # СВОИ: выборка сужена по актору в самом сервисе (task_pilot_ux ч.3).
+    checked_positions = checked_position_ids(
+        db,
+        actor,
+        year,
+        month,
+        [pos.id for positions in positions_by_employee.values() for pos in positions],
+    )
+
     response = TimesheetMonthResponse(
         year=year,
         month=month,
@@ -708,6 +722,7 @@ def get_month(
         applications_distribution=applications_distribution,
         payroll=payroll,
         adjustments=adjustments,
+        checked_positions=checked_positions,
     )
     if hides_finances(actor):
         # Табельщику табель приходит целиком, но без денег: оклад и ставки живут в
@@ -805,6 +820,44 @@ def save_absence(
         work_date=result.work_date,
         kind=result.kind,
         code=absence_code(result.kind),
+    )
+
+
+# ── Личная отметка «строку проверил» (task_pilot_ux ч.3) ──────────────────────
+
+@router.put("/row-check", response_model=RowCheckRead)
+def save_row_check(
+    payload: RowCheckInput,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """
+    Поставить/снять ЛИЧНУЮ отметку «эту строку я проверил» (value=false — снять).
+
+    Закладка, а не статус табеля: привязана к пользователю, чужие её не видят
+    и снять не могут. Поэтому отметка не зависит от статуса периода — закрытый
+    месяц перечитывают и сверяют так же, как открытый, — и ничего не
+    пересчитывает: ответ минимальный, фронт обновляет строку оптимистично и
+    месяц не перезапрашивает.
+
+    Права — как на просмотр строки: доступ к ОТДЕЛУ рабочего места
+    (`_check_cell_access` с position_id). Отметить чужой отдел нельзя, иначе
+    по ответам эндпойнта можно было бы нащупать чужие позиции.
+    """
+    position = db.get(EmployeePosition, payload.position_id)
+    if position is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Position not found"
+        )
+    _check_cell_access(actor, position.employee_id, db, position.id)
+    checked = set_row_check(
+        db, actor, position.id, payload.year, payload.month, payload.value
+    )
+    return RowCheckRead(
+        position_id=position.id,
+        year=payload.year,
+        month=payload.month,
+        checked=checked,
     )
 
 

@@ -74,6 +74,27 @@ class TimesheetMonthResponse(BaseModel):
     applications_distribution: list[ApplicationsDistributionRow] = []
     payroll: PayrollSummaryRead | None = None
     adjustments: list[AdjustmentRead] = []
+    # Личные отметки «строку проверил» (task_pilot_ux ч.3): id рабочих мест,
+    # отмеченных ИМЕННО ЭТИМ пользователем в этом месяце. Едут вместе с
+    # табелем одним запросом — по строке их было бы 70. Чужие сюда не
+    # попадают никогда: выборка сужена по актору.
+    checked_positions: list[int] = []
+
+
+class RowCheckInput(BaseModel):
+    """Одна отметка «проверено»: рабочее место + месяц. value=false — снять."""
+
+    position_id: int
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)
+    value: bool
+
+
+class RowCheckRead(BaseModel):
+    position_id: int
+    year: int
+    month: int
+    checked: bool
 
 
 class TimesheetBatchInput(BaseModel):

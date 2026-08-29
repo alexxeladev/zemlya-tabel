@@ -26,6 +26,7 @@ from app.models.positions import (
     EmployeePosition,
 )
 from app.models.production_calendars import ProductionCalendar
+from app.models.row_checks import RowCheck
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
@@ -54,6 +55,7 @@ __all__ = [
     "PAY_TYPE_PER_SHIFT",
     "PAY_TYPE_SALARY",
     "ProductionCalendar",
+    "RowCheck",
     "Schedule",
     "TimesheetEntry",
     "TimesheetPeriod",
