@@ -392,7 +392,14 @@ type PickerState = {
  *  ширины фиксированы — «по содержимому» они разъехались бы с шапкой. */
 const COL_CHECK_W = 34;
 const COL_TAB_W = 84;
-const COL_NAME_W = 200;
+const COL_NAME_W = 168;
+/**
+ * Должность не имела своей ширины и растягивалась под самую длинную в отделе —
+ * колонка занимала пол-экрана. Теперь ширина фиксирована, а текст ПЕРЕНОСИТСЯ.
+ * Перенос только по пробелам (`break-normal`): рвать слово посередине нельзя,
+ * «Тракторист МТЗ» должен ложиться в две строки целыми словами.
+ */
+const COL_TITLE_W = 132;
 
 /** Общая ссылка на пустой список слотов: новый [] на каждый рендер ломал бы memo. */
 const EMPTY_SLOTS: TimesheetEntry[] = [];
@@ -1787,7 +1794,9 @@ export function TimesheetPage() {
             }}
             title={emp.full_name}
           >
-            <div className="truncate" style={{ maxWidth: COL_NAME_W - 24 }}>
+            {/* Целиком, с переносом по словам: обрезка многоточием прятала
+                отчество, а по нему бухгалтерия сотрудников и различает. */}
+            <div className="break-normal" style={{ maxWidth: COL_NAME_W - 24 }}>
               {emp.full_name}
             </div>
             {count > 1 && (
@@ -1798,13 +1807,16 @@ export function TimesheetPage() {
           </td>
         )}
         {/* Должность / отдел / график — у КАЖДОГО рабочего места свои */}
-        <td className="border border-gray-200 px-2 py-2 text-xs text-gray-700">
-          <span className="truncate">{position.display_title}</span>
+        <td
+          className="border border-gray-200 px-2 py-2 text-xs text-gray-700 align-top break-normal"
+          style={{ width: COL_TITLE_W, minWidth: COL_TITLE_W, maxWidth: COL_TITLE_W }}
+        >
+          {position.display_title}
           {position.is_primary && count > 1 && (
             <span className="ml-1 text-[9px] text-gray-400">осн.</span>
           )}
         </td>
-        <td className="border border-gray-200 px-2 py-2 text-xs text-gray-600">
+        <td className="border border-gray-200 px-2 py-2 text-xs text-gray-600 align-top break-normal">
           {position.department?.name ?? '—'}
         </td>
         <td className="border border-gray-200 px-2 py-2 text-xs text-center font-mono text-gray-600">
@@ -2469,7 +2481,9 @@ export function TimesheetPage() {
               </th>
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
-                style={{ minWidth: 110, zIndex: 20 }}
+                style={{
+                  width: COL_TITLE_W, minWidth: COL_TITLE_W, maxWidth: COL_TITLE_W, zIndex: 20,
+                }}
                 title="Рабочее место: у совместителя строка на каждое, со своим графиком и расчётом"
               >
                 Должность
