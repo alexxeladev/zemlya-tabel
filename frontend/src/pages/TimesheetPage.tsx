@@ -1489,7 +1489,10 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // ФИО,Должность,Отдел,График(4) + дни + Итого ч + блок справа:
+  // Колонки слева от дней: ФИО, Таб.№, Должность, Отдел, График.
+  // Число держим константой — по нему считается colSpan заглушек и разделителей.
+  const LEAD_COLS = 5;
+  // ФИО,Таб.№,Должность,Отдел,График(5) + дни + Итого ч + блок справа:
   //   деньги (15): Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Праздн.,Ночные,
   //                Отпускные,Больничные,Премия,KPI,Итого₽,Удержано,К выплате
   //   часы  (8):   Норма,Δ,Сверхур,Вне граф.,Празд.,Ночные см.,Отпуск,Больничный
@@ -1545,7 +1548,7 @@ export function TimesheetPage() {
 
   const trailingCols =
     (canSeeMoney ? MONEY_COLS : canSeeHourStats ? HOUR_COLS : 0) + distCols;
-  const totalCols = 4 + numDays + 1 + trailingCols;
+  const totalCols = LEAD_COLS + numDays + 1 + trailingCols;
 
   /** Есть ли у рабочего места ночные смены — только тогда рисуем строку «Ночные». */
   const hasNight = (position: Position) => Boolean(position.has_night_shifts);
@@ -1607,18 +1610,22 @@ export function TimesheetPage() {
             title={emp.full_name}
           >
             <div className="truncate max-w-[200px]">{emp.full_name}</div>
-            {/* Табельный номер: он и так есть в поиске, в Excel и в ведомости —
-                в самом табеле его не хватало. */}
-            {emp.tab_number && (
-              <div className="text-[10px] font-normal text-gray-400 font-mono tabular-nums">
-                таб. № {emp.tab_number}
-              </div>
-            )}
             {count > 1 && (
               <div className="text-[10px] font-normal text-gray-400">
                 совместительство: {count} места
               </div>
             )}
+          </td>
+        )}
+        {/* Табельный номер — ОТДЕЛЬНОЙ колонкой (по нему сверяется бухгалтерия,
+            он есть в ведомости и в Excel). Объединяется по строкам сотрудника
+            так же, как ФИО: номер у человека один на все рабочие места. */}
+        {isFirst && (
+          <td
+            rowSpan={nameSpan}
+            className="border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top"
+          >
+            {emp.tab_number || <span className="text-gray-300 font-sans">—</span>}
           </td>
         )}
         {/* Должность / отдел / график — у КАЖДОГО рабочего места свои */}
@@ -2268,6 +2275,13 @@ export function TimesheetPage() {
               </th>
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
+                style={{ minWidth: 84, zIndex: 20 }}
+                title="Табельный номер: по нему сверяется бухгалтерия"
+              >
+                Таб. №
+              </th>
+              <th
+                className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
                 style={{ minWidth: 110, zIndex: 20 }}
                 title="Рабочее место: у совместителя строка на каждое, со своим графиком и расчётом"
               >
@@ -2514,7 +2528,7 @@ export function TimesheetPage() {
                 >
                   ИТОГО
                 </td>
-                <td className="border border-gray-300 px-2 py-2" colSpan={3}></td>
+                <td className="border border-gray-300 px-2 py-2" colSpan={LEAD_COLS - 1}></td>
                 {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => (
                   <td
                     key={d}
