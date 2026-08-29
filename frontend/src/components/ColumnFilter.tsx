@@ -11,7 +11,7 @@
 // Сам поповер — position:fixed поверх страницы: <th> сидит в контейнере с
 // overflow-auto и обрезал бы выпадашку.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 /** Значение пустой ячейки (нет таб.№, нет отдела) — отдельным пунктом списка. */
 export const EMPTY_VALUE = '';
@@ -38,30 +38,58 @@ export function ColumnFilter({
   const [query, setQuery] = useState('');
   const btnRef = useRef<HTMLButtonElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const popRef = useRef<HTMLDivElement>(null);
 
-  useLayoutEffect(() => {
-    if (!open || !btnRef.current) return;
-    const r = btnRef.current.getBoundingClientRect();
-    // Не даём списку вылезти за правый/нижний край окна.
+  /** Поставить поповер под свою кнопку, не вылезая за края окна. */
+  const place = useCallback(() => {
+    const btn = btnRef.current;
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
     const left = Math.max(4, Math.min(r.left, window.innerWidth - 264));
     const top = Math.max(4, Math.min(r.bottom + 6, window.innerHeight - 340));
     setPos({ top, left });
-  }, [open]);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (open) place();
+  }, [open, place]);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    /**
+     * Прокрутка. Поповер — position:fixed, поэтому за уехавшим заголовком он
+     * сам не пойдёт: его надо переставить.
+     *
+     * Важно: слушатель стоит в фазе ПЕРЕХВАТА (иначе прокрутка внутреннего
+     * контейнера таблицы до window не всплывёт), и поэтому ловит в том числе
+     * прокрутку СОБСТВЕННОГО списка значений. Раньше он на любую прокрутку
+     * закрывался — колесом или полосой список пролистать было невозможно.
+     * Прокрутку внутри поповера пропускаем мимо.
+     */
+    const onScroll = (e: Event) => {
+      const target = e.target as Node | null;
+      if (target && popRef.current?.contains(target)) return;
+      const r = btnRef.current?.getBoundingClientRect();
+      // Кнопка уехала из видимой части окна — держать список не за что.
+      if (!r || r.bottom < 0 || r.top > window.innerHeight
+        || r.right < 0 || r.left > window.innerWidth) {
+        setOpen(false);
+        return;
+      }
+      place();
+    };
     // Ссылка на обработчик одна: инлайн-стрелка в removeEventListener —
-    // другая функция, и слушатель прокрутки остался бы висеть навсегда.
-    const onScroll = () => setOpen(false);
+    // другая функция, и слушатель остался бы висеть навсегда.
     window.addEventListener('keydown', onKey);
-    // Прокрутка увела бы поповер от своего заголовка — проще закрыть.
     window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('resize', place);
     return () => {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', place);
     };
-  }, [open]);
+  }, [open, place]);
 
   const active = selected.length > 0;
   const selectedSet = new Set(selected);
@@ -119,6 +147,7 @@ export function ColumnFilter({
         <>
           <div className="fixed inset-0 z-[99]" onClick={() => setOpen(false)} />
           <div
+            ref={popRef}
             className="fixed z-[100] w-[260px] rounded border border-gray-200 bg-white shadow-lg"
             style={{ top: pos.top, left: pos.left }}
             onClick={(e) => e.stopPropagation()}
