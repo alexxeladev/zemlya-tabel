@@ -83,7 +83,7 @@ export interface EmployeePayroll {
   loan_planned_deduction: string
   loan_is_manual: boolean
   total_deductions: string
-  // net_payout округлён вниз до 100 ₽; exact/tail — справочно
+  // net_payout округлён математически до 1000 ₽; exact/tail — справочно
   net_payout: string
   net_payout_exact: string
   rounding_tail: string
@@ -259,7 +259,7 @@ export interface StatementRow {
   night_amount: string
   accrued_total: string
   deductions: string
-  net_payout: string        // округлено вниз до 100 ₽
+  net_payout: string        // округлено до ближайшей 1000 ₽
   net_payout_exact: string
   rounding_tail: string
   is_overridden: boolean

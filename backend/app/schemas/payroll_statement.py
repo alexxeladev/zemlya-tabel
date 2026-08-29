@@ -133,7 +133,7 @@ class StatementRow(BaseModel):
     #                   + надбавка за ночные
     accrued_total: Decimal
     deductions: Decimal           # Аванс/Удержано (займ + аванс)
-    net_payout: Decimal           # К выплате — округлено вниз до 100 ₽
+    net_payout: Decimal           # К выплате — округлено до ближайшей 1000 ₽
     net_payout_exact: Decimal = Decimal("0")  # до округления (справочно)
     rounding_tail: Decimal = Decimal("0")     # хвост = точное − округлённое
 

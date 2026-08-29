@@ -394,12 +394,30 @@ function PayrollBlock({ data }: { data: DashboardData }) {
         <KpiCard label="Переработка" value={formatMoney(p.overtime, { showZero: true })} />
         <KpiCard label="Вне графика" value={formatMoney(p.off_schedule ?? '0', { showZero: true })} />
         <KpiCard label="Праздничные" value={formatMoney(p.holiday, { showZero: true })} />
-        <KpiCard
-          label="Эффект округления"
-          value={formatMoney(p.rounding_effect ?? '0', { showZero: true })}
-          accent="text-amber-700"
-          hint="сумма округлений «К выплате» вниз до 100 ₽"
-        />
+        {/* Эффект округления «К выплате» до 1000 ₽ (task_payout_rounding).
+            Округление МАТЕМАТИЧЕСКОЕ, поэтому итог бывает обоих знаков и
+            может быть отрицательным — это не ошибка, а переплата. Подпись и
+            цвет идут за знаком: одно «Эффект округления» ни о чём не говорит. */}
+        {(() => {
+          const effect = parseFloat(p.rounding_effect ?? '0')
+          const sign = Number.isFinite(effect) ? effect : 0
+          return (
+            <KpiCard
+              label="Эффект округления"
+              value={formatMoney(p.rounding_effect ?? '0', { showZero: true })}
+              accent={
+                sign > 0 ? 'text-emerald-700' : sign < 0 ? 'text-red-700' : 'text-gray-900'
+              }
+              hint={
+                sign > 0
+                  ? '«К выплате» округляется до ближайшей 1000 ₽; за период осело в пользу компании'
+                  : sign < 0
+                  ? '«К выплате» округляется до ближайшей 1000 ₽; за период компания доплатила'
+                  : '«К выплате» округляется до ближайшей 1000 ₽; переплаты и недоплаты сошлись в ноль'
+              }
+            />
+          )
+        })()}
       </div>
 
       {p.non_calculable_employees > 0 && (

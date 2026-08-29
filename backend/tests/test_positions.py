@@ -492,7 +492,9 @@ class TestAbsencesOnlyFromPrimary:
 
         assert summary.total_vacation_amount == Decimal("15000")
         assert by_position[engineer.id].net_payout == Decimal("60000")
-        assert by_position[electrician.id].net_payout == Decimal("22500")
+        # 22500 округляется до ближайшей тысячи, ровно посередине — вверх
+        assert by_position[electrician.id].net_payout_exact == Decimal("22500")
+        assert by_position[electrician.id].net_payout == Decimal("23000")
 
 
 # ── Три типа оплаты ───────────────────────────────────────────────────────────

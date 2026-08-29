@@ -112,7 +112,8 @@ class EmployeePayrollRead(BaseModel):
     loan_planned_deduction: Decimal = Decimal("0")
     loan_is_manual: bool = False
     total_deductions: Decimal = Decimal("0")
-    # net_payout округлён вниз до 100 ₽ (task_payout_rounding), exact/tail — справочно
+    # net_payout округлён математически до 1000 ₽ (task_payout_rounding);
+    # exact/tail — справочно, знак tail любой
     net_payout: Decimal = Decimal("0")
     net_payout_exact: Decimal = Decimal("0")
     rounding_tail: Decimal = Decimal("0")

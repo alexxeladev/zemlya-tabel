@@ -6,7 +6,7 @@ import type {
 } from '../../types/api'
 import { timesheetApi } from '../../api/timesheet'
 import { apiClient } from '../../api/client'
-import { formatHours, formatMoney } from '../../utils/money'
+import { formatHours, formatMoney, payoutRoundingHint } from '../../utils/money'
 import { distribute } from '../../utils/distribution'
 import { companyLabel } from '../../utils/companies'
 import { usePeriodStore } from '../../store/period'
@@ -549,11 +549,7 @@ export function PayrollPage() {
                     </td>
                     <td
                       className="px-2 py-1.5 text-center font-bold text-emerald-700"
-                      title={
-                        num(row.rounding_tail) > 0
-                          ? `Округлено вниз до 100 ₽: точно ${formatMoney(row.net_payout_exact, { showZero: true })}, округление −${formatMoney(row.rounding_tail)}`
-                          : undefined
-                      }
+                      title={payoutRoundingHint(row.net_payout_exact, row.rounding_tail)}
                     >
                       {formatMoney(row.net_payout, { showZero: true })}
                     </td>

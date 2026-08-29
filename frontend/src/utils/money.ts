@@ -27,3 +27,26 @@ export function formatDelta(value: string | null): { text: string; className: st
   if (num > 0) return { text: `+${num % 1 === 0 ? num : num.toFixed(2)}`, className: 'text-amber-600 font-medium' }
   return { text: `${num % 1 === 0 ? num : num.toFixed(2)}`, className: 'text-red-600 font-medium' }
 }
+
+/**
+ * Подсказка к сумме «К выплате»: как её округлили (task_payout_rounding).
+ *
+ * Округление МАТЕМАТИЧЕСКОЕ до 1000 ₽, поэтому хвост (точное − округлённое)
+ * бывает обоих знаков: плюс — сумма ушла вниз и осела в пользу компании,
+ * минус — компания доплатила до ближайшей тысячи. Одна функция на все экраны,
+ * чтобы формулировки в табеле и ведомости не разъезжались.
+ *
+ * Возвращает undefined, когда округлять было нечего (сумма и так кратна 1000).
+ */
+export function payoutRoundingHint(
+  exact: string | null | undefined,
+  tail: string | null | undefined,
+): string | undefined {
+  const t = parseFloat(tail ?? '')
+  if (!Number.isFinite(t) || t === 0) return undefined
+  const precise = formatMoney(exact ?? null, { showZero: true })
+  const amount = formatMoney(String(Math.abs(t)), { showZero: true })
+  return t > 0
+    ? `Округлено ВНИЗ до 1000 ₽: точная сумма ${precise}, удержано при округлении ${amount}`
+    : `Округлено ВВЕРХ до 1000 ₽: точная сумма ${precise}, доплачено при округлении ${amount}`
+}
