@@ -31,7 +31,6 @@ import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
 import { usePeriodStore } from '../store/period';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { UI_KEYS } from '../utils/persist';
-import { TimesheetCompanyView } from './TimesheetCompanyView';
 import { ApplicationsPanel } from '../components/ApplicationsPanel';
 import { ColumnFilter } from '../components/ColumnFilter';
 import { RowCheckBox, RowCheckProgress } from '../components/RowCheck';
@@ -625,8 +624,6 @@ export function TimesheetPage() {
   const canSelectDept =
     role === 'admin' || role === 'accountant' || (isDeptScoped && managedDeptCount > 1);
 
-  const viewMode = useTimesheetViewStore((s) => s.mode);
-  const setViewMode = useTimesheetViewStore((s) => s.setMode);
 
   // ── Ссылка из «Задач»/дашборда (?year=&month=&department_id=) ──
   // Она сильнее сохранённого выбора: человек перешёл в конкретный месяц отдела,
@@ -2185,31 +2182,6 @@ export function TimesheetPage() {
             →
           </button>
 
-          {/* ── Переключатель вида: Классический / По компаниям ── */}
-          <div className="ml-4 inline-flex rounded-lg border border-gray-300 overflow-hidden text-sm">
-            <button
-              onClick={() => setViewMode('classic')}
-              className={
-                'px-3 py-1.5 transition-colors ' +
-                (viewMode === 'classic'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white text-gray-600 hover:bg-gray-50')
-              }
-            >
-              Классический
-            </button>
-            <button
-              onClick={() => setViewMode('company')}
-              className={
-                'px-3 py-1.5 transition-colors border-l border-gray-300 ' +
-                (viewMode === 'company'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white text-gray-600 hover:bg-gray-50')
-              }
-            >
-              По компаниям
-            </button>
-          </div>
         </div>
 
         {/* Над таблицей остаётся ТОЛЬКО фильтр компании (task_pilot_ux ч.2в):
@@ -2417,33 +2389,6 @@ export function TimesheetPage() {
       {/* ───── Скролл-контейнер с таблицей ───── */}
       <div className="flex-1 relative min-h-0 min-w-0">
       <div className="absolute inset-0 overflow-auto bg-white">
-        {viewMode === 'company' ? (
-          <TimesheetCompanyView
-            data={data}
-            year={year}
-            month={month}
-            numDays={numDays}
-            dayTypes={dayTypes}
-            rows={flatRows}
-            grouped={grouped}
-            groups={groups}
-            payrollFor={payrollFor}
-            entryPositionId={entryPositionId}
-            absenceByEmpDay={absenceByEmpDay}
-            canSeeMoney={canSeeMoney}
-            canSeeHourStats={canSeeHourStats}
-            saveSlot={saveSlot}
-            setAbsence={setAbsence}
-            periodForDept={periodForDept}
-            dayTotals={dayTotals}
-            onSubmit={submitPeriod}
-            onClose={closePeriod}
-            onReturn={returnPeriod}
-            onReopen={reopenPeriod}
-            columnFilter={columnFilterFor}
-            onToggleCheck={toggleRowCheck}
-          />
-        ) : (
         <table
           className="border-collapse text-xs"
           style={{ minWidth: 'max-content' }}
@@ -2857,7 +2802,6 @@ export function TimesheetPage() {
 
           </tbody>
         </table>
-        )}
       </div>
       </div>
 

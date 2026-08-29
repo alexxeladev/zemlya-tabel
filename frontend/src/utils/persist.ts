@@ -16,10 +16,9 @@ export const UI_KEYS = {
   period: 'period',
   /** период дашборда — диапазон месяцев, у него своя семантика */
   dashboardPeriod: 'dashboard.period',
-  /** табель: вид (классический / по компаниям) и выбранный отдел */
-  timesheetView: 'timesheet.view',
+  /** табель: выбранный отдел */
   timesheetDept: 'timesheet.dept',
-  /** табель: поиск и фильтр компании */
+  /** табель: фильтр компании (фильтры колонок сессионные, не сохраняются) */
   timesheetFilters: 'timesheet.filters',
   /** табель: развёрнут ли блок «ПО КОМПАНИЯМ» в подвале */
   timesheetCompanySummary: 'timesheet.companySummary',
