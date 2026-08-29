@@ -82,21 +82,31 @@ type Props = {
    *  живут в TimesheetPage — он владелец данных и уже отдаёт сюда
    *  отфильтрованные `rows`; здесь остаётся только отрисовать кнопку. */
   columnFilter?: (key: 'name' | 'tab' | 'title' | 'dept' | 'schedule') => ReactNode;
+  /** Личные отметки «строку проверил»: id отмеченных рабочих мест + переключатель
+   *  (task_pilot_ux ч.3). Состояние живёт в TimesheetPage — оно общее для обоих
+   *  видов, и переключение вида отметки не теряет. */
+  checkedPositions?: Set<number>;
+  onToggleCheck?: (positionId: number, value: boolean) => void;
 };
 
 const WEEKDAY_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
 // Закреплённые слева колонки: фиксированные ширины + накопленные смещения.
 // Фикс. ширина обязательна, иначе sticky-смещения «разъезжаются».
-// Таб.№ — ПЕРВАЯ колонка (по нему сверяется бухгалтерия), за ней ФИО.
-const COL_W = { tab: 84, name: 170, position: 120, dept: 100, sched: 60, company: 140 };
+// Слева: узкая колонка личной отметки «проверено», затем Таб.№ (по нему
+// сверяется бухгалтерия) и ФИО.
+const COL_W = {
+  check: 34, tab: 84, name: 170, position: 120, dept: 100, sched: 60, company: 140,
+};
 const COL_LEFT = {
-  tab: 0,
-  name: COL_W.tab,
-  position: COL_W.tab + COL_W.name,
-  dept: COL_W.tab + COL_W.name + COL_W.position,
-  sched: COL_W.tab + COL_W.name + COL_W.position + COL_W.dept,
-  company: COL_W.tab + COL_W.name + COL_W.position + COL_W.dept + COL_W.sched,
+  check: 0,
+  tab: COL_W.check,
+  name: COL_W.check + COL_W.tab,
+  position: COL_W.check + COL_W.tab + COL_W.name,
+  dept: COL_W.check + COL_W.tab + COL_W.name + COL_W.position,
+  sched: COL_W.check + COL_W.tab + COL_W.name + COL_W.position + COL_W.dept,
+  company:
+    COL_W.check + COL_W.tab + COL_W.name + COL_W.position + COL_W.dept + COL_W.sched,
 };
 function stickyLeft(left: number, width: number, z = 10): CSSProperties {
   return { position: 'sticky', left, width, minWidth: width, maxWidth: width, zIndex: z };
@@ -152,6 +162,7 @@ export function TimesheetCompanyView(props: Props) {
     payrollFor, entryPositionId, absenceByEmpDay, canSeeMoney, canSeeHourStats, saveSlot, setAbsence,
     periodForDept, dayTotals,
     onSubmit, onClose, onReturn, onReopen, columnFilter,
+    checkedPositions, onToggleCheck,
   } = props;
 
   // Локальные «добавленные вручную» компании (без zustand — как expanded в классике).
@@ -254,10 +265,10 @@ export function TimesheetCompanyView(props: Props) {
   const hoursOnly = canSeeHourStats && !canSeeMoney;
   const companyHourCols = hoursOnly ? 3 : 0;
   const posHourCols = hoursOnly ? 2 : 0;
-  // Таб.№,ФИО,Должность,Отдел,График(5) + Компания(1) + дни + ИтогоЧ компании(1)
+  // ✓,Таб.№,ФИО,Должность,Отдел,График(6) + Компания(1) + дни + ИтогоЧ компании(1)
   // + companyMoney + ИтогоЧ позиции(1) + posMoney + Норма
   const totalCols =
-    5 + 1 + numDays + 1 + companyMoneyCols + companyHourCols + 1 + posMoneyCols + normCols
+    6 + 1 + numDays + 1 + companyMoneyCols + companyHourCols + 1 + posMoneyCols + normCols
     + posHourCols;
 
   // ── Рендер строк одного рабочего места ──
@@ -288,6 +299,10 @@ export function TimesheetCompanyView(props: Props) {
         ? undefined
         : pay?.breakdown_by_company?.find((b) => b.company_id === companyId);
 
+    // Личная отметка «проверено» — на всё рабочее место: его строки-компании
+    // зеленеют вместе, отмечается строка табеля, а не одна её компания.
+    const rowChecked = checkedPositions?.has(position.id) ?? false;
+
     return (
       <Fragment key={pk}>
         {companyRows.map((row, ri) => {
@@ -303,12 +318,47 @@ export function TimesheetCompanyView(props: Props) {
           const isEmployeeFirstRow = index === 0 && first;
 
           return (
-            <tr key={`${pk}-${cid ?? 'none'}-${ri}`} className="hover:bg-blue-50/20">
+            <tr
+              key={`${pk}-${cid ?? 'none'}-${ri}`}
+              className={
+                rowChecked ? 'bg-emerald-50 hover:bg-emerald-100/70' : 'hover:bg-blue-50/20'
+              }
+            >
+              {/* ── Личная отметка «проверено»: адресована РАБОЧЕМУ МЕСТУ,
+                     поэтому merge на строки этой позиции, а не сотрудника ── */}
+              {first && (
+                <td
+                  rowSpan={n}
+                  className={
+                    'sticky border border-gray-200 p-0 text-center align-middle '
+                    + (rowChecked ? 'bg-emerald-50' : 'bg-white')
+                  }
+                  style={stickyLeft(COL_LEFT.check, COL_W.check)}
+                >
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 cursor-pointer accent-emerald-600"
+                    checked={rowChecked}
+                    onChange={(e) => onToggleCheck?.(position.id, e.target.checked)}
+                    title={
+                      rowChecked
+                        ? 'Проверено (вашей отметкой). Снять'
+                        : 'Отметить строку проверенной — отметка личная и своя у каждого месяца'
+                    }
+                  />
+                </td>
+              )}
+
               {/* ── Табельный номер: первая колонка, merge как у ФИО ── */}
               {index === 0 && first && (
                 <td
                   rowSpan={nameSpan}
-                  className="bg-white border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top"
+                  className={
+                    'border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top '
+                    // Таб.№ объединён по ВСЕМ местам человека: красим только
+                    // когда место одно, иначе «по первому» было бы враньём.
+                    + (rowChecked && count === 1 ? 'bg-emerald-50' : 'bg-white')
+                  }
                   style={stickyLeft(COL_LEFT.tab, COL_W.tab)}
                 >
                   {emp.tab_number || <span className="text-gray-300 font-sans">—</span>}
@@ -634,6 +684,13 @@ export function TimesheetCompanyView(props: Props) {
       <thead>
         <tr>
           <th
+            className="sticky top-0 bg-gray-50 border border-gray-200 px-1 py-2 text-center font-medium text-gray-500"
+            style={{ ...stickyLeft(COL_LEFT.check, COL_W.check, 30), top: 0 }}
+            title="Личная отметка «строку проверил»: видите только вы, сбрасывается каждый месяц"
+          >
+            ✓
+          </th>
+          <th
             className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
             style={{ ...stickyLeft(COL_LEFT.tab, COL_W.tab, 30), top: 0 }}
             title="Табельный номер: по нему сверяется бухгалтерия"
@@ -741,6 +798,7 @@ export function TimesheetCompanyView(props: Props) {
         {/* ===== ИТОГО строка ===== */}
         {rows.length > 0 && (
           <tr className="bg-gray-100 font-semibold">
+            <td className="bg-gray-200 border border-gray-300 p-0" style={stickyLeft(COL_LEFT.check, COL_W.check)}></td>
             <td className="bg-gray-200 border border-gray-300 px-2 py-2" style={stickyLeft(COL_LEFT.tab, COL_W.tab)}></td>
             <td className="bg-gray-200 border border-gray-300 px-3 py-2" style={stickyLeft(COL_LEFT.name, COL_W.name)}>
               ИТОГО

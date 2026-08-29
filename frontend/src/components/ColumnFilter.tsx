@@ -44,7 +44,7 @@ export function ColumnFilter({
     const r = btnRef.current.getBoundingClientRect();
     // Не даём списку вылезти за правый/нижний край окна.
     const left = Math.max(4, Math.min(r.left, window.innerWidth - 264));
-    const top = Math.max(4, Math.min(r.bottom + 4, window.innerHeight - 340));
+    const top = Math.max(4, Math.min(r.bottom + 6, window.innerHeight - 340));
     setPos({ top, left });
   }, [open]);
 
@@ -70,21 +70,25 @@ export function ColumnFilter({
     ? options.filter((v) => (v || emptyLabel).toLocaleLowerCase('ru').includes(needle))
     : options;
 
-  /** Отметить всё, что сейчас в списке: без запроса это «фильтра нет». */
+  /** Отметить всё, что сейчас в списке. Без запроса это то же, что «фильтра
+   *  нет», — и снимаем его совсем: так новые значения (другой месяц, другой
+   *  отдел) не окажутся скрытыми давним «выбрал всё». */
   const applyShown = () => {
     if (!needle) { onChange([]); setOpen(false); return; }
-    const next = Array.from(new Set([...selected, ...shown]));
-    onChange(next.length === options.length ? [] : next);
+    onChange(Array.from(new Set([...selected, ...shown])));
     setOpen(false);
   };
 
   const toggle = (value: string) => {
-    const next = selectedSet.has(value)
-      ? selected.filter((v) => v !== value)
-      : [...selected, value];
-    // Отмечено всё, что есть, — это то же самое, что «фильтра нет»: держим
-    // одно состояние, иначе заголовок горел бы «фильтр» без всякого эффекта.
-    onChange(next.length === options.length ? [] : next);
+    // Клик по чекбоксу ВСЕГДА меняет его состояние. Соблазн свернуть «отмечено
+    // всё» в «фильтра нет» пришлось отбросить: в колонке с единственным
+    // значением такой клик не давал ничего видимого — галочка не вставала, и
+    // фильтр выглядел сломанным. Снимает фильтр «Сбросить».
+    onChange(
+      selectedSet.has(value)
+        ? selected.filter((v) => v !== value)
+        : [...selected, value]
+    );
   };
 
   return (
@@ -113,9 +117,9 @@ export function ColumnFilter({
 
       {open && pos && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="fixed inset-0 z-[99]" onClick={() => setOpen(false)} />
           <div
-            className="fixed z-50 w-[260px] rounded border border-gray-200 bg-white shadow-lg"
+            className="fixed z-[100] w-[260px] rounded border border-gray-200 bg-white shadow-lg"
             style={{ top: pos.top, left: pos.left }}
             onClick={(e) => e.stopPropagation()}
           >
