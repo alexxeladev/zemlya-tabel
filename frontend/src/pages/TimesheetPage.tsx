@@ -26,6 +26,7 @@ import { listDepartments } from '../api/departments';
 import { companyColorByIndex } from '../utils/colors';
 import { companyLabel } from '../utils/companies';
 import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
+import { useRowChecksStore } from '../store/rowChecks';
 import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
 import { usePeriodStore } from '../store/period';
 import { usePersistentState } from '../hooks/usePersistentState';
@@ -33,6 +34,7 @@ import { UI_KEYS } from '../utils/persist';
 import { TimesheetCompanyView } from './TimesheetCompanyView';
 import { ApplicationsPanel } from '../components/ApplicationsPanel';
 import { ColumnFilter } from '../components/ColumnFilter';
+import { RowCheckBox, RowCheckProgress } from '../components/RowCheck';
 import type { AbsenceKind, ApplicationsDistributionRow, AutofillPreview, DepartmentApplications, NightFund, NightShift } from '../types/api';
 
 // ──────────────────────────────────────────────────────────────
@@ -689,9 +691,12 @@ export function TimesheetPage() {
 
   // ── Личные отметки «строку проверил» (task_pilot_ux ч.3) ──
   // Приезжают ОДНИМ запросом вместе с табелем (`checked_positions`), клик
-  // правит это состояние оптимистично и месяц НЕ перезапрашивает — иначе
-  // отметка стоила бы столько же, сколько загрузка отдела.
-  const [checkedPositions, setCheckedPositions] = useState<Set<number>>(new Set());
+  // правит состояние оптимистично и месяц НЕ перезапрашивает.
+  // Живут в ОТДЕЛЬНОМ сторе, а не в состоянии этой страницы: из useState
+  // каждый клик перерисовывал весь табель (70 строк × 31 день — полсекунды на
+  // пилоте). Подробности — в store/rowChecks.ts.
+  const setAllChecks = useRowChecksStore((s) => s.setAll);
+  const setCheckLocal = useRowChecksStore((s) => s.set);
 
   const [data, setData] = useState<MonthResponse | null>(null);
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
@@ -772,8 +777,8 @@ export function TimesheetPage() {
   // месяца, поэтому эффект не срабатывает на каждую правку часа.
   const checkedFromServer = data?.checked_positions;
   useEffect(() => {
-    setCheckedPositions(new Set(checkedFromServer ?? []));
-  }, [checkedFromServer]);
+    setAllChecks(checkedFromServer ?? []);
+  }, [checkedFromServer, setAllChecks]);
 
   /**
    * Поставить/снять отметку. Оптимистично: строка зеленеет сразу, запрос уходит
@@ -784,22 +789,16 @@ export function TimesheetPage() {
     (positionId: number, value: boolean) => {
       // id === 0 — синтетическая позиция (бэк не отдал ни одной): отмечать нечего.
       if (!positionId) return;
-      const apply = (on: boolean) =>
-        setCheckedPositions((prev) => {
-          const next = new Set(prev);
-          if (on) next.add(positionId);
-          else next.delete(positionId);
-          return next;
-        });
-      apply(value);
+      setCheckLocal(positionId, value);
       timesheetApi
         .setRowCheck({ position_id: positionId, year, month, value })
         .catch((err: any) => {
-          apply(!value); // откат: отметка не сохранилась, врать про это нельзя
+          // Откат: отметка не сохранилась, врать про это нельзя.
+          setCheckLocal(positionId, !value);
           toast.error('Не удалось сохранить отметку: ' + (err?.message ?? err));
         });
     },
-    [year, month]
+    [year, month, setCheckLocal]
   );
 
   // Полная перезагрузка (смена месяца/отдела, workflow периода).
@@ -1130,10 +1129,11 @@ export function TimesheetPage() {
   );
   const shownRowCount = shownRows.length;
 
-  /** Сколько ВИДИМЫХ строк отмечено лично мной — для «Проверено N из M». */
-  const checkedShownCount = useMemo(
-    () => shownRows.reduce((n, r) => n + (checkedPositions.has(r.position.id) ? 1 : 0), 0),
-    [shownRows, checkedPositions]
+  /** Рабочие места видимых строк — по ним считается «Проверено N из M».
+   *  Счётчик подписан на стор сам, поэтому страница на клик не рендерится. */
+  const shownPositionIds = useMemo(
+    () => shownRows.map((r) => r.position.id),
+    [shownRows]
   );
 
   // ── Группировка по отделам (Bug 5): только при «Все отделы» для admin/accountant ──
@@ -1740,22 +1740,14 @@ export function TimesheetPage() {
     const schedule = position.schedule ?? null;
     const noSchedule = !schedule;
     const isFirst = index === 0;
-    // Личная отметка «проверено»: мягкий зелёный фон. Оттенок намеренно
-    // светлый (emerald-50) — при 70 отмеченных строках экран не должен
-    // зеленеть до нечитаемости, а текст остаётся тёмным.
-    const checked = checkedPositions.has(position.id);
-    const rowBg = checked ? 'bg-emerald-50 hover:bg-emerald-100/70' : 'hover:bg-blue-50/30';
-    // Ячейка отметки — своя у каждой строки. А ФИО и таб.№ объединены по ВСЕМ
-    // рабочим местам человека, и красить их «по первому» было бы враньём: у
-    // совместителя одно место проверено, другое нет. Красим их только когда
-    // место одно (подавляющий случай) — иначе оставляем белыми.
-    const checkBg = checked ? 'bg-emerald-50' : 'bg-white';
-    const stickyBg = checked && count === 1 ? 'bg-emerald-50' : 'bg-white';
 
     return (
       <Fragment key={`${emp.id}-${position.id}`}>
+      {/* Зелёная подсветка отмеченной строки — CSS-ом от самого чекбокса
+          (`tr:has(input.js-row-check:checked)` в index.css), а не из React:
+          иначе клик по отметке перерисовывал бы весь табель. */}
       <tr
-        className={rowBg}
+        className="hover:bg-blue-50/30"
         title={noSchedule ? 'График не задан, автозаполнение по графику недоступно' : undefined}
       >
         {/* ── Личная отметка «строку проверил» ──
@@ -1765,20 +1757,10 @@ export function TimesheetPage() {
             «Ночные» — та часть того же рабочего места. */}
         <td
           {...trailingSpan}
-          className={'sticky border border-gray-200 p-0 text-center align-middle ' + checkBg}
+          className="sticky bg-white border border-gray-200 p-0 text-center align-middle"
           style={{ left: 0, width: COL_CHECK_W, minWidth: COL_CHECK_W, zIndex: 10 }}
         >
-          <input
-            type="checkbox"
-            className="h-3.5 w-3.5 cursor-pointer accent-emerald-600"
-            checked={checked}
-            onChange={(e) => toggleRowCheck(position.id, e.target.checked)}
-            title={
-              checked
-                ? 'Проверено (вашей отметкой). Снять'
-                : 'Отметить строку проверенной — отметка личная и своя у каждого месяца'
-            }
-          />
+          <RowCheckBox positionId={position.id} onToggle={toggleRowCheck} />
         </td>
         {/* ── Sticky-колонка сотрудника: merge на все его позиции ── */}
         {/* Табельный номер — ПЕРВОЙ колонкой (по нему сверяется бухгалтерия,
@@ -1789,10 +1771,7 @@ export function TimesheetPage() {
         {isFirst && (
           <td
             rowSpan={nameSpan}
-            className={
-              'sticky border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top '
-              + stickyBg
-            }
+            className="sticky bg-white border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top"
             style={{ left: COL_CHECK_W, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 10 }}
           >
             {emp.tab_number || <span className="text-gray-300 font-sans">—</span>}
@@ -1801,9 +1780,7 @@ export function TimesheetPage() {
         {isFirst && (
           <td
             rowSpan={nameSpan}
-            className={
-              'sticky border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top ' + stickyBg
-            }
+            className="sticky bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
             style={{
               left: COL_CHECK_W + COL_TAB_W,
               width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 10,
@@ -2309,23 +2286,7 @@ export function TimesheetPage() {
           {/* ── Прогресс личной проверки (task_pilot_ux ч.3) ──
               Считается по СТРОКАМ (рабочим местам): отметка адресована месту,
               у совместителя их несколько и проверяются они порознь. */}
-          {shownRowCount > 0 && (
-            <span
-              className={
-                'text-xs whitespace-nowrap rounded px-2 py-0.5 '
-                + (checkedShownCount === shownRowCount
-                  ? 'bg-emerald-100 text-emerald-800 font-medium'
-                  : 'bg-gray-100 text-gray-600')
-              }
-              title={
-                'Ваша личная отметка проверки: другие пользователи её не видят,'
-                + ' в новом месяце все строки снова не отмечены.'
-                + ' Считается по строкам — у совместителя их несколько.'
-              }
-            >
-              Проверено {checkedShownCount} из {shownRowCount}
-            </span>
-          )}
+          <RowCheckProgress positionIds={shownPositionIds} />
 
           {filtersActive && (
             <button
@@ -2468,7 +2429,6 @@ export function TimesheetPage() {
             onReturn={returnPeriod}
             onReopen={reopenPeriod}
             columnFilter={columnFilterFor}
-            checkedPositions={checkedPositions}
             onToggleCheck={toggleRowCheck}
           />
         ) : (
