@@ -19,7 +19,7 @@
 // (draft), «×» убирает дополнительную строку с 0 часов. Родительская
 // (основная компания позиции) — всегда, без «×».
 
-import { Fragment, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { companyColorByIndex } from '../utils/colors';
 import { absenceMeta } from '../utils/absences';
 import { companyLabel } from '../utils/companies';
@@ -78,20 +78,25 @@ type Props = {
   onClose: (periodId: number) => void;
   onReturn: (periodId: number, reason: string) => void;
   onReopen: (periodId: number, reason: string) => void;
+  /** Кнопка-воронка в заголовке колонки (task_pilot_ux ч.2). Сами фильтры
+   *  живут в TimesheetPage — он владелец данных и уже отдаёт сюда
+   *  отфильтрованные `rows`; здесь остаётся только отрисовать кнопку. */
+  columnFilter?: (key: 'name' | 'tab' | 'title' | 'dept' | 'schedule') => ReactNode;
 };
 
 const WEEKDAY_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
 // Закреплённые слева колонки: фиксированные ширины + накопленные смещения.
 // Фикс. ширина обязательна, иначе sticky-смещения «разъезжаются».
-const COL_W = { name: 170, tab: 80, position: 120, dept: 100, sched: 60, company: 140 };
+// Таб.№ — ПЕРВАЯ колонка (по нему сверяется бухгалтерия), за ней ФИО.
+const COL_W = { tab: 84, name: 170, position: 120, dept: 100, sched: 60, company: 140 };
 const COL_LEFT = {
-  name: 0,
-  tab: COL_W.name,
-  position: COL_W.name + COL_W.tab,
-  dept: COL_W.name + COL_W.tab + COL_W.position,
-  sched: COL_W.name + COL_W.tab + COL_W.position + COL_W.dept,
-  company: COL_W.name + COL_W.tab + COL_W.position + COL_W.dept + COL_W.sched,
+  tab: 0,
+  name: COL_W.tab,
+  position: COL_W.tab + COL_W.name,
+  dept: COL_W.tab + COL_W.name + COL_W.position,
+  sched: COL_W.tab + COL_W.name + COL_W.position + COL_W.dept,
+  company: COL_W.tab + COL_W.name + COL_W.position + COL_W.dept + COL_W.sched,
 };
 function stickyLeft(left: number, width: number, z = 10): CSSProperties {
   return { position: 'sticky', left, width, minWidth: width, maxWidth: width, zIndex: z };
@@ -146,7 +151,7 @@ export function TimesheetCompanyView(props: Props) {
     data, year, month, numDays, dayTypes, rows, grouped, groups,
     payrollFor, entryPositionId, absenceByEmpDay, canSeeMoney, canSeeHourStats, saveSlot, setAbsence,
     periodForDept, dayTotals,
-    onSubmit, onClose, onReturn, onReopen,
+    onSubmit, onClose, onReturn, onReopen, columnFilter,
   } = props;
 
   // Локальные «добавленные вручную» компании (без zustand — как expanded в классике).
@@ -249,7 +254,7 @@ export function TimesheetCompanyView(props: Props) {
   const hoursOnly = canSeeHourStats && !canSeeMoney;
   const companyHourCols = hoursOnly ? 3 : 0;
   const posHourCols = hoursOnly ? 2 : 0;
-  // ФИО,Таб.№,Должность,Отдел,График(5) + Компания(1) + дни + ИтогоЧ компании(1)
+  // Таб.№,ФИО,Должность,Отдел,График(5) + Компания(1) + дни + ИтогоЧ компании(1)
   // + companyMoney + ИтогоЧ позиции(1) + posMoney + Норма
   const totalCols =
     5 + 1 + numDays + 1 + companyMoneyCols + companyHourCols + 1 + posMoneyCols + normCols
@@ -299,6 +304,17 @@ export function TimesheetCompanyView(props: Props) {
 
           return (
             <tr key={`${pk}-${cid ?? 'none'}-${ri}`} className="hover:bg-blue-50/20">
+              {/* ── Табельный номер: первая колонка, merge как у ФИО ── */}
+              {index === 0 && first && (
+                <td
+                  rowSpan={nameSpan}
+                  className="bg-white border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top"
+                  style={stickyLeft(COL_LEFT.tab, COL_W.tab)}
+                >
+                  {emp.tab_number || <span className="text-gray-300 font-sans">—</span>}
+                </td>
+              )}
+
               {/* ── ФИО: merge на ВСЕ строки сотрудника (все его позиции) ── */}
               {index === 0 && first && (
                 <td
@@ -315,17 +331,6 @@ export function TimesheetCompanyView(props: Props) {
                       совместительство: {count}
                     </div>
                   )}
-                </td>
-              )}
-
-              {/* ── Табельный номер: отдельная колонка, merge как у ФИО ── */}
-              {index === 0 && first && (
-                <td
-                  rowSpan={nameSpan}
-                  className="bg-white border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top"
-                  style={stickyLeft(COL_LEFT.tab, COL_W.tab)}
-                >
-                  {emp.tab_number || <span className="text-gray-300 font-sans">—</span>}
                 </td>
               )}
 
@@ -628,15 +633,17 @@ export function TimesheetCompanyView(props: Props) {
       {/* ===== ШАПКА ===== */}
       <thead>
         <tr>
-          <th className="sticky top-0 bg-gray-50 border border-gray-200 px-3 py-2 text-left font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.name, COL_W.name, 30), top: 0 }}>
-            Сотрудник
-          </th>
           <th
             className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
             style={{ ...stickyLeft(COL_LEFT.tab, COL_W.tab, 30), top: 0 }}
             title="Табельный номер: по нему сверяется бухгалтерия"
           >
             Таб. №
+            {columnFilter?.('tab')}
+          </th>
+          <th className="sticky top-0 bg-gray-50 border border-gray-200 px-3 py-2 text-left font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.name, COL_W.name, 30), top: 0 }}>
+            Сотрудник
+            {columnFilter?.('name')}
           </th>
           <th
             className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
@@ -644,12 +651,15 @@ export function TimesheetCompanyView(props: Props) {
             title="Рабочее место: у совместителя строки на каждое, со своим графиком и расчётом"
           >
             Должность
+            {columnFilter?.('title')}
           </th>
           <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.dept, COL_W.dept, 30), top: 0 }}>
             Отдел
+            {columnFilter?.('dept')}
           </th>
           <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.sched, COL_W.sched, 30), top: 0 }}>
             График
+            {columnFilter?.('schedule')}
           </th>
           <th className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600" style={{ ...stickyLeft(COL_LEFT.company, COL_W.company, 30), top: 0 }}>
             Компания
@@ -731,15 +741,16 @@ export function TimesheetCompanyView(props: Props) {
         {/* ===== ИТОГО строка ===== */}
         {rows.length > 0 && (
           <tr className="bg-gray-100 font-semibold">
+            <td className="bg-gray-200 border border-gray-300 px-2 py-2" style={stickyLeft(COL_LEFT.tab, COL_W.tab)}></td>
             <td className="bg-gray-200 border border-gray-300 px-3 py-2" style={stickyLeft(COL_LEFT.name, COL_W.name)}>
               ИТОГО
             </td>
             <td
               className="bg-gray-200 border border-gray-300 px-2 py-2"
-              colSpan={5}
+              colSpan={4}
               style={stickyLeft(
-                COL_LEFT.tab,
-                COL_W.tab + COL_W.position + COL_W.dept + COL_W.sched + COL_W.company,
+                COL_LEFT.position,
+                COL_W.position + COL_W.dept + COL_W.sched + COL_W.company,
               )}
             ></td>
             {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => (
