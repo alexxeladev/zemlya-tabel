@@ -55,6 +55,18 @@ export const timesheetApi = {
     return data
   },
 
+  // ── Личная отметка «строку проверил» (task_pilot_ux ч.3) ──
+  // Минимальный запрос: одна отметка, без пересчёта. Фронт правит строку
+  // оптимистично и месяц НЕ перезапрашивает.
+  async setRowCheck(input: {
+    position_id: number; year: number; month: number; value: boolean
+  }): Promise<{ position_id: number; year: number; month: number; checked: boolean }> {
+    const { data } = await apiClient.put<{
+      position_id: number; year: number; month: number; checked: boolean
+    }>('/api/timesheet/row-check', input)
+    return data
+  },
+
   async submitPeriod(periodId: number): Promise<TimesheetPeriod> {
     const { data } = await apiClient.post<TimesheetPeriod>(`/api/timesheet/periods/${periodId}/submit`)
     return data

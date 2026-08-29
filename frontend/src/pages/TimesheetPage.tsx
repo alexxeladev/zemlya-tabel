@@ -265,6 +265,9 @@ export type MonthResponse = {
   payroll: PayrollSummary | null;
   periods: Period[];
   adjustments?: Adjustment[];
+  /** ЛИЧНЫЕ отметки «строку проверил»: id рабочих мест, отмеченных ЭТИМ
+   *  пользователем в этом месяце. Приезжают одним запросом с табелем. */
+  checked_positions?: number[];
 };
 
 type CalendarSummary = {
@@ -385,6 +388,7 @@ type PickerState = {
 /** Ширины закреплённых слева колонок: Таб.№ идёт первой, за ней ФИО.
  *  Sticky-смещение второй колонки считается от ширины первой, поэтому обе
  *  ширины фиксированы — «по содержимому» они разъехались бы с шапкой. */
+const COL_CHECK_W = 34;
 const COL_TAB_W = 84;
 const COL_NAME_W = 200;
 
@@ -683,6 +687,12 @@ export function TimesheetPage() {
     setColumnFilters(EMPTY_COLUMN_FILTERS);
   };
 
+  // ── Личные отметки «строку проверил» (task_pilot_ux ч.3) ──
+  // Приезжают ОДНИМ запросом вместе с табелем (`checked_positions`), клик
+  // правит это состояние оптимистично и месяц НЕ перезапрашивает — иначе
+  // отметка стоила бы столько же, сколько загрузка отдела.
+  const [checkedPositions, setCheckedPositions] = useState<Set<number>>(new Set());
+
   const [data, setData] = useState<MonthResponse | null>(null);
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
   const [loading, setLoading] = useState(false);
@@ -755,6 +765,41 @@ export function TimesheetPage() {
       }
     },
     [year, month, departmentFilter, canSeeHourStats, deptChosen]
+  );
+
+  // Отметки — из ответа месяца: сервер отдаёт ТОЛЬКО мои, состояние на экране
+  // им и инициализируется. Список приходит новым массивом лишь при загрузке
+  // месяца, поэтому эффект не срабатывает на каждую правку часа.
+  const checkedFromServer = data?.checked_positions;
+  useEffect(() => {
+    setCheckedPositions(new Set(checkedFromServer ?? []));
+  }, [checkedFromServer]);
+
+  /**
+   * Поставить/снять отметку. Оптимистично: строка зеленеет сразу, запрос уходит
+   * следом и при ошибке состояние откатывается. Табель НЕ перезапрашивается —
+   * отметка ни на часы, ни на расчёт не влияет.
+   */
+  const toggleRowCheck = useCallback(
+    (positionId: number, value: boolean) => {
+      // id === 0 — синтетическая позиция (бэк не отдал ни одной): отмечать нечего.
+      if (!positionId) return;
+      const apply = (on: boolean) =>
+        setCheckedPositions((prev) => {
+          const next = new Set(prev);
+          if (on) next.add(positionId);
+          else next.delete(positionId);
+          return next;
+        });
+      apply(value);
+      timesheetApi
+        .setRowCheck({ position_id: positionId, year, month, value })
+        .catch((err: any) => {
+          apply(!value); // откат: отметка не сохранилась, врать про это нельзя
+          toast.error('Не удалось сохранить отметку: ' + (err?.message ?? err));
+        });
+    },
+    [year, month]
   );
 
   // Полная перезагрузка (смена месяца/отдела, workflow периода).
@@ -1084,6 +1129,12 @@ export function TimesheetPage() {
     [shownRows]
   );
   const shownRowCount = shownRows.length;
+
+  /** Сколько ВИДИМЫХ строк отмечено лично мной — для «Проверено N из M». */
+  const checkedShownCount = useMemo(
+    () => shownRows.reduce((n, r) => n + (checkedPositions.has(r.position.id) ? 1 : 0), 0),
+    [shownRows, checkedPositions]
+  );
 
   // ── Группировка по отделам (Bug 5): только при «Все отделы» для admin/accountant ──
   // Отдел — свойство ПОЗИЦИИ, поэтому группируем строки, а не сотрудников:
@@ -1584,10 +1635,10 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // Колонки слева от дней: Таб.№, ФИО, Должность, Отдел, График.
+  // Колонки слева от дней: ✓, Таб.№, ФИО, Должность, Отдел, График.
   // Число держим константой — по нему считается colSpan заглушек и разделителей.
-  const LEAD_COLS = 5;
-  // Таб.№,ФИО,Должность,Отдел,График(5) + дни + Итого ч + блок справа:
+  const LEAD_COLS = 6;
+  // ✓,Таб.№,ФИО,Должность,Отдел,График(6) + дни + Итого ч + блок справа:
   //   деньги (15): Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Праздн.,Ночные,
   //                Отпускные,Больничные,Премия,KPI,Итого₽,Удержано,К выплате
   //   часы  (8):   Норма,Δ,Сверхур,Вне граф.,Празд.,Ночные см.,Отпуск,Больничный
@@ -1689,13 +1740,46 @@ export function TimesheetPage() {
     const schedule = position.schedule ?? null;
     const noSchedule = !schedule;
     const isFirst = index === 0;
+    // Личная отметка «проверено»: мягкий зелёный фон. Оттенок намеренно
+    // светлый (emerald-50) — при 70 отмеченных строках экран не должен
+    // зеленеть до нечитаемости, а текст остаётся тёмным.
+    const checked = checkedPositions.has(position.id);
+    const rowBg = checked ? 'bg-emerald-50 hover:bg-emerald-100/70' : 'hover:bg-blue-50/30';
+    // Ячейка отметки — своя у каждой строки. А ФИО и таб.№ объединены по ВСЕМ
+    // рабочим местам человека, и красить их «по первому» было бы враньём: у
+    // совместителя одно место проверено, другое нет. Красим их только когда
+    // место одно (подавляющий случай) — иначе оставляем белыми.
+    const checkBg = checked ? 'bg-emerald-50' : 'bg-white';
+    const stickyBg = checked && count === 1 ? 'bg-emerald-50' : 'bg-white';
 
     return (
       <Fragment key={`${emp.id}-${position.id}`}>
       <tr
-        className="hover:bg-blue-50/30"
+        className={rowBg}
         title={noSchedule ? 'График не задан, автозаполнение по графику недоступно' : undefined}
       >
+        {/* ── Личная отметка «строку проверил» ──
+            Адресована РАБОЧЕМУ МЕСТУ, а не человеку: строка табеля = место,
+            у совместителя их несколько и проверяются они порознь. Поэтому
+            ячейка не объединяется по сотруднику, но растягивается на строку
+            «Ночные» — та часть того же рабочего места. */}
+        <td
+          {...trailingSpan}
+          className={'sticky border border-gray-200 p-0 text-center align-middle ' + checkBg}
+          style={{ left: 0, width: COL_CHECK_W, minWidth: COL_CHECK_W, zIndex: 10 }}
+        >
+          <input
+            type="checkbox"
+            className="h-3.5 w-3.5 cursor-pointer accent-emerald-600"
+            checked={checked}
+            onChange={(e) => toggleRowCheck(position.id, e.target.checked)}
+            title={
+              checked
+                ? 'Проверено (вашей отметкой). Снять'
+                : 'Отметить строку проверенной — отметка личная и своя у каждого месяца'
+            }
+          />
+        </td>
         {/* ── Sticky-колонка сотрудника: merge на все его позиции ── */}
         {/* Табельный номер — ПЕРВОЙ колонкой (по нему сверяется бухгалтерия,
             он есть в ведомости и в Excel). Объединяется по строкам сотрудника
@@ -1705,8 +1789,11 @@ export function TimesheetPage() {
         {isFirst && (
           <td
             rowSpan={nameSpan}
-            className="sticky bg-white border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top"
-            style={{ left: 0, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 10 }}
+            className={
+              'sticky border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top '
+              + stickyBg
+            }
+            style={{ left: COL_CHECK_W, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 10 }}
           >
             {emp.tab_number || <span className="text-gray-300 font-sans">—</span>}
           </td>
@@ -1714,8 +1801,13 @@ export function TimesheetPage() {
         {isFirst && (
           <td
             rowSpan={nameSpan}
-            className="sticky bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
-            style={{ left: COL_TAB_W, width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 10 }}
+            className={
+              'sticky border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top ' + stickyBg
+            }
+            style={{
+              left: COL_CHECK_W + COL_TAB_W,
+              width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 10,
+            }}
             title={emp.full_name}
           >
             <div className="truncate" style={{ maxWidth: COL_NAME_W - 24 }}>
@@ -2214,6 +2306,27 @@ export function TimesheetPage() {
             )}
           </span>
 
+          {/* ── Прогресс личной проверки (task_pilot_ux ч.3) ──
+              Считается по СТРОКАМ (рабочим местам): отметка адресована месту,
+              у совместителя их несколько и проверяются они порознь. */}
+          {shownRowCount > 0 && (
+            <span
+              className={
+                'text-xs whitespace-nowrap rounded px-2 py-0.5 '
+                + (checkedShownCount === shownRowCount
+                  ? 'bg-emerald-100 text-emerald-800 font-medium'
+                  : 'bg-gray-100 text-gray-600')
+              }
+              title={
+                'Ваша личная отметка проверки: другие пользователи её не видят,'
+                + ' в новом месяце все строки снова не отмечены.'
+                + ' Считается по строкам — у совместителя их несколько.'
+              }
+            >
+              Проверено {checkedShownCount} из {shownRowCount}
+            </span>
+          )}
+
           {filtersActive && (
             <button
               type="button"
@@ -2355,6 +2468,8 @@ export function TimesheetPage() {
             onReturn={returnPeriod}
             onReopen={reopenPeriod}
             columnFilter={columnFilterFor}
+            checkedPositions={checkedPositions}
+            onToggleCheck={toggleRowCheck}
           />
         ) : (
         <table
@@ -2364,12 +2479,22 @@ export function TimesheetPage() {
           {/* ===== ШАПКА ===== */}
           <thead>
             <tr>
+              {/* Личная отметка «проверено» — узкая колонка в самом начале, как
+                  чекбокс выделения строки в почте и в Excel. Таб.№ остаётся
+                  первой ДАННОЙ колонкой. */}
+              <th
+                className="sticky top-0 bg-gray-50 border border-gray-200 px-1 py-2 text-center font-medium text-gray-500"
+                style={{ left: 0, width: COL_CHECK_W, minWidth: COL_CHECK_W, zIndex: 30 }}
+                title="Личная отметка «строку проверил»: видите только вы, сбрасывается каждый месяц"
+              >
+                ✓
+              </th>
               {/* Заголовки с фильтром — как в Excel: кнопка-воронка открывает
                   список фактических значений колонки с чекбоксами.
                   Фильтры разных колонок сужают выдачу вместе. */}
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
-                style={{ left: 0, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 30 }}
+                style={{ left: COL_CHECK_W, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 30 }}
                 title="Табельный номер: по нему сверяется бухгалтерия"
               >
                 Таб. №
@@ -2377,7 +2502,7 @@ export function TimesheetPage() {
               </th>
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-3 py-2 text-left font-medium text-gray-600"
-                style={{ left: COL_TAB_W, width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 30 }}
+                style={{ left: COL_CHECK_W + COL_TAB_W, width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 30 }}
               >
                 Сотрудник
                 {columnFilterFor('name')}
@@ -2628,16 +2753,23 @@ export function TimesheetPage() {
             {visibleEmployees.length > 0 && (
               <tr className="bg-gray-100 font-semibold">
                 <td
+                  className="sticky bg-gray-200 border border-gray-300 p-0"
+                  style={{ left: 0, width: COL_CHECK_W, minWidth: COL_CHECK_W, zIndex: 10 }}
+                ></td>
+                <td
                   className="sticky bg-gray-200 border border-gray-300 px-2 py-2"
-                  style={{ left: 0, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 10 }}
+                  style={{ left: COL_CHECK_W, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 10 }}
                 ></td>
                 <td
                   className="sticky bg-gray-200 border border-gray-300 px-3 py-2"
-                  style={{ left: COL_TAB_W, width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 10 }}
+                  style={{
+                    left: COL_CHECK_W + COL_TAB_W,
+                    width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 10,
+                  }}
                 >
                   ИТОГО
                 </td>
-                <td className="border border-gray-300 px-2 py-2" colSpan={LEAD_COLS - 2}></td>
+                <td className="border border-gray-300 px-2 py-2" colSpan={LEAD_COLS - 3}></td>
                 {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => (
                   <td
                     key={d}
