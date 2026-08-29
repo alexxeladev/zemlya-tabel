@@ -32,6 +32,7 @@ import { usePersistentState } from '../hooks/usePersistentState';
 import { UI_KEYS } from '../utils/persist';
 import { TimesheetCompanyView } from './TimesheetCompanyView';
 import { ApplicationsPanel } from '../components/ApplicationsPanel';
+import { ColumnFilter } from '../components/ColumnFilter';
 import type { AbsenceKind, ApplicationsDistributionRow, AutofillPreview, DepartmentApplications, NightFund, NightShift } from '../types/api';
 
 // ──────────────────────────────────────────────────────────────
@@ -333,6 +334,35 @@ function positionInCompany(position: Position, companyId: number): boolean {
   return position.company_id === companyId;
 }
 
+/**
+ * Колонки с фильтром в заголовке (task_pilot_ux ч.2) — как в Excel: мультивыбор
+ * значений, фактически присутствующих в текущем табеле. Значение берётся у
+ * СТРОКИ (сотрудник × рабочее место), поэтому у совместителя должность и отдел
+ * у каждой строки свои, а ФИО и таб.№ — общие.
+ */
+const FILTER_COLUMNS = [
+  { key: 'name', label: 'Сотрудник', get: (r: PositionRow) => r.emp.full_name },
+  { key: 'tab', label: 'Таб. №', get: (r: PositionRow) => r.emp.tab_number ?? '' },
+  { key: 'title', label: 'Должность', get: (r: PositionRow) => r.position.display_title },
+  {
+    key: 'dept',
+    label: 'Отдел',
+    get: (r: PositionRow) => r.position.department?.name ?? '',
+  },
+  {
+    key: 'schedule',
+    label: 'График',
+    get: (r: PositionRow) => r.position.schedule?.name ?? '',
+  },
+] as const;
+
+export type ColumnFilterKey = (typeof FILTER_COLUMNS)[number]['key'];
+export type ColumnFilterState = Record<ColumnFilterKey, string[]>;
+
+export const EMPTY_COLUMN_FILTERS: ColumnFilterState = {
+  name: [], tab: [], title: [], dept: [], schedule: [],
+};
+
 /** «1 сотрудник / 2 сотрудника / 5 сотрудников» — счётчик в шапке и у отделов. */
 function pluralEmployees(n: number): string {
   const mod10 = n % 10;
@@ -351,6 +381,12 @@ type PickerState = {
   items: PickerItem[];
   onPick: (key: string) => void;
 };
+
+/** Ширины закреплённых слева колонок: Таб.№ идёт первой, за ней ФИО.
+ *  Sticky-смещение второй колонки считается от ширины первой, поэтому обе
+ *  ширины фиксированы — «по содержимому» они разъехались бы с шапкой. */
+const COL_TAB_W = 84;
+const COL_NAME_W = 200;
 
 /** Общая ссылка на пустой список слотов: новый [] на каждый рендер ломал бы memo. */
 const EMPTY_SLOTS: TimesheetEntry[] = [];
@@ -618,21 +654,34 @@ export function TimesheetPage() {
   // себя, руководитель/табельщик одного отдела — свой отдел, спрашивать нечего.
   const needsDeptChoice = canSelectDept && deptChoice === null;
   const deptChosen = !needsDeptChoice;
-  // Поиск по ФИО/таб.№ и фильтр компании — как на «Расчёт ЗП»: фильтруют строки
-  // поверх фильтра отдела, на бэк не ходят.
-  // Сохраняются вместе (один ключ — один объект): фильтры осмыслены только
-  // в паре, и восстанавливать их порознь незачем.
+  // Над таблицей остаётся ТОЛЬКО фильтр компании (task_pilot_ux ч.2в) — он и
+  // сохраняется между заходами. Поиск по ФИО/таб.№ и отбор по должности,
+  // отделу и графику уехали в заголовки колонок.
+  // Ключ и форма объекта прежние (в хранилище у людей лежит `{search,
+  // companyId}`): валидатор смотрит на companyId, лишнее поле не мешает.
   const [filters, setFilters] = usePersistentState(
     UI_KEYS.timesheetFilters,
     { search: '', companyId: null as number | null },
-    (v) => typeof v === 'object' && v !== null && 'search' in v,
+    (v) => typeof v === 'object' && v !== null && 'companyId' in v,
   );
-  const { search } = filters;
   const companyFilter = filters.companyId;
-  const setSearch = (value: string) => setFilters((f) => ({ ...f, search: value }));
   const setCompanyFilter = (value: number | null) =>
     setFilters((f) => ({ ...f, companyId: value }));
-  const resetFilters = () => setFilters({ search: '', companyId: null });
+
+  // Фильтры колонок (task_pilot_ux ч.2). НЕ сохраняются между заходами, в
+  // отличие от фильтра компании: набор значений (ФИО, должности, графики)
+  // свой у каждого месяца и отдела, и восстановленный выбор дал бы пустой
+  // экран без всякого объяснения. Живут, пока открыт табель.
+  const [columnFilters, setColumnFilters] = useState<ColumnFilterState>(
+    EMPTY_COLUMN_FILTERS
+  );
+  const setColumnFilter = useCallback((key: ColumnFilterKey, values: string[]) => {
+    setColumnFilters((f) => ({ ...f, [key]: values }));
+  }, []);
+  const resetFilters = () => {
+    setFilters({ search: '', companyId: null });
+    setColumnFilters(EMPTY_COLUMN_FILTERS);
+  };
 
   const [data, setData] = useState<MonthResponse | null>(null);
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
@@ -941,11 +990,12 @@ export function TimesheetPage() {
     [visibleEmployees]
   );
 
-  // ── Поиск (ФИО / таб.№) + фильтр компании ──
-  // Чистая навигация поверх уже загруженных данных: фильтруются только СТРОКИ.
-  // Итоги (ИТОГО, по компаниям, dayTotals) намеренно продолжают считаться по
-  // всем видимым сотрудникам — иначе фильтр молча менял бы суммы месяца.
-  // Что итоги шире выборки, видно по счётчику «найдено N из M» в шапке.
+  // ── Фильтр компании (над таблицей) + фильтры колонок (в заголовках) ──
+  // Чистая навигация поверх уже загруженных данных: фильтруются только СТРОКИ,
+  // на бэк не ходим. Итоги (ИТОГО, по компаниям, dayTotals) намеренно
+  // продолжают считаться по всем видимым сотрудникам — иначе фильтр молча
+  // менял бы суммы месяца. Что итоги шире выборки, видно по счётчику
+  // «найдено N из M» в шапке.
   //
   // Компания берётся ИЗ КАРТОЧКИ, а не из проставленных часов. Раньше строка
   // подходила фильтру, если по юрлицу есть хоть одна ячейка в месяце, — и
@@ -953,25 +1003,16 @@ export function TimesheetPage() {
   // (отдел «Земля МО») только потому, что у них где-то в месяце стоял час на
   // К-Сервис. Расчёт мультикомпанийный, часы у людей размазаны почти по всем
   // юрлицам, так что фильтр по часам не отбирал ничего.
-  const searchNeedle = search.trim().toLocaleLowerCase('ru');
-  const filtersActive = searchNeedle !== '' || companyFilter !== null;
-  const shownEmployees = useMemo(() => {
-    if (!searchNeedle) return visibleEmployees;
-    return visibleEmployees.filter((e) => {
-      const hay = `${e.full_name} ${e.tab_number ?? ''}`.toLocaleLowerCase('ru');
-      return hay.includes(searchNeedle);
-    });
-  }, [visibleEmployees, searchNeedle]);
-
+  //
   // ── Строки табеля: сотрудник × позиция (task_positions ч.B) ──
   // Одна позиция = одна строка, как было до совместительства.
-  // Фильтр компании применяется ЗДЕСЬ, а не к сотрудникам: юрлицо — свойство
+  // Фильтр компании применяется К СТРОКЕ, а не к сотруднику: юрлицо — свойство
   // рабочего места (его отдела и его карточки), а у совместителя два места
   // могут принадлежать разным юрлицам. Заодно из группировки сами собой
   // пропадают отделы чужих компаний — выбрал юрлицо, видишь только его отделы.
-  const shownRows = useMemo(() => {
+  const companyRows = useMemo(() => {
     const rows: PositionRow[] = [];
-    for (const emp of shownEmployees) {
+    for (const emp of visibleEmployees) {
       const list = positionsByEmp.get(emp.id) ?? [];
       list.forEach((position, index) => {
         if (companyFilter !== null && !positionInCompany(position, companyFilter)) return;
@@ -979,7 +1020,61 @@ export function TimesheetPage() {
       });
     }
     return rows;
-  }, [shownEmployees, positionsByEmp, companyFilter]);
+  }, [visibleEmployees, positionsByEmp, companyFilter]);
+
+  /** Отмеченные значения колонок — Set-ами, чтобы проверка строки была O(1). */
+  const columnFilterSets = useMemo(() => {
+    const map = new Map<ColumnFilterKey, Set<string>>();
+    for (const col of FILTER_COLUMNS) {
+      const values = columnFilters[col.key];
+      if (values.length) map.set(col.key, new Set(values));
+    }
+    return map;
+  }, [columnFilters]);
+
+  const columnFiltersActive = columnFilterSets.size > 0;
+  const filtersActive = columnFiltersActive || companyFilter !== null;
+
+  /** Проходит ли строка все фильтры колонок, кроме одного (для списка значений). */
+  const matchesColumns = useCallback(
+    (row: PositionRow, except?: ColumnFilterKey) => {
+      for (const col of FILTER_COLUMNS) {
+        if (col.key === except) continue;
+        const set = columnFilterSets.get(col.key);
+        if (set && !set.has(col.get(row))) return false;
+      }
+      return true;
+    },
+    [columnFilterSets]
+  );
+
+  // Фильтры разных колонок сужают ВМЕСТЕ (пересечение), как в Excel.
+  const shownRows = useMemo(
+    () => (columnFiltersActive ? companyRows.filter((r) => matchesColumns(r)) : companyRows),
+    [companyRows, columnFiltersActive, matchesColumns]
+  );
+
+  /**
+   * Значения для выпадашки каждой колонки — из строк, отобранных ОСТАЛЬНЫМИ
+   * фильтрами: выбрал отдел, и в «Должность» остаются только должности этого
+   * отдела. Уже отмеченные значения остаются в списке всегда, иначе их нельзя
+   * было бы снять после того, как соседний фильтр их спрятал.
+   */
+  const columnOptions = useMemo(() => {
+    const result = {} as Record<ColumnFilterKey, string[]>;
+    for (const col of FILTER_COLUMNS) {
+      const values = new Set<string>(columnFilters[col.key]);
+      for (const row of companyRows) {
+        if (matchesColumns(row, col.key)) values.add(col.get(row));
+      }
+      result[col.key] = Array.from(values).sort((a, b) => {
+        if (a === '') return 1; // «(пусто)» — в конец списка
+        if (b === '') return -1;
+        return a.localeCompare(b, 'ru', { numeric: true });
+      });
+    }
+    return result;
+  }, [companyRows, columnFilters, matchesColumns]);
 
   /** Сотрудники, реально попавшие в выдачу после ОБОИХ фильтров — для счётчика.
    *  Считаем ЛЮДЕЙ, а не строки: у совместителя строк несколько (по строке на
@@ -1489,10 +1584,10 @@ export function TimesheetPage() {
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
 
-  // Колонки слева от дней: ФИО, Таб.№, Должность, Отдел, График.
+  // Колонки слева от дней: Таб.№, ФИО, Должность, Отдел, График.
   // Число держим константой — по нему считается colSpan заглушек и разделителей.
   const LEAD_COLS = 5;
-  // ФИО,Таб.№,Должность,Отдел,График(5) + дни + Итого ч + блок справа:
+  // Таб.№,ФИО,Должность,Отдел,График(5) + дни + Итого ч + блок справа:
   //   деньги (15): Коэф,Норма,Δ,Оклад,Сверхур,Вне граф.,Праздн.,Ночные,
   //                Отпускные,Больничные,Премия,KPI,Итого₽,Удержано,К выплате
   //   часы  (8):   Норма,Δ,Сверхур,Вне граф.,Празд.,Ночные см.,Отпуск,Больничный
@@ -1602,30 +1697,35 @@ export function TimesheetPage() {
         title={noSchedule ? 'График не задан, автозаполнение по графику недоступно' : undefined}
       >
         {/* ── Sticky-колонка сотрудника: merge на все его позиции ── */}
+        {/* Табельный номер — ПЕРВОЙ колонкой (по нему сверяется бухгалтерия,
+            он есть в ведомости и в Excel). Объединяется по строкам сотрудника
+            так же, как ФИО: номер у человека один на все рабочие места.
+            Обе колонки закреплены слева — фикс. ширины обязательны, иначе
+            sticky-смещение ФИО разъедется с шапкой. */}
         {isFirst && (
           <td
             rowSpan={nameSpan}
-            className="sticky left-0 bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
-            style={{ minWidth: 200, zIndex: 10 }}
+            className="sticky bg-white border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top"
+            style={{ left: 0, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 10 }}
+          >
+            {emp.tab_number || <span className="text-gray-300 font-sans">—</span>}
+          </td>
+        )}
+        {isFirst && (
+          <td
+            rowSpan={nameSpan}
+            className="sticky bg-white border border-gray-200 px-3 py-2 font-medium text-gray-900 align-top"
+            style={{ left: COL_TAB_W, width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 10 }}
             title={emp.full_name}
           >
-            <div className="truncate max-w-[200px]">{emp.full_name}</div>
+            <div className="truncate" style={{ maxWidth: COL_NAME_W - 24 }}>
+              {emp.full_name}
+            </div>
             {count > 1 && (
               <div className="text-[10px] font-normal text-gray-400">
                 совместительство: {count} места
               </div>
             )}
-          </td>
-        )}
-        {/* Табельный номер — ОТДЕЛЬНОЙ колонкой (по нему сверяется бухгалтерия,
-            он есть в ведомости и в Excel). Объединяется по строкам сотрудника
-            так же, как ФИО: номер у человека один на все рабочие места. */}
-        {isFirst && (
-          <td
-            rowSpan={nameSpan}
-            className="border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top"
-          >
-            {emp.tab_number || <span className="text-gray-300 font-sans">—</span>}
           </td>
         )}
         {/* Должность / отдел / график — у КАЖДОГО рабочего места свои */}
@@ -1930,6 +2030,19 @@ export function TimesheetPage() {
     );
   };
 
+  /** Кнопка-воронка в заголовке колонки: список значений + мультивыбор. */
+  const columnFilterFor = (key: ColumnFilterKey) => {
+    const col = FILTER_COLUMNS.find((c) => c.key === key)!;
+    return (
+      <ColumnFilter
+        label={col.label}
+        options={columnOptions[key]}
+        selected={columnFilters[key]}
+        onChange={(values) => setColumnFilter(key, values)}
+      />
+    );
+  };
+
   const renderGroupDivider = (
     deptId: number | null,
     name: string,
@@ -2018,27 +2131,10 @@ export function TimesheetPage() {
           </div>
         </div>
 
+        {/* Над таблицей остаётся ТОЛЬКО фильтр компании (task_pilot_ux ч.2в):
+            поиск по ФИО/таб.№ и отбор по должности, отделу и графику уехали в
+            заголовки колонок — там же список фактических значений. */}
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="relative">
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Поиск: ФИО или таб.№"
-              className="border border-gray-300 rounded pl-2 pr-7 py-1 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            {search && (
-              <button
-                type="button"
-                onClick={() => setSearch('')}
-                title="Сбросить поиск"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 leading-none"
-              >
-                ×
-              </button>
-            )}
-          </div>
-
           {data.companies.length > 0 && (
             <select
               className="border border-gray-300 rounded px-2 py-1 text-sm"
@@ -2046,7 +2142,7 @@ export function TimesheetPage() {
               onChange={(e) =>
                 setCompanyFilter(e.target.value === '' ? null : parseInt(e.target.value, 10))
               }
-              title="Сотрудники с часами по этой компании или с ней как основной"
+              title="Юрлицо из КАРТОЧКИ рабочего места (его отдела), а не по факту проставленных часов"
             >
               <option value="">Все компании</option>
               {data.companies.map((c) => (
@@ -2258,6 +2354,7 @@ export function TimesheetPage() {
             onClose={closePeriod}
             onReturn={returnPeriod}
             onReopen={reopenPeriod}
+            columnFilter={columnFilterFor}
           />
         ) : (
         <table
@@ -2267,18 +2364,23 @@ export function TimesheetPage() {
           {/* ===== ШАПКА ===== */}
           <thead>
             <tr>
-              <th
-                className="sticky left-0 top-0 bg-gray-50 border border-gray-200 px-3 py-2 text-left font-medium text-gray-600"
-                style={{ minWidth: 200, zIndex: 30 }}
-              >
-                Сотрудник
-              </th>
+              {/* Заголовки с фильтром — как в Excel: кнопка-воронка открывает
+                  список фактических значений колонки с чекбоксами.
+                  Фильтры разных колонок сужают выдачу вместе. */}
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
-                style={{ minWidth: 84, zIndex: 20 }}
+                style={{ left: 0, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 30 }}
                 title="Табельный номер: по нему сверяется бухгалтерия"
               >
                 Таб. №
+                {columnFilterFor('tab')}
+              </th>
+              <th
+                className="sticky top-0 bg-gray-50 border border-gray-200 px-3 py-2 text-left font-medium text-gray-600"
+                style={{ left: COL_TAB_W, width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 30 }}
+              >
+                Сотрудник
+                {columnFilterFor('name')}
               </th>
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
@@ -2286,18 +2388,21 @@ export function TimesheetPage() {
                 title="Рабочее место: у совместителя строка на каждое, со своим графиком и расчётом"
               >
                 Должность
+                {columnFilterFor('title')}
               </th>
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
                 style={{ minWidth: 100, zIndex: 20 }}
               >
                 Отдел
+                {columnFilterFor('dept')}
               </th>
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600"
                 style={{ minWidth: 60, zIndex: 20 }}
               >
                 График
+                {columnFilterFor('schedule')}
               </th>
               {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => {
                 const t = dayTypes[d];
@@ -2490,7 +2595,7 @@ export function TimesheetPage() {
 
           {/* ===== ТЕЛО ===== */}
           <tbody>
-            {shownEmployees.length === 0 && (
+            {shownRows.length === 0 && (
               <tr>
                 <td
                   colSpan={totalCols}
@@ -2523,12 +2628,16 @@ export function TimesheetPage() {
             {visibleEmployees.length > 0 && (
               <tr className="bg-gray-100 font-semibold">
                 <td
-                  className="sticky left-0 bg-gray-200 border border-gray-300 px-3 py-2"
-                  style={{ minWidth: 200, zIndex: 10 }}
+                  className="sticky bg-gray-200 border border-gray-300 px-2 py-2"
+                  style={{ left: 0, width: COL_TAB_W, minWidth: COL_TAB_W, zIndex: 10 }}
+                ></td>
+                <td
+                  className="sticky bg-gray-200 border border-gray-300 px-3 py-2"
+                  style={{ left: COL_TAB_W, width: COL_NAME_W, minWidth: COL_NAME_W, zIndex: 10 }}
                 >
                   ИТОГО
                 </td>
-                <td className="border border-gray-300 px-2 py-2" colSpan={LEAD_COLS - 1}></td>
+                <td className="border border-gray-300 px-2 py-2" colSpan={LEAD_COLS - 2}></td>
                 {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => (
                   <td
                     key={d}
