@@ -67,7 +67,7 @@ export type Position = {
   display_title: string;
   is_primary: boolean;
   department_id: number | null;
-  department?: { id: number; name: string } | null;
+  department?: { id: number; name: string; head_company_id?: number | null } | null;
   schedule_id: number | null;
   schedule?: { id: number; name: string; hours_per_shift: number } | null;
   company_id: number | null;
@@ -311,6 +311,28 @@ export function posKey(employeeId: number, positionId: number | null | undefined
  * состояния, где `primaryPositionIdByEmp` недоступен: значение берётся из
  * того же снимка `data`, который правим.
  */
+/**
+ * Относится ли рабочее место к юрлицу — ПО СПРАВОЧНЫМ ДАННЫМ, а не по
+ * проставленным часам. Решает ОТДЕЛ: юрлицо рабочего места — это головная
+ * компания его отдела (`head_company_id`). Поэтому выбор компании оставляет
+ * в табеле ровно её отделы.
+ *
+ * Компания самой позиции (`company_id`) — запасной вариант и только для мест
+ * БЕЗ отдела: иначе она тянула бы в выдачу отделы чужих компаний (основная
+ * компания карточки сплошь и рядом не совпадает с компанией отдела), и фильтр
+ * снова перестал бы отбирать.
+ *
+ * Часы не участвуют намеренно: расчёт мультикомпанийный, у большинства часы
+ * размазаны почти по всем юрлицам, и час на чужое юрлицо не делает человека
+ * его сотрудником.
+ */
+function positionInCompany(position: Position, companyId: number): boolean {
+  if (position.department_id != null) {
+    return position.department?.head_company_id === companyId;
+  }
+  return position.company_id === companyId;
+}
+
 /** Один поповер на страницу вместо <select> в каждой ячейке (см. openCompanyPicker). */
 type PickerItem = {
   key: string; label: string; hint?: string; color?: string; active?: boolean;
@@ -909,53 +931,51 @@ export function TimesheetPage() {
     [visibleEmployees]
   );
 
-  // Компании, где у сотрудника есть часы в месяце — для фильтра по компании.
-  const companiesByEmp = useMemo(() => {
-    const map = new Map<number, Set<number>>();
-    for (const e of data?.entries ?? []) {
-      const set = map.get(e.employee_id);
-      if (set) set.add(e.company_id);
-      else map.set(e.employee_id, new Set([e.company_id]));
-    }
-    return map;
-  }, [data]);
-
   // ── Поиск (ФИО / таб.№) + фильтр компании ──
-  // Логика та же, что на «Расчёт ЗП»: поиск по ФИО ИЛИ табельному номеру,
-  // компания — где у сотрудника есть доля (в табеле: есть часы) либо основная.
   // Чистая навигация поверх уже загруженных данных: фильтруются только СТРОКИ.
   // Итоги (ИТОГО, по компаниям, dayTotals) намеренно продолжают считаться по
   // всем видимым сотрудникам — иначе фильтр молча менял бы суммы месяца.
   // Что итоги шире выборки, видно по счётчику «найдено N из M» в шапке.
+  //
+  // Компания берётся ИЗ КАРТОЧКИ, а не из проставленных часов. Раньше строка
+  // подходила фильтру, если по юрлицу есть хоть одна ячейка в месяце, — и
+  // выбор «К-Сервис» вытаскивал сотрудников «Департамента маркетинга»
+  // (отдел «Земля МО») только потому, что у них где-то в месяце стоял час на
+  // К-Сервис. Расчёт мультикомпанийный, часы у людей размазаны почти по всем
+  // юрлицам, так что фильтр по часам не отбирал ничего.
   const searchNeedle = search.trim().toLocaleLowerCase('ru');
   const filtersActive = searchNeedle !== '' || companyFilter !== null;
   const shownEmployees = useMemo(() => {
-    if (!filtersActive) return visibleEmployees;
+    if (!searchNeedle) return visibleEmployees;
     return visibleEmployees.filter((e) => {
-      if (searchNeedle) {
-        const hay = `${e.full_name} ${e.tab_number ?? ''}`.toLocaleLowerCase('ru');
-        if (!hay.includes(searchNeedle)) return false;
-      }
-      if (companyFilter !== null) {
-        const hasHours = companiesByEmp.get(e.id)?.has(companyFilter) ?? false;
-        if (!hasHours && e.default_company_id !== companyFilter) return false;
-      }
-      return true;
+      const hay = `${e.full_name} ${e.tab_number ?? ''}`.toLocaleLowerCase('ru');
+      return hay.includes(searchNeedle);
     });
-  }, [visibleEmployees, searchNeedle, companyFilter, companiesByEmp, filtersActive]);
+  }, [visibleEmployees, searchNeedle]);
 
   // ── Строки табеля: сотрудник × позиция (task_positions ч.B) ──
   // Одна позиция = одна строка, как было до совместительства.
+  // Фильтр компании применяется ЗДЕСЬ, а не к сотрудникам: юрлицо — свойство
+  // рабочего места (его отдела и его карточки), а у совместителя два места
+  // могут принадлежать разным юрлицам. Заодно из группировки сами собой
+  // пропадают отделы чужих компаний — выбрал юрлицо, видишь только его отделы.
   const shownRows = useMemo(() => {
     const rows: PositionRow[] = [];
     for (const emp of shownEmployees) {
       const list = positionsByEmp.get(emp.id) ?? [];
       list.forEach((position, index) => {
+        if (companyFilter !== null && !positionInCompany(position, companyFilter)) return;
         rows.push({ emp, position, index, count: list.length });
       });
     }
     return rows;
-  }, [shownEmployees, positionsByEmp]);
+  }, [shownEmployees, positionsByEmp, companyFilter]);
+
+  /** Сотрудники, реально попавшие в выдачу после ОБОИХ фильтров — для счётчика. */
+  const shownEmployeeCount = useMemo(
+    () => new Set(shownRows.map((r) => r.emp.id)).size,
+    [shownRows]
+  );
 
   // ── Группировка по отделам (Bug 5): только при «Все отделы» для admin/accountant ──
   // Отдел — свойство ПОЗИЦИИ, поэтому группируем строки, а не сотрудников:
@@ -997,15 +1017,33 @@ export function TimesheetPage() {
   }, [data]);
 
   // ── Список отделов для селектора (стабильный, грузим отдельно от выдачи табеля) ──
-  const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
+  const [departments, setDepartments] = useState<
+    { id: number; name: string; head_company_id?: number | null }[]
+  >([]);
   useEffect(() => {
     if (!canSelectDept) return;
     listDepartments()
       .then((list) =>
-        setDepartments(list.filter((d) => d.is_active).map((d) => ({ id: d.id, name: d.name })))
+        setDepartments(list.filter((d) => d.is_active).map(
+          (d) => ({ id: d.id, name: d.name, head_company_id: d.head_company_id })
+        ))
       )
       .catch(() => setDepartments([]));
   }, [canSelectDept]);
+
+  // Отделы, предлагаемые к выбору: при выбранном юрлице — только его отделы.
+  // Иначе список звал бы в отделы, которых при этом фильтре в таблице нет.
+  const selectableDepartments = useMemo(() => {
+    if (companyFilter === null) return departments;
+    return departments.filter((d) => d.head_company_id === companyFilter);
+  }, [departments, companyFilter]);
+
+  // Выбранный отдел не принадлежит выбранному юрлицу — возвращаемся ко «всем»:
+  // сочетание «Парковый + отдел Земли МО» дало бы заведомо пустой экран.
+  useEffect(() => {
+    if (companyFilter === null || typeof deptChoice !== 'number') return;
+    if (!selectableDepartments.some((d) => d.id === deptChoice)) setDeptChoice('all');
+  }, [companyFilter, deptChoice, selectableDepartments, setDeptChoice]);
 
   // Выбор отдела живёт в сторе и localStorage: переживает смену месяца, смену
   // пользователя в той же вкладке и перезагрузку страницы. Чужой (или
@@ -1399,7 +1437,7 @@ export function TimesheetPage() {
   if (needsDeptChoice) {
     return (
       <DepartmentGate
-        departments={departments}
+        departments={selectableDepartments}
         allLabel={isDeptScoped ? 'Все мои отделы' : 'Все отделы'}
         onPick={setDeptChoice}
       />
@@ -1533,6 +1571,13 @@ export function TimesheetPage() {
             title={emp.full_name}
           >
             <div className="truncate max-w-[200px]">{emp.full_name}</div>
+            {/* Табельный номер: он и так есть в поиске, в Excel и в ведомости —
+                в самом табеле его не хватало. */}
+            {emp.tab_number && (
+              <div className="text-[10px] font-normal text-gray-400 font-mono tabular-nums">
+                таб. № {emp.tab_number}
+              </div>
+            )}
             {count > 1 && (
               <div className="text-[10px] font-normal text-gray-400">
                 совместительство: {count} места
@@ -1969,7 +2014,7 @@ export function TimesheetPage() {
               {/* «Все отделы» — осознанный выбор, а не дефолт: на всех отделах это
                   сотни строк и полный расчёт ЗП по всем. */}
               <option value="all">{isDeptScoped ? 'Все мои отделы' : 'Все отделы'}</option>
-              {departments.map((d) => (
+              {selectableDepartments.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}
                 </option>
@@ -1996,7 +2041,7 @@ export function TimesheetPage() {
                 className="text-xs text-gray-500"
                 title="Фильтры сужают только строки. Итоги остаются по всем сотрудникам месяца."
               >
-                найдено {shownEmployees.length} из {visibleEmployees.length}
+                найдено {shownEmployeeCount} из {visibleEmployees.length}
                 <span className="text-gray-400"> · итоги по всем</span>
               </span>
               <button

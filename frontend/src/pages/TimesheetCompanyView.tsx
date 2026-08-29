@@ -309,6 +309,11 @@ export function TimesheetCompanyView(props: Props) {
                   <div className="truncate" style={{ maxWidth: COL_W.name - 24 }}>
                     {emp.full_name}
                   </div>
+                  {emp.tab_number && (
+                    <div className="text-[10px] font-normal text-gray-400 font-mono tabular-nums">
+                      таб. № {emp.tab_number}
+                    </div>
+                  )}
                   {count > 1 && (
                     <div className="text-[10px] font-normal text-gray-400">
                       совместительство: {count}
