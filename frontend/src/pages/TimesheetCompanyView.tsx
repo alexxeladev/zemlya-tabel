@@ -99,7 +99,7 @@ const NOOP_TOGGLE = () => {};
 // Слева: узкая колонка личной отметки «проверено», затем Таб.№ (по нему
 // сверяется бухгалтерия) и ФИО.
 const COL_W = {
-  check: 34, tab: 84, name: 170, position: 120, dept: 100, sched: 60, company: 140,
+  check: 34, tab: 84, name: 168, position: 132, dept: 100, sched: 60, company: 140,
 };
 const COL_LEFT = {
   check: 0,
@@ -355,7 +355,9 @@ export function TimesheetCompanyView(props: Props) {
                   style={stickyLeft(COL_LEFT.name, COL_W.name)}
                   title={emp.full_name}
                 >
-                  <div className="truncate" style={{ maxWidth: COL_W.name - 24 }}>
+                  {/* Перенос по словам вместо обрезки: многоточие прятало
+                      отчество, а по нему сотрудников и различают. */}
+                  <div className="break-normal" style={{ maxWidth: COL_W.name - 24 }}>
                     {emp.full_name}
                   </div>
                   {count > 1 && (
@@ -375,7 +377,7 @@ export function TimesheetCompanyView(props: Props) {
                     style={stickyLeft(COL_LEFT.position, COL_W.position)}
                     title={position.display_title}
                   >
-                    <div className="truncate" style={{ maxWidth: COL_W.position - 16 }}>
+                    <div className="break-normal" style={{ maxWidth: COL_W.position - 16 }}>
                       {position.display_title}
                     </div>
                     {position.is_primary && count > 1 && (
@@ -384,7 +386,7 @@ export function TimesheetCompanyView(props: Props) {
                   </td>
                   <td
                     rowSpan={n}
-                    className="border border-gray-200 px-2 py-2 text-xs text-gray-600 align-top bg-white"
+                    className="border border-gray-200 px-2 py-2 text-xs text-gray-600 align-top bg-white break-normal"
                     style={stickyLeft(COL_LEFT.dept, COL_W.dept)}
                   >
                     {position.department?.name ?? '—'}
