@@ -84,13 +84,14 @@ const WEEKDAY_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
 // Закреплённые слева колонки: фиксированные ширины + накопленные смещения.
 // Фикс. ширина обязательна, иначе sticky-смещения «разъезжаются».
-const COL_W = { name: 170, position: 120, dept: 100, sched: 60, company: 140 };
+const COL_W = { name: 170, tab: 80, position: 120, dept: 100, sched: 60, company: 140 };
 const COL_LEFT = {
   name: 0,
-  position: COL_W.name,
-  dept: COL_W.name + COL_W.position,
-  sched: COL_W.name + COL_W.position + COL_W.dept,
-  company: COL_W.name + COL_W.position + COL_W.dept + COL_W.sched,
+  tab: COL_W.name,
+  position: COL_W.name + COL_W.tab,
+  dept: COL_W.name + COL_W.tab + COL_W.position,
+  sched: COL_W.name + COL_W.tab + COL_W.position + COL_W.dept,
+  company: COL_W.name + COL_W.tab + COL_W.position + COL_W.dept + COL_W.sched,
 };
 function stickyLeft(left: number, width: number, z = 10): CSSProperties {
   return { position: 'sticky', left, width, minWidth: width, maxWidth: width, zIndex: z };
@@ -248,10 +249,10 @@ export function TimesheetCompanyView(props: Props) {
   const hoursOnly = canSeeHourStats && !canSeeMoney;
   const companyHourCols = hoursOnly ? 3 : 0;
   const posHourCols = hoursOnly ? 2 : 0;
-  // ФИО,Должность,Отдел,График(4) + Компания(1) + дни + ИтогоЧ компании(1)
+  // ФИО,Таб.№,Должность,Отдел,График(5) + Компания(1) + дни + ИтогоЧ компании(1)
   // + companyMoney + ИтогоЧ позиции(1) + posMoney + Норма
   const totalCols =
-    4 + 1 + numDays + 1 + companyMoneyCols + companyHourCols + 1 + posMoneyCols + normCols
+    5 + 1 + numDays + 1 + companyMoneyCols + companyHourCols + 1 + posMoneyCols + normCols
     + posHourCols;
 
   // ── Рендер строк одного рабочего места ──
@@ -309,16 +310,22 @@ export function TimesheetCompanyView(props: Props) {
                   <div className="truncate" style={{ maxWidth: COL_W.name - 24 }}>
                     {emp.full_name}
                   </div>
-                  {emp.tab_number && (
-                    <div className="text-[10px] font-normal text-gray-400 font-mono tabular-nums">
-                      таб. № {emp.tab_number}
-                    </div>
-                  )}
                   {count > 1 && (
                     <div className="text-[10px] font-normal text-gray-400">
                       совместительство: {count}
                     </div>
                   )}
+                </td>
+              )}
+
+              {/* ── Табельный номер: отдельная колонка, merge как у ФИО ── */}
+              {index === 0 && first && (
+                <td
+                  rowSpan={nameSpan}
+                  className="bg-white border border-gray-200 px-2 py-2 font-mono tabular-nums text-xs text-gray-700 align-top"
+                  style={stickyLeft(COL_LEFT.tab, COL_W.tab)}
+                >
+                  {emp.tab_number || <span className="text-gray-300 font-sans">—</span>}
                 </td>
               )}
 
@@ -626,6 +633,13 @@ export function TimesheetCompanyView(props: Props) {
           </th>
           <th
             className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
+            style={{ ...stickyLeft(COL_LEFT.tab, COL_W.tab, 30), top: 0 }}
+            title="Табельный номер: по нему сверяется бухгалтерия"
+          >
+            Таб. №
+          </th>
+          <th
+            className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-left font-medium text-gray-600"
             style={{ ...stickyLeft(COL_LEFT.position, COL_W.position, 30), top: 0 }}
             title="Рабочее место: у совместителя строки на каждое, со своим графиком и расчётом"
           >
@@ -722,10 +736,10 @@ export function TimesheetCompanyView(props: Props) {
             </td>
             <td
               className="bg-gray-200 border border-gray-300 px-2 py-2"
-              colSpan={4}
+              colSpan={5}
               style={stickyLeft(
-                COL_LEFT.position,
-                COL_W.position + COL_W.dept + COL_W.sched + COL_W.company,
+                COL_LEFT.tab,
+                COL_W.tab + COL_W.position + COL_W.dept + COL_W.sched + COL_W.company,
               )}
             ></td>
             {Array.from({ length: numDays }, (_, i) => i + 1).map((d) => (
