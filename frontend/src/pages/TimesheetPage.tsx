@@ -333,6 +333,15 @@ function positionInCompany(position: Position, companyId: number): boolean {
   return position.company_id === companyId;
 }
 
+/** «1 сотрудник / 2 сотрудника / 5 сотрудников» — счётчик в шапке и у отделов. */
+function pluralEmployees(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'сотрудник';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'сотрудника';
+  return 'сотрудников';
+}
+
 /** Один поповер на страницу вместо <select> в каждой ячейке (см. openCompanyPicker). */
 type PickerItem = {
   key: string; label: string; hint?: string; color?: string; active?: boolean;
@@ -623,6 +632,7 @@ export function TimesheetPage() {
   const setSearch = (value: string) => setFilters((f) => ({ ...f, search: value }));
   const setCompanyFilter = (value: number | null) =>
     setFilters((f) => ({ ...f, companyId: value }));
+  const resetFilters = () => setFilters({ search: '', companyId: null });
 
   const [data, setData] = useState<MonthResponse | null>(null);
   const [calendar, setCalendar] = useState<CalendarSummary | null>(null);
@@ -971,11 +981,14 @@ export function TimesheetPage() {
     return rows;
   }, [shownEmployees, positionsByEmp, companyFilter]);
 
-  /** Сотрудники, реально попавшие в выдачу после ОБОИХ фильтров — для счётчика. */
+  /** Сотрудники, реально попавшие в выдачу после ОБОИХ фильтров — для счётчика.
+   *  Считаем ЛЮДЕЙ, а не строки: у совместителя строк несколько (по строке на
+   *  рабочее место), но человек один — «29 сотрудников · 31 позиция». */
   const shownEmployeeCount = useMemo(
     () => new Set(shownRows.map((r) => r.emp.id)).size,
     [shownRows]
   );
+  const shownRowCount = shownRows.length;
 
   // ── Группировка по отделам (Bug 5): только при «Все отделы» для admin/accountant ──
   // Отдел — свойство ПОЗИЦИИ, поэтому группируем строки, а не сотрудников:
@@ -1001,6 +1014,10 @@ export function TimesheetPage() {
       name: deptId === null
         ? 'Без отдела'
         : rows[0]?.position.department?.name ?? `Отдел ${deptId}`,
+      // Своё число сотрудников у каждого отдела — людей, не строк: та же
+      // причина, что и в шапке (совместитель даёт несколько строк).
+      employeeCount: new Set(rows.map((r) => r.emp.id)).size,
+      rowCount: rows.length,
       // rowspan считаем внутри группы: позиции одного человека в разных
       // отделах попадают в разные группы, объединить их одной ячейкой нельзя.
       rows: withSpans(rows),
@@ -1037,6 +1054,25 @@ export function TimesheetPage() {
     if (companyFilter === null) return departments;
     return departments.filter((d) => d.head_company_id === companyFilter);
   }, [departments, companyFilter]);
+
+  /** Подпись выбранной выдачи для счётчика в шапке: «Стройдепартамент — 29
+   *  сотрудников». У роли без выбора отдела (employee, единственный отдел)
+   *  берём имя отдела из самих строк. */
+  const selectionLabel = useMemo(() => {
+    if (departmentFilter !== null) {
+      return (
+        departments.find((d) => d.id === departmentFilter)?.name
+        ?? shownRows.find((r) => r.position.department_id === departmentFilter)
+          ?.position.department?.name
+        ?? 'Отдел'
+      );
+    }
+    if (canSelectDept) return isDeptScoped ? 'Все мои отделы' : 'Все отделы';
+    const names = new Set(
+      shownRows.map((r) => r.position.department?.name ?? 'Без отдела')
+    );
+    return names.size === 1 ? [...names][0] : 'Все отделы';
+  }, [departmentFilter, departments, shownRows, canSelectDept, isDeptScoped]);
 
   // Выбранный отдел не принадлежит выбранному юрлицу — возвращаемся ко «всем»:
   // сочетание «Парковый + отдел Земли МО» дало бы заведомо пустой экран.
@@ -1890,13 +1926,26 @@ export function TimesheetPage() {
   const renderGroupDivider = (
     deptId: number | null,
     name: string,
-    period: Period | null
+    period: Period | null,
+    employeeCount: number,
+    rowCount: number,
   ) => (
     <tr key={`group-${deptId ?? 'null'}`}>
       <td colSpan={totalCols} className="bg-slate-100 border border-gray-300 p-0">
         <div className="sticky left-0 flex items-center gap-3 px-3 py-2 w-fit">
           <span className="text-sm font-bold uppercase tracking-wide text-gray-700">
             {name}
+          </span>
+          {/* Своё число сотрудников у каждого отдела — чтобы при «Все отделы»
+              было видно, что никого не забыли. Людей, а не строк. */}
+          <span
+            className="text-xs font-normal normal-case text-gray-500"
+            title="Сотрудников в отделе (людей; у совместителя строк несколько)"
+          >
+            {employeeCount} {pluralEmployees(employeeCount)}
+            {rowCount > employeeCount && (
+              <span className="text-gray-400"> · {rowCount} позиций</span>
+            )}
           </span>
           {period && (
             <PeriodBadge
@@ -2035,23 +2084,41 @@ export function TimesheetPage() {
             </span>
           )}
 
-          {filtersActive && (
-            <>
-              <span
-                className="text-xs text-gray-500"
-                title="Фильтры сужают только строки. Итоги остаются по всем сотрудникам месяца."
-              >
-                найдено {shownEmployeeCount} из {visibleEmployees.length}
-                <span className="text-gray-400"> · итоги по всем</span>
+          {/* ── Счётчик сотрудников (часть 1 пилота) ──
+              Считается из УЖЕ ЗАГРУЖЕННЫХ данных табеля, отдельного запроса нет.
+              Людей, а не строк: у совместителя строка на каждое рабочее место,
+              но человек один — поэтому «29 сотрудников · 31 позиция». */}
+          <span
+            className="text-xs text-gray-600 whitespace-nowrap"
+            title={
+              'Сотрудников в выдаче (людей, не строк).'
+              + ' Фильтры сужают только строки: итоги таблицы остаются'
+              + ' по всем сотрудникам месяца.'
+            }
+          >
+            <span className="font-medium text-gray-700">{selectionLabel}</span>
+            {' — '}
+            <span className="font-semibold text-gray-800">{shownEmployeeCount}</span>
+            {' '}
+            {pluralEmployees(shownEmployeeCount)}
+            {shownRowCount > shownEmployeeCount && (
+              <span className="text-gray-400"> · {shownRowCount} позиций</span>
+            )}
+            {filtersActive && (
+              <span className="text-gray-400">
+                {' '}· из {visibleEmployees.length} · итоги по всем
               </span>
-              <button
-                type="button"
-                onClick={() => { setSearch(''); setCompanyFilter(null); }}
-                className="px-2 py-1 text-sm rounded border border-gray-300 text-gray-500 hover:bg-gray-100"
-              >
-                Сброс
-              </button>
-            </>
+            )}
+          </span>
+
+          {filtersActive && (
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="px-2 py-1 text-sm rounded border border-gray-300 text-gray-500 hover:bg-gray-100"
+            >
+              Сброс
+            </button>
           )}
 
           {/* Статусы периодов в шапке — только когда НЕ группируем (один отдел в выдаче) */}
@@ -2428,7 +2495,7 @@ export function TimesheetPage() {
                   const spans = employeeRowSpans(g.rows);
                   return (
                     <Fragment key={`grp-${g.deptId ?? 'null'}`}>
-                      {renderGroupDivider(g.deptId, g.name, g.period)}
+                      {renderGroupDivider(g.deptId, g.name, g.period, g.employeeCount, g.rowCount)}
                       {g.rows.map((row) => renderPositionRow(row, spans))}
                     </Fragment>
                   );
