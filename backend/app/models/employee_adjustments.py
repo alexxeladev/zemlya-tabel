@@ -45,10 +45,21 @@ class EmployeeAdjustment(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # Источник финансирования (task_funding_source): юрлицо, которое оплачивает
+    # эту премию/KPI. Задан — вся сумма относится на затраты ЭТОЙ компании, а
+    # база каскада распределения уменьшается на неё. NULL (обычный случай) —
+    # начисление распределяется общим каскадом, как и раньше.
+    # У аванса источника нет: это удержание, а не затрата.
+    funding_company_id: Mapped[int | None] = mapped_column(
+        ForeignKey("companies.id"), index=True, nullable=True
+    )
+
     created_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("employees.id"), nullable=True
     )
     created_at: Mapped[str] = mapped_column(server_default=func.now())
+
+    funding_company = relationship("Company", foreign_keys=[funding_company_id])
 
     employee: Mapped[Employee] = relationship("Employee", foreign_keys=[employee_id])
     created_by: Mapped[Employee | None] = relationship(
