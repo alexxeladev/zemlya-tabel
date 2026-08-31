@@ -69,6 +69,25 @@ function applicationsPct(row: StatementRow, companyId: number): string {
   return found ? String(Math.round(num(found.percent) * 100) / 100) : '0'
 }
 
+/**
+ * Целевые премии/KPI строки (task_funding_source): {company_id: сумма}.
+ * Они относятся на своё юрлицо целиком и УМЕНЬШАЮТ базу каскада — прибавить их
+ * сверх распределённого «Итого начислено» нельзя, иначе экран покажет больше,
+ * чем начислено (и разойдётся с бэком, где база уменьшается).
+ */
+function targetedAmounts(row: StatementRow): Record<number, number> {
+  const out: Record<number, number> = {}
+  for (const [cid, amount] of Object.entries(row.targeted_amounts ?? {})) {
+    out[Number(cid)] = num(amount)
+  }
+  return out
+}
+
+/** База каскада = Итого начислено − целевые, но не меньше нуля. */
+function cascadeBase(row: StatementRow): number {
+  return Math.max(0, num(row.accrued_total) - num(row.targeted_total))
+}
+
 function buildEdits(stmt: PayrollStatement): Edits {
   const e: Edits = {}
   for (const row of stmt.rows) {
@@ -82,7 +101,10 @@ function buildEdits(stmt: PayrollStatement): Edits {
     // заявки перекрывают каскад).
     if (isApplicationsRow(row)) continue
     for (const d of row.distribution) {
-      e[key][d.company_id] = d.percent
+      // Нулевой % — компания попала в разбивку только целевой премией
+      // (task_funding_source), каскадом ей ничего не задано: инпут остаётся
+      // пустым, иначе там висел бы бессмысленный ноль.
+      if (num(d.percent) > 0) e[key][d.company_id] = d.percent
     }
   }
   return e
@@ -191,7 +213,13 @@ export function PayrollPage() {
     for (const [cid, v] of Object.entries(edits[rowKey(row)] ?? {})) {
       if (num(v) > 0) weights[Number(cid)] = num(v)
     }
-    return distribute(num(row.accrued_total), weights, row.main_company_id)
+    // Каскад делит базу БЕЗ целевых сумм, потом целевые прибавляются к своим
+    // юрлицам — тот же порядок, что в services/payroll_statement.py.
+    const amounts = distribute(cascadeBase(row), weights, row.main_company_id)
+    for (const [cid, amount] of Object.entries(targetedAmounts(row))) {
+      amounts[Number(cid)] = (amounts[Number(cid)] ?? 0) + amount
+    }
+    return amounts
   }
 
   // Проценты сохраняются РАБОЧЕМУ МЕСТУ строки: у совместителя вторая позиция
@@ -409,6 +437,9 @@ export function PayrollPage() {
               {visibleRows.map((row, i) => {
                 const key = rowKey(row)
                 const accrued = num(row.accrued_total)
+                // Есть целевые премии/KPI (task_funding_source) → показываем
+                // ФАКТИЧЕСКИЕ проценты: заданный каскадом их уже не описывает.
+                const hasTargeted = num(row.targeted_total) > 0
                 const pctSum = rowPercentSum(key)
                 const pctWarn = pctSum > 0 && Math.abs(pctSum - 100) > 0.5
                 const e = edits[key] ?? {}
@@ -561,6 +592,14 @@ export function PayrollPage() {
                         : '0'
                       const amount = amounts[c.id] ?? 0
                       liveDistTotal += amount
+                      // Целевая премия/KPI (task_funding_source) «утяжеляет»
+                      // своё юрлицо: фактический % расходится с заданным в
+                      // каскаде (50/50 → 40/60), и без этой цифры расхождение
+                      // выглядит ошибкой расчёта.
+                      const targeted = targetedAmounts(row)[c.id] ?? 0
+                      const effPct = hasTargeted && accrued > 0
+                        ? Math.round((amount / accrued) * 10000) / 100
+                        : null
                       return (
                         <td key={c.id} className="px-1.5 py-1 text-center bg-indigo-50/40">
                           <div className="flex items-center justify-center gap-1">
@@ -585,6 +624,18 @@ export function PayrollPage() {
                           <div className={`mt-0.5 text-[10px] ${autoEntry ? 'italic text-gray-400' : 'text-gray-500'}`}>
                             {amount > 0 ? formatMoney(String(amount)) : '—'}
                           </div>
+                          {effPct !== null && amount > 0 && (
+                            <div
+                              className="text-[9px] text-violet-600"
+                              title={
+                                targeted > 0
+                                  ? `Фактически ${effPct}% от «Итого начислено» (включая целевые ${formatMoney(String(targeted))})`
+                                  : `Фактически ${effPct}% от «Итого начислено»`
+                              }
+                            >
+                              факт. {effPct}%{targeted > 0 ? ' 🎯' : ''}
+                            </div>
+                          )}
                         </td>
                       )
                     })}
@@ -622,6 +673,13 @@ export function PayrollPage() {
                       {row.distribution_note && (
                         <div className="mt-0.5 text-[9px] text-amber-600" title={row.distribution_note}>
                           ⚠ заявки не заданы
+                        </div>
+                      )}
+                      {/* Целевые премии/KPI: объясняют, почему фактический %
+                          юрлица отличается от заданного в каскаде */}
+                      {row.targeted_note && (
+                        <div className="mt-0.5 text-[9px] text-violet-600" title={row.targeted_note}>
+                          🎯 {row.targeted_note}
                         </div>
                       )}
                     </td>
