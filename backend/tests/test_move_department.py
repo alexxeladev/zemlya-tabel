@@ -267,6 +267,33 @@ class TestClosedPeriodsUnchanged:
         assert after == {org["old"].id: Decimal("10000")}
         assert org["new"].id not in after
 
+    def test_closed_month_with_targeted_premium_identical(
+        self, client: TestClient, db_session, org, admin, staff
+    ):
+        """Целевая премия (task_funding_source) в закрытом месяце: расклад до и
+        после переноса — рубль в рубль.
+
+        Заморозка пишет процент КАСКАДА, а каскад делит начисление уже без
+        целевых. Заморозив фактическую долю, перенос прибавил бы целевую сумму
+        второй раз и сдвинул закрытый месяц.
+        """
+        _fill_may(db_session, org, staff)
+        w = staff["worker"]
+        db_session.add(EmployeeAdjustment(
+            employee_id=w.id, position_id=w.primary_position.id,
+            year=2026, month=5, kind="premium", amount=Decimal("20000"),
+            reason="целевая", funding_company_id=org["other"].id,
+        ))
+        db_session.commit()
+
+        before = _statement(db_session, [w.id], 2026, 5)
+        assert before
+
+        token = get_token(client, "mvadmin@example.com", "admin123")
+        assert _move(client, token, org["stroy"].id, org["new"].id).status_code == 200
+
+        assert _statement(db_session, [w.id], 2026, 5) == before
+
     def test_freeze_writes_overrides_for_closed_month_only(
         self, client: TestClient, db_session, org, admin, staff
     ):

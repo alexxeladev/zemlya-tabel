@@ -57,6 +57,7 @@ from app.services.payout import (
     load_adjustment_reasons,
     load_adjustment_sums,
     load_loan_overrides,
+    load_targeted_funding,
     loan_month_state,
 )
 from app.services.payroll import calculate_position_payroll
@@ -365,6 +366,105 @@ def accrued_total(p: EmployeePayrollRead) -> Decimal:
     )
 
 
+# ── Источник финансирования премий и KPI (task_funding_source) ────────────────
+
+#: Как называется целевое начисление в пометке ведомости.
+_TARGETED_KIND_LABELS = {"premium": "целевую премию", "kpi": "целевой KPI"}
+
+
+class TargetedFunding:
+    """Целевые начисления строки: премии и KPI с указанным юрлицом-источником.
+
+    Такая сумма относится на затраты СВОЕЙ компании целиком и точно (она не
+    участвует в округлении долей), а каскад распределения применяется к
+    ОСТАТКУ: `база_каскада = Итого начислено − Σ целевых`. Прибавить целевые
+    сверх распределённого «Итого начислено» нельзя — распределение перестанет
+    сходиться с начислением (двойной счёт).
+    """
+
+    __slots__ = ("amounts", "total", "note", "exceeds_accrued")
+
+    def __init__(
+        self,
+        amounts: dict[int, Decimal],
+        total: Decimal,
+        note: str | None,
+        exceeds_accrued: bool,
+    ):
+        self.amounts = amounts
+        self.total = total
+        self.note = note
+        self.exceeds_accrued = exceeds_accrued
+
+
+EMPTY_TARGETED = TargetedFunding({}, _ZERO, None, False)
+
+
+def build_targeted_funding(
+    items: list[tuple[int, str, Decimal]] | None,
+    accrued: Decimal,
+    company_names: dict[int, str],
+) -> TargetedFunding:
+    """[(company_id, kind, amount)] → суммы по юрлицам, итог и пометка.
+
+    Пометка нужна бухгалтеру: фактический процент юрлица в ведомости из-за
+    целевых сумм отличается от заданного в каскаде (задал 50/50 — видит 40/60),
+    и без объяснения это выглядит ошибкой.
+    """
+    if not items:
+        return EMPTY_TARGETED
+    amounts: dict[int, Decimal] = {}
+    notes: list[str] = []
+    for company_id, kind, amount in items:
+        amounts[company_id] = amounts.get(company_id, _ZERO) + amount
+        label = _TARGETED_KIND_LABELS.get(kind, "целевое начисление")
+        name = company_names.get(company_id, "")
+        notes.append(f"{label} {_fmt_amount(amount)} ₽ ({name})".replace(" ()", ""))
+    total = sum(amounts.values(), _ZERO)
+    return TargetedFunding(
+        amounts=amounts,
+        total=total,
+        note="включает " + ", ".join(notes),
+        # Практически невозможно (целевые — часть начисленного), но если сумма
+        # целевых всё же перевесила начисление, база каскада обнуляется и
+        # распределение состоит из одних целевых: отрицательной она быть не может.
+        exceeds_accrued=total > accrued,
+    )
+
+
+def cascade_base_amount(accrued: Decimal, targeted: TargetedFunding) -> Decimal:
+    """База каскада = Итого начислено − целевые, но не меньше нуля."""
+    base = accrued - targeted.total
+    return base if base > _ZERO else _ZERO
+
+
+def merge_targeted(
+    cascade_amounts: dict[int, Decimal], targeted: TargetedFunding
+) -> dict[int, Decimal]:
+    """Итог по юрлицу = доля из каскада + целевые суммы этого юрлица.
+
+    Компания-источник появляется в разбивке даже если в обычном распределении
+    сотрудника её не было.
+    """
+    if not targeted.amounts:
+        return cascade_amounts
+    merged = dict(cascade_amounts)
+    for company_id, amount in targeted.amounts.items():
+        merged[company_id] = merged.get(company_id, _ZERO) + amount
+    return merged
+
+
+def effective_percent(amount: Decimal, accrued: Decimal) -> Decimal:
+    """Фактическая доля юрлица в «Итого начислено», в процентах.
+
+    С целевыми суммами она не совпадает с заданным в каскаде процентом — именно
+    её и надо показывать в ведомости (40/60 при каскаде 50/50).
+    """
+    if accrued <= _ZERO:
+        return _ZERO
+    return (amount / accrued * _HUNDRED).quantize(Decimal("0.01"))
+
+
 def _applications_context(
     db: Session, department_ids: list[int | None], year: int, month: int
 ) -> tuple[set[int], dict[int, dict[int, int]]]:
@@ -473,6 +573,25 @@ def build_applications_distribution(
     if not flagged or not applications_by_dept:
         return []
 
+    # Целевые премии/KPI уменьшают базу распределения и здесь тоже — иначе блок
+    # в табеле разойдётся с ведомостью (а он обязан показывать те же цифры).
+    emp_ids = list(positions_by_employee.keys())
+    # Основная позиция берётся у САМОГО сотрудника, а не «первая из видимых»:
+    # начисления с `position_id IS NULL` (заведённые до появления позиций)
+    # принадлежат основной, и в чужом отделе они не должны прилипнуть к
+    # подработке, которая случайно оказалась первой в видимом списке.
+    primary_position_ids = {
+        emp_id: (
+            positions[0].employee.primary_position.id
+            if positions and positions[0].employee.primary_position
+            else None
+        )
+        for emp_id, positions in positions_by_employee.items()
+    }
+    targeted_funding = load_targeted_funding(
+        db, emp_ids, year, month, primary_position_ids
+    )
+
     rows: list[ApplicationsDistributionRow] = []
     for p in summary.employees:
         position = position_by_id.get(p.position_id)
@@ -482,10 +601,16 @@ def build_applications_distribution(
         if not counts:
             continue
         accrued = accrued_total(p)
-        amounts = distribute(
-            accrued,
-            application_weights(counts),
-            position.company_id,
+        targeted = build_targeted_funding(
+            targeted_funding.get(p.employee_id, {}).get(p.position_id), accrued, {}
+        )
+        amounts = merge_targeted(
+            distribute(
+                cascade_base_amount(accrued, targeted),
+                application_weights(counts),
+                position.company_id,
+            ),
+            targeted,
         )
         rows.append(ApplicationsDistributionRow(
             employee_id=p.employee_id,
@@ -581,6 +706,12 @@ def build_payroll_statement(
     adjustment_reasons = load_adjustment_reasons(
         db, emp_ids, year, month, primary_position_ids
     )
+    # Премии и KPI с указанным источником финансирования (task_funding_source):
+    # они относятся на своё юрлицо целиком, а каскад делит ОСТАТОК начисления.
+    targeted_funding = load_targeted_funding(
+        db, emp_ids, year, month, primary_position_ids
+    )
+    company_names = {c.id: company_display_name(c) for c in companies}
 
     rows: list[StatementRow] = []
     distribution_totals: dict[int, Decimal] = {c.id: _ZERO for c in companies}
@@ -607,6 +738,16 @@ def build_payroll_statement(
         app_counts = applications_by_dept.get(position_dept_id) or {}
         distribution_note = None
 
+        # Целевые премии/KPI (task_funding_source) вычитаются из базы ДО каскада:
+        # добавить их сверху распределённого «Итого начислено» значило бы
+        # посчитать эти деньги дважды, и ведомость перестала бы сходиться.
+        targeted = build_targeted_funding(
+            targeted_funding.get(p.employee_id, {}).get(p.position_id),
+            accrued,
+            company_names,
+        )
+        cascade_base = cascade_base_amount(accrued, targeted)
+
         if app_counts:
             source = SOURCE_APPLICATIONS
             is_overridden = False
@@ -616,7 +757,7 @@ def build_payroll_statement(
             # доля компании = начислено × заявки / Σзаявок, остаток — основной
             # компании. Округление то же самое, что в каскаде (`distribute`).
             dist_amounts = distribute(
-                accrued,
+                cascade_base,
                 application_weights(app_counts),
                 main_company.id if main_company else None,
             )
@@ -639,25 +780,47 @@ def build_payroll_statement(
 
             if not is_auto:
                 dist_amounts = distribute_by_percent(
-                    accrued, shares, main_company.id if main_company else None
+                    cascade_base, shares, main_company.id if main_company else None
                 )
             else:
                 # Ни на одном уровне каскада % не задан → авто по фактическим часам.
                 shares, dist_amounts = _auto_shares_by_hours(
-                    accrued, p.breakdown_by_company, main_company,
+                    cascade_base, p.breakdown_by_company, main_company,
                 )
         percent_sum = sum(shares.values(), _ZERO)
 
+        # Целевые суммы прибавляются ПОСЛЕ каскада — к своим юрлицам и точно
+        # (в округлении долей они не участвуют). Итог по-прежнему ровно равен
+        # «Итого начислено».
+        dist_amounts = merge_targeted(dist_amounts, targeted)
+        # Пометка о целевых суммах живёт в СВОЁМ поле (`targeted_note`):
+        # `distribution_note` — про предупреждения каскада, и подпись
+        # «⚠ заявки не заданы» на экране относится именно к нему.
+        if targeted.exceeds_accrued:
+            distribution_note = (
+                (distribution_note + "; " if distribution_note else "")
+                + "целевые начисления превышают «Итого начислено» — "
+                "распределены только они"
+            )
+
+        # Компания-источник попадает в разбивку, даже если в обычном
+        # распределении сотрудника её не было (у неё нет процента каскада — 0).
+        distribution_ids = sorted(
+            set(shares) | set(targeted.amounts),
+            key=lambda c: (company_order.get(c, len(company_order)), c),
+        )
         distribution = [
             StatementCompanyAmount(
                 company_id=cid,
-                percent=shares[cid],
+                percent=shares.get(cid, _ZERO),
+                # Фактическая доля юрлица в начислении: с целевыми суммами она
+                # отличается от заданного в каскаде процента (40/60 при 50/50).
+                effective_percent=effective_percent(
+                    dist_amounts.get(cid, _ZERO), accrued
+                ),
                 amount=dist_amounts.get(cid, _ZERO),
             )
-            for cid in sorted(
-                shares.keys(),
-                key=lambda c: (company_order.get(c, len(company_order)), c),
-            )
+            for cid in distribution_ids
         ]
         for cid, amt in dist_amounts.items():
             distribution_totals[cid] = distribution_totals.get(cid, _ZERO) + amt
@@ -730,6 +893,9 @@ def build_payroll_statement(
             is_auto_distributed=is_auto,
             distribution_source=source,
             distribution_note=distribution_note,
+            targeted_amounts=targeted.amounts,
+            targeted_total=targeted.total,
+            targeted_note=targeted.note,
             percent_sum=percent_sum,
             distribution=distribution,
             distribution_total=sum(dist_amounts.values(), _ZERO),

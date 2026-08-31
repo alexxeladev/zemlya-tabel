@@ -57,7 +57,13 @@ class StatementCompanyRef(BaseModel):
 
 class StatementCompanyAmount(BaseModel):
     company_id: int
+    # percent — процент, ЗАДАННЫЙ каскадом (его и правят в ведомости).
     percent: Decimal
+    # effective_percent — ФАКТИЧЕСКАЯ доля юрлица в «Итого начислено». С целевыми
+    # премиями (task_funding_source) она отличается от заданной: каскад 50/50
+    # плюс целевая премия даёт, например, 40/60. Показывать надо именно её,
+    # но править — percent, иначе правка молча учла бы целевую сумму дважды.
+    effective_percent: Decimal = Decimal("0")
     amount: Decimal
 
 
@@ -147,6 +153,13 @@ class StatementRow(BaseModel):
     # Пояснение к распределению для человека. Заполняется, когда отдел помечен
     # «по заявкам», но заявок за месяц нет: молча посчитать «как у всех» нельзя.
     distribution_note: str | None = None
+    # Целевые премии/KPI (task_funding_source): {company_id: сумма}, их итог и
+    # человеческая пометка «включает целевую премию 20 000 ₽ (Секьюрити)».
+    # Каскад применяется к «Итого начислено» МИНУС targeted_total, поэтому
+    # Σ распределения всегда равна «Итого начислено».
+    targeted_amounts: dict[int, Decimal] = {}
+    targeted_total: Decimal = Decimal("0")
+    targeted_note: str | None = None
     percent_sum: Decimal          # сумма процентов (для подсветки ≠ 100)
     distribution: list[StatementCompanyAmount]
     distribution_total: Decimal

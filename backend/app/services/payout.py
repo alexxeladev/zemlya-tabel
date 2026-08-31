@@ -264,6 +264,53 @@ def load_adjustment_reasons(
     return result
 
 
+def load_targeted_funding(
+    db: Session,
+    emp_ids: list[int],
+    year: int,
+    month: int,
+    primary_position_ids: dict[int, int | None] | None = None,
+) -> dict[int, dict[int | None, list[tuple[int, str, Decimal]]]]:
+    """Премии и KPI с указанным ИСТОЧНИКОМ ФИНАНСИРОВАНИЯ (task_funding_source).
+
+    {employee_id: {position_id: [(company_id, kind, amount), ...]}} за месяц.
+
+    Такая сумма целиком относится на затраты своего юрлица, а база каскада
+    распределения уменьшается на неё — иначе получится двойной счёт. Считать
+    её отсюда, а не из `load_adjustment_sums`: тот суммирует записи по типу и
+    компанию-источник теряет.
+
+    Адресация та же, что у сумм: `position_id IS NULL` — запись, заведённая до
+    появления позиций, читается как основная позиция. Аванс сюда не попадает
+    вовсе: это удержание, а не затрата юрлица.
+    """
+    result: dict[int, dict[int | None, list[tuple[int, str, Decimal]]]] = {}
+    if not emp_ids:
+        return result
+    primary_position_ids = primary_position_ids or {}
+    rows = (
+        db.query(EmployeeAdjustment)
+        .filter(
+            EmployeeAdjustment.employee_id.in_(emp_ids),
+            EmployeeAdjustment.year == year,
+            EmployeeAdjustment.month == month,
+            EmployeeAdjustment.funding_company_id.isnot(None),
+            EmployeeAdjustment.kind.in_(("premium", "kpi")),
+        )
+        .order_by(EmployeeAdjustment.id)
+        .all()
+    )
+    for r in rows:
+        position_id = r.position_id
+        if position_id is None:
+            position_id = primary_position_ids.get(r.employee_id)
+        amount = r.amount if isinstance(r.amount, Decimal) else Decimal(str(r.amount))
+        result.setdefault(r.employee_id, {}).setdefault(position_id, []).append(
+            (r.funding_company_id, r.kind, amount)
+        )
+    return result
+
+
 def load_loan_overrides(
     db: Session, emp_ids: list[int]
 ) -> dict[int, dict[tuple[int, int], Decimal]]:

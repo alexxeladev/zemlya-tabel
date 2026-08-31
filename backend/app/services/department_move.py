@@ -279,8 +279,16 @@ def _freeze_month(
             continue
         # Проценты — из СУММ, а не из исходных весов: так обратный пересчёт
         # (`distribute` от процентов) возвращает ровно те же рубли.
+        # Целевые премии/KPI (task_funding_source) из сумм ВЫЧИТАЮТСЯ: замороженный
+        # процент — это процент КАСКАДА, а каскад делит начисление уже без них.
+        # Заморозив фактическую долю (40/60 вместо 50/50), мы бы прибавили целевую
+        # сумму второй раз и сдвинули закрытый месяц — ровно то, от чего заморозка
+        # и защищает.
+        targeted = row.targeted_amounts or {}
         weights = {
-            d.company_id: d.amount for d in row.distribution if d.amount > _ZERO
+            d.company_id: d.amount - targeted.get(d.company_id, _ZERO)
+            for d in row.distribution
+            if d.amount - targeted.get(d.company_id, _ZERO) > _ZERO
         }
         if not weights:
             # Начислений нет (0 ₽) — сумму фиксировать нечем, но ПРИВЯЗКА строки
