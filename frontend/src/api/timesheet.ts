@@ -135,6 +135,12 @@ export const timesheetApi = {
     position_id?: number | null
     year: number; month: number
     kind: 'premium' | 'kpi' | 'advance'; amount: string; reason: string
+    /**
+     * Источник финансирования (task_funding_source): юрлицо, которое эту
+     * премию/KPI оплачивает. Сумма уйдёт на его затраты целиком, а каскад
+     * распределения поделит остаток начисления. Не задан — как раньше.
+     */
+    funding_company_id?: number | null
   }): Promise<unknown> {
     const { data } = await apiClient.post('/api/timesheet/adjustments', input)
     return data
