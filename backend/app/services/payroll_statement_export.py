@@ -148,7 +148,12 @@ def _percent_text(row: StatementRow, names_by_company: dict[int, str]) -> str:
     """
     parts = []
     for d in row.distribution:
-        percent = Decimal(d.percent)
+        # С целевыми премиями (task_funding_source) заданный каскадом процент
+        # уже не описывает разбивку: показываем фактическую долю, ту же, что и
+        # в вебе, иначе проценты в выгрузке спорят с суммами рядом.
+        percent = Decimal(
+            d.effective_percent if row.targeted_total > 0 else d.percent
+        )
         if percent == 0:
             continue
         # 100.00 → «100», 37.21 → «37.21»: хвост нулей в узкой колонке лишний.
@@ -189,6 +194,10 @@ def _note_text(row: StatementRow) -> str:
     # и в выгрузке это должно быть видно (task_hr_applications).
     if row.distribution_note:
         note = (note + "; " if note else "") + row.distribution_note
+    # Целевые премии/KPI (task_funding_source): без этой строки в выгрузке
+    # непонятно, почему фактический % юрлица разошёлся с заданным в каскаде.
+    if row.targeted_note:
+        note = (note + "; " if note else "") + row.targeted_note
     return note
 
 
