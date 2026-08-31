@@ -200,7 +200,14 @@ export interface StatementCompanyRef {
 
 export interface StatementCompanyAmount {
   company_id: number
+  /** процент, ЗАДАННЫЙ каскадом — его и правят в ведомости */
   percent: string
+  /**
+   * фактическая доля юрлица в «Итого начислено». С целевыми премиями
+   * (task_funding_source) отличается от заданной: каскад 50/50 + целевая
+   * премия даёт 40/60. Показываем её, а правим percent.
+   */
+  effective_percent: string
   amount: string
 }
 
@@ -267,6 +274,15 @@ export interface StatementRow {
   distribution_source: DistributionSource
   /** пояснение: отдел «по заявкам», но заявок за месяц нет → каскад */
   distribution_note: string | null
+  /**
+   * Целевые премии/KPI (task_funding_source): {company_id: сумма}, их итог и
+   * пометка «включает целевая премия 20000 ₽ (Секьюрити)». Каскад делит
+   * «Итого начислено» МИНУС targeted_total, поэтому Σ распределения всегда
+   * равна «Итого начислено».
+   */
+  targeted_amounts: Record<number, string>
+  targeted_total: string
+  targeted_note: string | null
   percent_sum: string
   distribution: StatementCompanyAmount[]
   distribution_total: string
@@ -306,6 +322,13 @@ export interface Adjustment {
   kind: AdjustmentKind
   amount: string
   reason: string
+  /**
+   * Источник финансирования (task_funding_source) — только у премии и KPI.
+   * Задан: сумма целиком относится на затраты этого юрлица, база каскада
+   * распределения на неё уменьшается. null — обычный каскад.
+   */
+  funding_company_id: number | null
+  funding_company_name: string | null
   created_by_id: number | null
   created_at: string | null
 }

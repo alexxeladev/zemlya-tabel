@@ -98,6 +98,12 @@ export type Adjustment = {
   kind: 'premium' | 'kpi' | 'advance';
   amount: string;
   reason: string;
+  /**
+   * Источник финансирования (task_funding_source) — юрлицо, оплачивающее эту
+   * премию/KPI: сумма относится на его затраты целиком. null — обычный каскад.
+   */
+  funding_company_id?: number | null;
+  funding_company_name?: string | null;
 };
 
 export type Company = {
@@ -2869,6 +2875,7 @@ export function TimesheetPage() {
           month={month}
           payroll={payrollFor(adjModal.emp, adjModal.position) ?? null}
           adjustments={adjByPos.get(posKey(adjModal.emp.id, adjModal.position.id)) ?? []}
+          companies={data.companies}
           onClose={() => setAdjModal(null)}
           onChanged={afterAdjustment}
         />
@@ -3670,6 +3677,7 @@ function AdjustmentsModal({
   month,
   payroll,
   adjustments,
+  companies,
   onClose,
   onChanged,
 }: {
@@ -3681,6 +3689,8 @@ function AdjustmentsModal({
   month: number;
   payroll: EmployeePayroll | null;
   adjustments: Adjustment[];
+  /** справочник юрлиц — для выбора источника финансирования премии/KPI */
+  companies: Company[];
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -3690,6 +3700,12 @@ function AdjustmentsModal({
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [loanInput, setLoanInput] = useState('');
+  // Источник финансирования (task_funding_source) — прогрессивное раскрытие:
+  // нужен не всегда, поэтому в форме его по умолчанию не видно. Аванс — это
+  // удержание, источника у него нет вовсе.
+  const canFund = kind !== 'advance';
+  const [fundingOpen, setFundingOpen] = useState(false);
+  const [fundingCompanyId, setFundingCompanyId] = useState<number | ''>('');
 
   // В списке показываем только записи этой категории
   const shownAdjustments = adjustments.filter((a) => a.kind === kind);
@@ -3712,9 +3728,13 @@ function AdjustmentsModal({
         employee_id: employee.id, position_id: positionIdParam(position) ?? null,
         year, month, kind,
         amount: String(amt), reason: reason.trim(),
+        funding_company_id:
+          canFund && fundingOpen && fundingCompanyId !== '' ? fundingCompanyId : null,
       });
       setAmount('');
       setReason('');
+      setFundingOpen(false);
+      setFundingCompanyId('');
       toast.success('Добавлено');
       onChanged();
     } catch (err: any) {
@@ -3801,6 +3821,15 @@ function AdjustmentsModal({
                     {a.kind === 'advance' ? '−' : '+'}{fmtMoney(a.amount)}
                   </span>
                   <span className="flex-1 text-gray-600 truncate" title={a.reason}>{a.reason}</span>
+                  {/* Источник финансирования — сумма ушла на затраты этого юрлица */}
+                  {a.funding_company_name && (
+                    <span
+                      className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700"
+                      title={`Источник финансирования: ${a.funding_company_name}. Сумма отнесена на затраты этого юрлица целиком.`}
+                    >
+                      🎯 {a.funding_company_name}
+                    </span>
+                  )}
                   <button onClick={() => remove(a.id)} disabled={busy} className="text-gray-400 hover:text-red-600 text-base leading-none">×</button>
                 </div>
               ))}
@@ -3828,6 +3857,50 @@ function AdjustmentsModal({
               placeholder="Обоснование (обязательно)"
               className="border border-gray-300 rounded px-2 py-1.5 text-sm"
             />
+
+            {/* Источник финансирования: свёрнут по умолчанию (нужен не всегда
+                и загромождает форму), раскрывается кнопкой и убирается назад */}
+            {canFund && !fundingOpen && (
+              <button
+                type="button"
+                onClick={() => setFundingOpen(true)}
+                className="self-start text-xs text-blue-600 hover:text-blue-800 hover:underline"
+              >
+                + Указать источник финансирования
+              </button>
+            )}
+            {canFund && fundingOpen && (
+              <div className="rounded border border-violet-200 bg-violet-50/60 p-2">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-violet-700">
+                    Источник финансирования
+                  </span>
+                  <button
+                    type="button"
+                    title="Убрать источник — начисление разнесётся обычным каскадом"
+                    onClick={() => { setFundingOpen(false); setFundingCompanyId(''); }}
+                    className="text-violet-400 hover:text-violet-700 text-base leading-none"
+                  >
+                    ×
+                  </button>
+                </div>
+                <select
+                  value={fundingCompanyId}
+                  onChange={(e) => setFundingCompanyId(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                >
+                  <option value="">— не указан —</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>{companyLabel(c)}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-[11px] text-gray-500">
+                  Сумма будет отнесена на затраты выбранной компании целиком;
+                  остальное начисленное разнесётся обычным распределением.
+                </p>
+              </div>
+            )}
+
             <button
               onClick={add}
               disabled={busy}
