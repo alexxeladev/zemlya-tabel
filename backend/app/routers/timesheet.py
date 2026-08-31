@@ -65,7 +65,11 @@ from app.services.applications import (
     department_applications_state,
     set_department_applications,
 )
-from app.services.company_order import company_order_by, order_index
+from app.services.company_order import (
+    company_display_name,
+    company_order_by,
+    order_index,
+)
 from app.services.finance_masking import (
     mask_employees,
     mask_payroll_summary,
@@ -208,6 +212,15 @@ def _require_timesheet_role(actor: Employee) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
 
 
+def _funding_company_names(db: Session, rows) -> dict[int, str]:
+    """{company_id: отображаемое имя} для источников финансирования начислений."""
+    ids = {r.funding_company_id for r in rows if r.funding_company_id}
+    if not ids:
+        return {}
+    companies = db.query(Company).filter(Company.id.in_(ids)).all()
+    return {c.id: company_display_name(c) for c in companies}
+
+
 def _load_adjustments(
     db: Session, employees: list[Employee], year: int, month: int
 ) -> list[AdjustmentRead]:
@@ -224,6 +237,9 @@ def _load_adjustments(
         .order_by(EmployeeAdjustment.created_at)
         .all()
     )
+    # Имя юрлица-источника (task_funding_source) — чтобы список премий
+    # подписывался без отдельного запроса справочника на фронте.
+    funding_names = _funding_company_names(db, rows)
     return [
         AdjustmentRead(
             id=r.id,
@@ -234,6 +250,8 @@ def _load_adjustments(
             kind=r.kind,
             amount=r.amount,
             reason=r.reason,
+            funding_company_id=r.funding_company_id,
+            funding_company_name=funding_names.get(r.funding_company_id),
             created_by_id=r.created_by_id,
             created_at=str(r.created_at) if r.created_at else None,
         )
@@ -1126,6 +1144,23 @@ def create_adjustment(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year")
 
     position = target.position_by_id(payload.position_id)
+
+    # Источник финансирования (task_funding_source): только у премии и KPI —
+    # аванс это удержание, затрат юрлица за ним нет.
+    funding_company = None
+    if payload.funding_company_id is not None:
+        if payload.kind == "advance":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Источник финансирования указывается только у премии и KPI",
+            )
+        funding_company = db.get(Company, payload.funding_company_id)
+        if funding_company is None or not funding_company.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Компания-источник финансирования не найдена",
+            )
+
     adj = EmployeeAdjustment(
         employee_id=payload.employee_id,
         position_id=position.id if position else None,
@@ -1134,6 +1169,7 @@ def create_adjustment(
         kind=payload.kind,
         amount=payload.amount,
         reason=payload.reason,
+        funding_company_id=funding_company.id if funding_company else None,
         created_by_id=actor.id,
     )
     db.add(adj)
@@ -1141,7 +1177,8 @@ def create_adjustment(
     log_action(
         db, actor, "employee_adjustment", adj.id, "create",
         after={"employee_id": adj.employee_id, "year": adj.year, "month": adj.month,
-               "kind": adj.kind, "amount": str(adj.amount), "reason": adj.reason},
+               "kind": adj.kind, "amount": str(adj.amount), "reason": adj.reason,
+               "funding_company_id": adj.funding_company_id},
     )
     db.commit()
     db.refresh(adj)
@@ -1149,6 +1186,10 @@ def create_adjustment(
         id=adj.id, employee_id=adj.employee_id, position_id=adj.position_id,
         year=adj.year, month=adj.month,
         kind=adj.kind, amount=adj.amount, reason=adj.reason,
+        funding_company_id=adj.funding_company_id,
+        funding_company_name=(
+            company_display_name(funding_company) if funding_company else None
+        ),
         created_by_id=adj.created_by_id, created_at=str(adj.created_at) if adj.created_at else None,
     )
 

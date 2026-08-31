@@ -19,6 +19,10 @@ class AdjustmentCreate(BaseModel):
     kind: AdjustmentKindType
     amount: Decimal
     reason: str
+    # Источник финансирования (task_funding_source): юрлицо, оплачивающее эту
+    # премию/KPI. Необязателен — без него распределение идёт общим каскадом.
+    # У аванса источника нет (это удержание) — роутер отвергает такую попытку.
+    funding_company_id: Optional[int] = None
 
     @field_validator("amount")
     @classmethod
@@ -53,6 +57,10 @@ class AdjustmentRead(BaseModel):
     kind: AdjustmentKindType
     amount: Decimal
     reason: str
+    # Источник финансирования (task_funding_source); None — обычный каскад.
+    # Имя юрлица идёт рядом, чтобы список премий подписывался без справочника.
+    funding_company_id: Optional[int] = None
+    funding_company_name: Optional[str] = None
     created_by_id: Optional[int] = None
     created_at: Optional[str] = None
 
