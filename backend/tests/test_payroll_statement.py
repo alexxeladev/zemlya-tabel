@@ -747,3 +747,102 @@ class TestScreenMatchesExcel:
         }
         assert excel == screen
         assert sum(excel.values()) == Decimal("350000")
+
+
+# ── Юрлицо строки для фильтра компании ────────────────────────────────────────
+
+class TestStatementRowCompanyRef:
+    """Ведомость обязана отдавать отдел строки и его ГОЛОВНУЮ компанию.
+
+    По ним фильтр юрлица отбирает строки — тем же справочным правилом, что в
+    табеле (юрлицо рабочего места = головная компания его отдела; у места без
+    отдела — компания самой позиции, она же `main_company_id`). Раньше фильтр
+    отбирал по долям распределения, и человек попадал в ведомость юрлица,
+    которое ему ничего не платит.
+
+    Без этих полей фильтр молча вернётся к «показываем всех».
+    """
+
+    def test_row_carries_department_and_its_head_company(
+        self, client: TestClient, admin, worker, companies, dept, schedule,
+        calendar, db_session,
+    ):
+        dept.head_company_id = companies[1].id          # отдел числится в ЗМО
+        db_session.commit()
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        assert r.status_code == 200
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+
+        assert row["department_id"] == dept.id
+        assert row["department_head_company_id"] == companies[1].id
+
+    def test_head_company_wins_over_position_company(
+        self, client: TestClient, admin, worker, companies, dept, schedule,
+        calendar, db_session,
+    ):
+        """Компания карточки и компания отдела расходятся сплошь и рядом.
+
+        Фильтр берёт отдел; компания позиции — запасной вариант для мест без
+        отдела. Обе приходят, и перепутать их местами нельзя.
+        """
+        dept.head_company_id = companies[1].id          # отдел — ЗМО
+        db_session.commit()                             # карточка — Комфорт
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+
+        assert row["department_head_company_id"] == companies[1].id
+        assert row["main_company_id"] == companies[0].id
+
+    def test_distribution_does_not_change_row_company(
+        self, client: TestClient, admin, worker, companies, dept, schedule,
+        calendar, db_session,
+    ):
+        """Пример из задачи: числится в ЗМО, 50% затрат разнесено на Комфорт.
+
+        Юрлицо строки остаётся ЗМО — по долям распределения человека в чужую
+        ведомость больше не затащить. Само распределение при этом на месте:
+        это отдельная аналитика внутри строки, её не трогали.
+        """
+        dept.head_company_id = companies[1].id
+        db_session.commit()
+        _full_norm_entries(db_session, worker.id, companies[0].id)
+
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+            {"company_id": companies[1].id, "percent": "50"},
+            {"company_id": companies[0].id, "percent": "50"},
+        ]}, headers=_h(client, token))
+
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+
+        assert row["department_head_company_id"] == companies[1].id
+        amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
+        assert amounts[companies[0].id] > 0      # затраты на Комфорт никуда не делись
+        assert amounts[companies[1].id] > 0
+
+    def test_employee_without_department(
+        self, client: TestClient, admin, companies, schedule, calendar, db_session,
+    ):
+        """Место без отдела: отдела нет, юрлицо берётся из компании позиции."""
+        emp = Employee(full_name="Без отдела", tab_number="N-1", is_active=True,
+                       rate=Decimal("80000"), schedule_id=schedule.id,
+                       default_company_id=companies[2].id, department_id=None)
+        db_session.add(emp)
+        db_session.commit()
+        db_session.refresh(emp)
+        _full_norm_entries(db_session, emp.id, companies[2].id)
+
+        token = get_token(client, "stmtadmin@example.com", "admin123")
+        r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
+        row = next(x for x in r.json()["rows"] if x["employee_id"] == emp.id)
+
+        assert row["department_id"] is None
+        assert row["department_head_company_id"] is None
+        assert row["main_company_id"] == companies[2].id

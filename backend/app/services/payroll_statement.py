@@ -965,6 +965,11 @@ def build_payroll_statement(
             department_name=(
                 position.department.name if position and position.department else None
             ),
+            department_id=(position.department_id if position else None),
+            department_head_company_id=(
+                position.department.head_company_id
+                if position and position.department else None
+            ),
             # Должность — название рабочего места; у совместителя строки
             # различаются именно им.
             position=(position.display_title if position else (emp.position if emp else None)),

@@ -9,6 +9,11 @@ import { apiClient } from '../../api/client'
 import { formatHours, formatMoney, payoutRoundingHint } from '../../utils/money'
 import { distributeToThousands } from '../../utils/distribution'
 import { companyLabel } from '../../utils/companies'
+import {
+  departmentsForCompany,
+  departmentChoiceIsStale,
+  statementRowInCompany,
+} from '../../utils/departments'
 import { usePeriodStore } from '../../store/period'
 import { usePersistentState } from '../../hooks/usePersistentState'
 import { UI_KEYS } from '../../utils/persist'
@@ -184,6 +189,23 @@ export function PayrollPage() {
     apiClient.get<Department[]>('/api/departments').then((r) => setDepartments(r.data)).catch(() => {})
   }, [])
 
+  // Отделы, предлагаемые к выбору: при выбранном юрлице — только его отделы
+  // (головная компания отдела, как в дереве оргструктуры). Правило общее с
+  // табелем — `utils/departments`, тем же правилом отбираются и строки ниже.
+  const selectableDepartments = useMemo(
+    () => departmentsForCompany(departments, companyFilter),
+    [departments, companyFilter],
+  )
+
+  // Выбранный отдел не принадлежит выбранному юрлицу — возвращаемся ко «всем
+  // отделам»: иначе в фильтре остаётся невалидное значение и заведомо пустая
+  // выдача. Пустой справочник сбросом не считается — он грузится отдельным
+  // запросом, а фильтры восстановлены из localStorage.
+  useEffect(() => {
+    if (departmentChoiceIsStale(departments, companyFilter, departmentId)) setDepartmentId(undefined)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [departments, companyFilter, departmentId])
+
   const reload = () => {
     setLoading(true)
     timesheetApi.getStatement(year, month, departmentId)
@@ -319,7 +341,15 @@ export function PayrollPage() {
 
   const companies = data?.companies ?? []
 
-  // Клиентские фильтры: ФИО / таб.№ (поиск) и компания (где у сотрудника есть доля).
+  // Клиентские фильтры: ФИО / таб.№ (поиск) и компания.
+  //
+  // Компания берётся из КАРТОЧКИ рабочего места (головная компания его отдела) —
+  // ровно то же правило, что в табеле, общий код в `utils/departments`. По долям
+  // распределения отбирать нельзя: ведомость — документ на выплату ЛЮДЯМ, в ней
+  // должны стоять те, кто в компании ЧИСЛИТСЯ. Иванов из «Земли МО», у которого
+  // 50% затрат разнесено на «Комфорт», под фильтром «Комфорт» появляться не
+  // должен — «Комфорт» ему ничего не платит. Само распределение затрат остаётся
+  // на месте: это колонки ВНУТРИ строки, отдельная аналитика.
   const visibleRows = useMemo(() => {
     const rows = data?.rows ?? []
     const q = query.trim().toLowerCase()
@@ -328,11 +358,7 @@ export function PayrollPage() {
         const hay = `${r.employee_name} ${r.tab_number ?? ''}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
-      if (companyFilter !== undefined) {
-        const hasShare = r.distribution.some((d) => d.company_id === companyFilter && num(d.percent) > 0)
-        if (!hasShare && r.main_company_id !== companyFilter) return false
-      }
-      return true
+      return statementRowInCompany(r, companyFilter)
     })
   }, [data, query, companyFilter])
 
@@ -416,7 +442,7 @@ export function PayrollPage() {
               className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
             >
               <option value="">{isManager ? 'Все мои отделы' : 'Все отделы'}</option>
-              {departments.map((d) => (
+              {selectableDepartments.map((d) => (
                 <option key={d.id} value={d.id}>{d.name}</option>
               ))}
             </select>

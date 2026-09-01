@@ -235,6 +235,10 @@ export interface StatementRow {
   main_company_id: number | null
   main_company_name: string | null
   department_name: string | null
+  /** отдел строки и его головная компания — по ним фильтр юрлица отбирает
+   *  строки (то же правило, что в табеле); в деньгах не участвуют */
+  department_id?: number | null
+  department_head_company_id?: number | null
   position: string | null
   schedule_name: string | null
   /** у посменного здесь условный оклад = ставка × норма смен */

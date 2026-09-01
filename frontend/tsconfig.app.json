@@ -21,5 +21,7 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* тесты гоняются в Node (node:test), в бандл не входят — см. tsconfig.node.json */
+  "exclude": ["src/**/*.test.ts"]
 }
