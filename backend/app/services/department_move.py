@@ -45,10 +45,12 @@ from app.models.company_shares import (
 from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
+from app.models.reference_changes import SOURCE_BULK
 from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
 from app.services.distribution import distribute
 from app.services.payroll_statement import build_payroll_statement
+from app.services.reference_audit import audit_operation
 from app.services.timesheet import get_month_entries
 
 _ZERO = Decimal("0")
@@ -437,6 +439,20 @@ def move_department(
     if dept.head_company_id == target_company.id:
         raise MoveError("Отдел уже числится в этой компании")
 
+    # Журнал изменений: всё, что тронет перенос — головная компания отдела и
+    # юрлицо каждого рабочего места, — уходит в журнал ОДНОЙ операцией с общим
+    # id, иначе сотня одинаковых строк выглядит как сотня независимых правок и
+    # разобрать «что сделал этот перенос» невозможно.
+    with audit_operation(db, SOURCE_BULK):
+        return _move_department(db, dept, target_company, actor)
+
+
+def _move_department(
+    db: Session,
+    dept: Department,
+    target_company: Company,
+    actor: Employee,
+) -> MoveResult:
     positions = _target_positions(db, dept.id)
     employees = _employees_of(db, positions)
     moved_ids = {p.id for p in positions}

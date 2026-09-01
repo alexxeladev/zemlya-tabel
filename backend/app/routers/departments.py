@@ -36,6 +36,11 @@ from app.services.org_access import (
     is_department_scoped,
     managed_department_ids,
 )
+from app.services.reference_audit import (
+    DEPARTMENT_SHARES_ENTITY,
+    format_share_rows,
+    record_change,
+)
 
 router = APIRouter()
 
@@ -333,6 +338,16 @@ def set_department_shares(
         code = status.HTTP_404_NOT_FOUND if e.not_found else status.HTTP_422_UNPROCESSABLE_ENTITY
         raise HTTPException(status_code=code, detail=str(e)) from e
 
+    # Журнал изменений (task_audit_log): набор переписывается целиком Core-DELETE
+    # мимо ORM, события сессии его не видят — снимок «до» снимаем ДО удаления и
+    # пишем одной записью «было → стало».
+    shares_before = format_share_rows(
+        db,
+        [(r.company_id, r.percent) for r in db.query(DepartmentCompanyShare).filter(
+            DepartmentCompanyShare.department_id == dept_id
+        ).all()],
+    )
+
     db.query(DepartmentCompanyShare).filter(
         DepartmentCompanyShare.department_id == dept_id
     ).delete(synchronize_session=False)
@@ -342,6 +357,15 @@ def set_department_shares(
         ))
     log_action(db, actor, "department_company_shares", dept_id, "set",
                after={s.company_id: str(s.percent) for s in positive})
+    record_change(
+        db,
+        entity_type=DEPARTMENT_SHARES_ENTITY,
+        entity_id=dept_id,
+        entity_label=dept.name,
+        field="shares",
+        old_value=shares_before,
+        new_value=format_share_rows(db, [(s.company_id, s.percent) for s in positive]),
+    )
     db.commit()
     return _shares_response(db, dept_id)
 

@@ -31,11 +31,13 @@ from app.core.audit import log_action
 from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
+from app.models.reference_changes import SOURCE_IMPORT
 from app.models.schedules import Schedule
 from app.schemas.employee import EmployeeCreate
 from app.schemas.employee_import import EmployeeImportResult, ImportRowRead
 from app.services.company_order import company_order_by
 from app.services.employees import build_employee
+from app.services.reference_audit import audit_operation
 
 # Строка-пример помечается этим текстом в первой колонке; парсер такие строки
 # пропускает (пользователь может её и удалить — тогда данные идут со 2-й строки).
@@ -580,6 +582,26 @@ def import_valid_rows(
     останется половины сотрудников.
     """
     created = 0
+    # Журнал изменений: весь импорт — ОДНА операция с общим id и источником
+    # «импорт из Excel», иначе полсотни заведённых карточек в ленте неотличимы
+    # от полусотни ручных правок.
+    with audit_operation(db, SOURCE_IMPORT):
+        created = _create_valid_rows(db, result, actor)
+
+    log_action(
+        db, actor, "employee", None, "employees_imported",
+        after={"created": created, "skipped": result.error_count, "total": result.total},
+    )
+    db.commit()
+
+    result.confirmed = True
+    result.created_count = created
+    result.skipped_count = result.error_count
+    return result
+
+
+def _create_valid_rows(db: Session, result: EmployeeImportResult, actor: Employee) -> int:
+    created = 0
     for row in result.rows:
         if not row.is_valid:
             continue
@@ -620,14 +642,4 @@ def import_valid_rows(
         row.created = True
         row.employee_id = emp.id
         created += 1
-
-    log_action(
-        db, actor, "employee", None, "employees_imported",
-        after={"created": created, "skipped": result.error_count, "total": result.total},
-    )
-    db.commit()
-
-    result.confirmed = True
-    result.created_count = created
-    result.skipped_count = result.error_count
-    return result
+    return created
