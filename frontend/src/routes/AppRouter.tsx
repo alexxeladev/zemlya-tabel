@@ -3,6 +3,7 @@ import { AppLayout } from '../layouts/AppLayout'
 import { ChangePasswordPage } from '../pages/ChangePasswordPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { LoginPage } from '../pages/LoginPage'
+import { AuditLogPage } from '../pages/admin/AuditLogPage'
 import { OrgStructurePage } from '../pages/admin/OrgStructurePage'
 import { SchedulesPage } from '../pages/admin/SchedulesPage'
 import { CalendarPage } from '../pages/admin/CalendarPage'
@@ -52,6 +53,16 @@ export function AppRouter() {
               element={
                 <RoleRoute allow={['admin']}>
                   <OrgStructurePage />
+                </RoleRoute>
+              }
+            />
+            {/* Журнал изменений справочников (task_audit_log): показывает оклады,
+                роли и доступы по всей компании — поэтому только admin. */}
+            <Route
+              path="/admin/audit"
+              element={
+                <RoleRoute allow={['admin']}>
+                  <AuditLogPage />
                 </RoleRoute>
               }
             />
