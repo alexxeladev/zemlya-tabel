@@ -50,6 +50,9 @@ export interface CompanyPayroll {
 }
 
 export interface PeriodCounts {
+  // Всего отделов за период — только те, где есть сотрудники: пустой отдел
+  // в workflow не участвует. Для одного месяца = closed + pending_review + draft.
+  departments: number
   closed: number
   pending_review: number
   draft: number
