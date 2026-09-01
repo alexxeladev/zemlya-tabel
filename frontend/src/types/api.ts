@@ -279,6 +279,14 @@ export interface StatementRow {
   is_overridden: boolean
   is_auto_distributed: boolean
   distribution_source: DistributionSource
+  /**
+   * Подпись количественного показателя отдела («Заявки», «АРМ»), если строка
+   * относится к отделу, делящемуся по нему, и показатель за месяц задан.
+   * Для ведомости это признак «правка процентов заблокирована»: он стоит и у
+   * строк, ушедших на распределение из карточки (task_card_priority) —
+   * исключения задаются только в карточке сотрудника.
+   */
+  quantity_metric_name: string | null
   /** пояснение: отдел «по заявкам», но заявок за месяц нет → каскад */
   distribution_note: string | null
   /**

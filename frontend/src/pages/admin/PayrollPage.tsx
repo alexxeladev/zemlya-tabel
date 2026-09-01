@@ -63,6 +63,17 @@ function isQuantityRow(row: StatementRow): boolean {
   return row.distribution_source === 'quantity'
 }
 
+/**
+ * Строка ОТДЕЛА, делящегося по количественному показателю, — независимо от
+ * того, чем она в итоге распределена. У части рабочих мест распределение
+ * задано в карточке и показатель их не касается (task_card_priority), но
+ * ручная правка процентов в ведомости заблокирована для ВСЕГО такого отдела:
+ * исключения задаются только в карточке сотрудника.
+ */
+function isQuantityDeptRow(row: StatementRow): boolean {
+  return !!row.quantity_metric_name
+}
+
 /** Процент компании из показателя — плейсхолдер, править нельзя. */
 function quantityPct(row: StatementRow, companyId: number): string {
   const found = row.distribution.find((d) => d.company_id === companyId)
@@ -216,7 +227,7 @@ export function PayrollPage() {
   ;(data?.companies ?? []).forEach((c, i) => { companyOrder[c.id] = i })
 
   const rowAmounts = (row: StatementRow): Record<number, number> => {
-    if (isAutoRow(row) || isQuantityRow(row)) {
+    if (isAutoRow(row) || isQuantityDeptRow(row)) {
       const m: Record<number, number> = {}
       for (const d of row.distribution) m[d.company_id] = num(d.amount)
       return m
@@ -482,6 +493,9 @@ export function PayrollPage() {
                 const amounts = rowAmounts(row)
                 // Ввод % вручную (ещё не сохранён) — это уже правка на месяц.
                 const byQuantity = isQuantityRow(row)
+                // Правка заблокирована у всего отдела с показателем, включая
+                // строки, ушедшие на распределение из карточки.
+                const lockedByQuantity = isQuantityDeptRow(row)
                 const sourceKey: DistributionSource =
                   auto ? 'hours' : (pctSum > 0 && row.distribution_source === 'hours'
                     ? 'month' : row.distribution_source)
@@ -636,7 +650,7 @@ export function PayrollPage() {
                               min={0}
                               max={100}
                               step="0.1"
-                              disabled={!canEdit || byQuantity}
+                              disabled={!canEdit || lockedByQuantity}
                               value={byQuantity ? '' : pct}
                               onChange={(ev) => setPercent(key, c.id, ev.target.value)}
                               className={`w-12 rounded border px-1 py-0.5 text-right text-[11px] ${pctWarn ? 'border-amber-400 bg-amber-50' : 'border-gray-300'} ${autoEntry ? 'border-dashed text-gray-400 placeholder:text-gray-400' : ''} disabled:bg-gray-100`}
@@ -644,7 +658,9 @@ export function PayrollPage() {
                               title={
                                 byQuantity
                                   ? 'Процент из количественного показателя отдела — правится в его табеле'
-                                  : autoEntry ? 'Авто по часам — введите % чтобы задать вручную' : undefined
+                                  : lockedByQuantity
+                                    ? 'Процент из карточки сотрудника — правится в его карточке'
+                                    : autoEntry ? 'Авто по часам — введите % чтобы задать вручную' : undefined
                               }
                             />
                             <span className="text-gray-400">%</span>
@@ -674,7 +690,7 @@ export function PayrollPage() {
                       {pctWarn && <div className="text-[10px] text-amber-600">Σ%={pctSum}</div>}
                     </td>
                     <td className="px-2 py-1.5 text-center whitespace-nowrap">
-                      {canEdit && !byQuantity && (
+                      {canEdit && !lockedByQuantity && (
                         <div className="flex items-center justify-center gap-1">
                           <button
                             disabled={savingKey === key}
@@ -699,6 +715,19 @@ export function PayrollPage() {
                       <div className={`mt-0.5 text-[9px] ${SOURCE_STYLE[sourceKey]}`}>
                         {SOURCE_LABEL[sourceKey]}
                       </div>
+                      {/* Почему проценты не правятся: отдел делится по своему
+                          показателю, а исключения задаются в карточке
+                          (task_card_priority) */}
+                      {lockedByQuantity && (
+                        <div
+                          className="mt-0.5 text-[9px] leading-tight text-gray-500"
+                          title={`Распределение по показателю «${row.quantity_metric_name}»; индивидуальные исключения задаются в карточке сотрудника`}
+                        >
+                          распределение по «{row.quantity_metric_name}»;
+                          <br />
+                          исключения — в карточке сотрудника
+                        </div>
+                      )}
                       {/* Отдел «по заявкам», но заявок за месяц нет → каскад */}
                       {row.distribution_note && (
                         <div className="mt-0.5 text-[9px] text-amber-600" title={row.distribution_note}>
