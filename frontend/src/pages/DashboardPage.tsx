@@ -10,11 +10,11 @@ import {
   Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart,
   Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { getDashboard, type DashboardData, type PeriodStatusRow } from '../api/dashboard'
+import { getDashboard, type DashboardData } from '../api/dashboard'
 import { useAuthStore } from '../store/auth'
 import { toast } from '../store/toasts'
 import { formatHours, formatMoney } from '../utils/money'
-import { CHART, companyColorByIndex, PERIOD_STATUS } from '../utils/colors'
+import { CHART, companyColorByIndex } from '../utils/colors'
 import { usePersistentState } from '../hooks/usePersistentState'
 import { UI_KEYS, isMonthRange } from '../utils/persist'
 
@@ -207,16 +207,6 @@ function ChartCard({ title, children }: { title: string; children: React.ReactNo
   )
 }
 
-function StatusBadge({ status, overdue }: { status: PeriodStatusRow['status']; overdue?: boolean }) {
-  const s = PERIOD_STATUS[status]
-  return (
-    <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${overdue ? 'bg-red-100 text-red-700' : s.badge}`}>
-      {s.label}
-      {overdue ? ' · просрочен' : ''}
-    </span>
-  )
-}
-
 // ── Страница ──────────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
@@ -298,11 +288,11 @@ export function DashboardPage() {
             <>
               {role !== 'accountant' && <HoursBlock data={data} onDeptClick={gotoTimesheet} />}
               {data.periods && role === 'accountant' && (
-                <PeriodsBlockView data={data} onRowClick={gotoTimesheet} />
+                <PeriodsBlockView data={data} />
               )}
               {data.payroll && <PayrollBlock data={data} />}
               {data.periods && role !== 'accountant' && (
-                <PeriodsBlockView data={data} onRowClick={gotoTimesheet} />
+                <PeriodsBlockView data={data} />
               )}
               <TrendBlock data={data} />
             </>
@@ -476,12 +466,16 @@ function PayrollBlock({ data }: { data: DashboardData }) {
 
 // ── Блок 3: статусы периодов ──────────────────────────────────────────────────
 
-function PeriodsBlockView({ data, onRowClick }: {
-  data: DashboardData
-  onRowClick: (deptId: number | null, y?: number, m?: number) => void
-}) {
+/** Сводка по периодам: только счётчики.
+ *
+ * Таблица строк «отдел / период / статус / открыть табель» снята: при двух
+ * десятках отделов она разрасталась на пол-экрана красных «просрочен» и ничего
+ * к цифрам не добавляла. Списком периодов остаются «Задачи» (там по ним ещё и
+ * действуют) и сам табель. Строки (`rows` / `overdue_rows`) бэк по-прежнему
+ * отдаёт — из них считаются эти счётчики.
+ */
+function PeriodsBlockView({ data }: { data: DashboardData }) {
   const pb = data.periods!
-  const allRows = [...pb.overdue_rows, ...pb.rows]
 
   return (
     <Section
@@ -491,44 +485,16 @@ function PeriodsBlockView({ data, onRowClick }: {
           : 'Статусы периодов'
       }
     >
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+        <KpiCard label="Всего отделов" value={String(pb.counts.departments)}
+                 hint={data.months_count > 1
+                   ? 'разных отделов с сотрудниками за период'
+                   : 'только отделы с сотрудниками'} />
         <KpiCard label="Закрыто" value={String(pb.counts.closed)} accent="text-green-700" />
         <KpiCard label="На проверке" value={String(pb.counts.pending_review)} accent="text-yellow-700" />
         <KpiCard label="В черновике" value={String(pb.counts.draft)} />
         <KpiCard label="Просрочено" value={String(pb.counts.overdue)}
                  accent={pb.counts.overdue > 0 ? 'text-red-600' : 'text-gray-400'} />
-      </div>
-
-      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-200 bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
-              <th className="px-4 py-2">Отдел</th>
-              <th className="px-4 py-2">Период</th>
-              <th className="px-4 py-2">Статус</th>
-              <th className="px-4 py-2">Отправил / закрыл</th>
-              <th className="px-4 py-2 text-right">Действие</th>
-            </tr>
-          </thead>
-          <tbody>
-            {allRows.map((r) => (
-              <tr
-                key={`${r.department_id ?? 'null'}-${r.year}-${r.month}`}
-                onClick={() => onRowClick(r.department_id, r.year, r.month)}
-                className={`cursor-pointer border-b border-gray-100 last:border-0 hover:bg-blue-50/40 ${r.is_overdue ? 'bg-red-50/60' : ''}`}
-              >
-                <td className="px-4 py-2 font-medium text-gray-900">{r.department_name}</td>
-                <td className="px-4 py-2 text-gray-600">{MONTH_SHORT_RU[r.month - 1]} {r.year}</td>
-                <td className="px-4 py-2"><StatusBadge status={r.status} overdue={r.is_overdue} /></td>
-                <td className="px-4 py-2 text-gray-600">{r.closed_by_name ?? r.submitted_by_name ?? '—'}</td>
-                <td className="px-4 py-2 text-right text-xs text-blue-600">Открыть табель →</td>
-              </tr>
-            ))}
-            {allRows.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-6 text-center text-gray-400">Нет отделов</td></tr>
-            )}
-          </tbody>
-        </table>
       </div>
     </Section>
   )
