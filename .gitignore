@@ -57,3 +57,16 @@ dist/
 # простым удалением не уходят.
 task_*.md
 up.md
+
+# Документы для внешних читателей и рабочие черновики — держим локально.
+# Пара .md (источник правды) + .docx (то, что отдают заказчику и подрядчику),
+# см. «Документы в Word» в CLAUDE.md; генератор и HTML-макеты туда же.
+PROJECT_CONTEXT.md
+docs/API_Contract_1C.md
+docs/API_Contract_1C.docx
+docs/System_Functional_Spec.md
+docs/System_Functional_Spec.docx
+docs/TZ_1C_integration.md
+docs/TZ_1C_integration.docx
+docs/design/
+scripts/
