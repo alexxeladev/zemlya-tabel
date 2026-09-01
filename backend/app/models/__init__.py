@@ -5,8 +5,8 @@ from app.models.company_shares import (
     DepartmentCompanyShare,
     EmployeeCompanyShare,
 )
-from app.models.department_quantities import DepartmentQuantity
 from app.models.department_managers import department_managers
+from app.models.department_quantities import DepartmentQuantity
 from app.models.departments import Department
 from app.models.employee_absences import (
     ABSENCE_CODES,
@@ -26,6 +26,11 @@ from app.models.positions import (
     EmployeePosition,
 )
 from app.models.production_calendars import ProductionCalendar
+from app.models.reference_changes import (
+    SOURCE_LABELS,
+    SOURCES,
+    ReferenceChange,
+)
 from app.models.row_checks import RowCheck
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
@@ -55,6 +60,9 @@ __all__ = [
     "PAY_TYPE_PER_SHIFT",
     "PAY_TYPE_SALARY",
     "ProductionCalendar",
+    "ReferenceChange",
+    "SOURCES",
+    "SOURCE_LABELS",
     "RowCheck",
     "Schedule",
     "TimesheetEntry",
