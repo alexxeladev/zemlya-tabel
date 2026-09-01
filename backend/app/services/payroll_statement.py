@@ -508,6 +508,36 @@ def _quantity_context(
     return flagged, load_quantity_counts(db, flagged, year, month)
 
 
+def resolve_quantity_shares(
+    position_id: int | None,
+    qty_counts: dict[int, int],
+    employee_shares: dict[int | None, dict[int, Decimal]],
+) -> tuple[dict[int, Decimal], dict[int, Decimal], str]:
+    """Распределение рабочего места в отделе «по количественному показателю»:
+    КАРТОЧКА ПОЗИЦИИ перебивает показатель (task_card_priority).
+
+    Возвращает (проценты для показа, веса для сумм, источник).
+
+    Задано в карточке — показатель для ЭТОЙ позиции не участвует ВООБЩЕ: это
+    полная замена, а не смешивание (складывать карточку с заявками нельзя).
+    «Задано» = есть хотя бы одна доля с положительным процентом; набор всегда
+    даёт 100% — частичный в карточку не сохранить (`validate_shares`).
+
+    Исключение решается ПО ПОЗИЦИИ, а не по человеку: у совместителя одно
+    рабочее место может уйти на карточку, а второе остаться на показателе.
+    Остальных сотрудников отдела чужая карточка не касается — проценты
+    показателя считаются от количеств отдела, а не от числа делящихся по ним.
+
+    Выше карточки в таком отделе ничего нет: месячная правка в ведомости для
+    этих отделов заблокирована, а дефолт отдела показатель заменяет — иначе
+    настройка отдела спорила бы с его же показателем.
+    """
+    card = employee_shares.get(position_id) or {}
+    if sum(card.values(), _ZERO) > _ZERO:
+        return card, card, SOURCE_EMPLOYEE
+    return quantity_percents(qty_counts), quantity_weights(qty_counts), SOURCE_QUANTITY
+
+
 def _exact_shares(total: Decimal, weights: dict[int, Decimal]) -> dict[int, Decimal]:
     """Точные (НЕокруглённые) доли по весам. Округляется потом весь набор сразу.
 
@@ -642,6 +672,9 @@ def build_quantity_distribution(
     targeted_funding = load_targeted_funding(
         db, emp_ids, year, month, primary_position_ids
     )
+    # Карточка позиции перебивает показатель (task_card_priority) — здесь тоже:
+    # блок в табеле обязан показывать те же суммы, что /statement.
+    employee_shares = load_employee_shares(db, emp_ids, primary_position_ids)
 
     rows: list[QuantityDistributionRow] = []
     for p in summary.employees:
@@ -655,14 +688,15 @@ def build_quantity_distribution(
         targeted = build_targeted_funding(
             targeted_funding.get(p.employee_id, {}).get(p.position_id), base, {}
         )
+        _, weights, _ = resolve_quantity_shares(
+            p.position_id, counts, employee_shares
+        )
         rows.append(QuantityDistributionRow(
             employee_id=p.employee_id,
             position_id=p.position_id,
             department_id=position.department_id,
             base_amount=base,
-            amounts=finalize_distribution(
-                base, quantity_weights(counts), targeted, company_order
-            ),
+            amounts=finalize_distribution(base, weights, targeted, company_order),
         ))
     return rows
 
@@ -791,6 +825,7 @@ def build_payroll_statement(
         # флага молча обнулила бы распределение отдела.
         qty_counts = quantity_by_dept.get(position_dept_id) or {}
         distribution_note = None
+        quantity_metric_name = None
 
         # Целевые премии/KPI (task_funding_source) вычитаются из базы ДО каскада:
         # добавить их сверху распределённой базы значило бы посчитать эти деньги
@@ -802,13 +837,19 @@ def build_payroll_statement(
         )
 
         if qty_counts:
-            source = SOURCE_QUANTITY
             is_overridden = False
             is_auto = False
-            shares = quantity_percents(qty_counts)
-            # Веса — САМИ количества, а не округлённые проценты: доля компании =
-            # база × количество / Σколичеств точно (57000 × 45/104, а не × 43.27%).
-            weights = quantity_weights(qty_counts)
+            # Карточка ПОЗИЦИИ перебивает показатель целиком (task_card_priority);
+            # иначе — веса САМИ количества, а не округлённые проценты: доля
+            # компании = база × количество / Σколичеств точно (57000 × 45/104,
+            # а не × 43.27%).
+            shares, weights, source = resolve_quantity_shares(
+                p.position_id, qty_counts, employee_shares
+            )
+            # Правка процентов в ведомости для таких отделов заблокирована —
+            # и у строк, ушедших на карточку, тоже: исключения задаются только
+            # в карточке. Подпись показателя фронт берёт отсюда.
+            quantity_metric_name = quantity_metric_names.get(position_dept_id)
         else:
             shares, source = resolve_shares(
                 position_id=p.position_id,
@@ -938,6 +979,7 @@ def build_payroll_statement(
             is_overridden=is_overridden,
             is_auto_distributed=is_auto,
             distribution_source=source,
+            quantity_metric_name=quantity_metric_name,
             distribution_note=distribution_note,
             targeted_amounts=targeted.amounts,
             targeted_total=targeted.total,
