@@ -191,9 +191,12 @@ export interface QuantityDistributionRow {
   employee_id: number
   position_id: number | null
   department_id: number | null
+  /** База распределения — «Итого начислено» строки */
   base_amount: string
-  /** company_id → сумма; сумма значений ровно равна base_amount */
+  /** company_id → сумма, каждая кратна 1000 ₽ (округление ВНИЗ) */
   amounts: Record<number, string>
+  /** base_amount − Σ amounts, от 0 до 999 ₽: никому не приписано */
+  unallocated_remainder: string
 }
 
 export interface StatementCompanyRef {
@@ -273,7 +276,7 @@ export interface StatementRow {
   night_amount: string
   accrued_total: string
   deductions: string
-  net_payout: string        // округлено до ближайшей 1000 ₽
+  net_payout: string        // округлено до ближайшей 1000 ₽ (на распределение НЕ влияет)
   net_payout_exact: string
   rounding_tail: string
   is_overridden: boolean
@@ -301,6 +304,13 @@ export interface StatementRow {
   percent_sum: string
   distribution: StatementCompanyAmount[]
   distribution_total: string
+  /**
+   * «Итого начислено» − Σ распределения: суммы по юрлицам округляются ВНИЗ до
+   * 1000 ₽, поэтому остаётся 0…999 ₽. Никому не приписывается — иначе затраты
+   * юрлица оказались бы больше начисленного. Не путать с `rounding_tail`
+   * (округление ВЫПЛАТЫ, знак любой).
+   */
+  unallocated_remainder: string
   is_calculable: boolean
   note: string | null
 }
@@ -322,6 +332,8 @@ export interface PayrollStatement {
   total_net_payout: string
   total_net_payout_exact: string
   total_rounding_tail: string
+  /** Σ нераспределённых остатков строк (округление РАСПРЕДЕЛЕНИЯ вниз до 1000) */
+  total_unallocated_remainder: string
   distribution_totals: Record<number, string>
 }
 

@@ -90,20 +90,22 @@ export function splitEqually(
 }
 
 /**
- * Округление сумм распределения до ТЫСЯЧИ методом
+ * Округление сумм распределения ВНИЗ до ТЫСЯЧИ методом
  * «floor + раздача недостающих тысяч по наибольшим хвостам»
- * (task_it_arm_distribution ч.3).
+ * (task_it_arm_distribution ч.3, база исправлена в task_distribution_base_fix).
  *
  * Зеркало `distribute_largest_remainder` из backend/app/services/distribution.py.
  * Отличается от `distribute` не только шагом, но и способом добора: там остаток
  * целиком уходит основной компании, здесь недостающие тысячи раздаются по одной
  * тем, у кого больше отброшенный хвост.
  *
- * Округлять каждую долю независимо НЕЛЬЗЯ: на проверочном примере (57000 по 104
- * АРМ) это даёт 58000 — на тысячу больше, чем выплачено.
+ * Σ долей = floor(total / 1000) × 1000, то есть на 0…999 ₽ МЕНЬШЕ базы: разница —
+ * нераспределённый остаток (`unallocatedRemainder`), он не приписывается никому.
+ * Округлять каждую долю независимо (математически) НЕЛЬЗЯ: на проверочном
+ * примере (57000 по 104 АРМ) это даёт 58000 — лишнюю тысячу затрат из воздуха.
  *
  * Тай-брейк при равных хвостах — `order` (настроенный порядок юрлиц), затем id.
- * `total <= 0` (долг сотрудника) в тысячи не округляется — шаг рубль.
+ * `total <= 0` в тысячи не округляется — шаг рубль, остатка не остаётся.
  */
 export function distributeToThousands(
   total: number,
@@ -136,11 +138,25 @@ export function distributeToThousands(
       a - b,
   )
   const assigned = keys.reduce((s, k) => s + parts[k], 0)
-  const fullSteps = Math.floor((total - assigned) / step + 1e-9)
+  // Раздаём только ЦЕЛЫЕ шаги, помещающиеся в total целиком: доступно
+  // floor(total/step)×step − Σfloor-ов. Хвост меньше шага не получает никто.
+  const distributable = Math.floor(total / step + 1e-9) * step
+  const fullSteps = Math.round((distributable - assigned) / step)
   for (const k of ranked.slice(0, Math.max(0, fullSteps))) parts[k] += step
-  const residual = clean(total - keys.reduce((s, k) => s + parts[k], 0), 1)
-  if (residual !== 0) {
-    parts[fullSteps < ranked.length ? ranked[Math.max(0, fullSteps)] : ranked[0]] += residual
-  }
   return parts
+}
+
+/**
+ * Нераспределённый остаток = база − Σ разнесённого. От 0 до 999 ₽ (следствие
+ * округления ВНИЗ). Никому не приписывается: приписав, мы показали бы затраты
+ * юрлица больше начисленного.
+ *
+ * Не путать с «эффектом округления» выплаты (`rounding_tail`): тот про разницу
+ * между точной и округлённой ВЫПЛАТОЙ и бывает любого знака.
+ */
+export function unallocatedRemainder(
+  base: number,
+  amounts: Record<number, number>,
+): number {
+  return clean(base - Object.values(amounts).reduce((s, v) => s + v, 0), 1)
 }

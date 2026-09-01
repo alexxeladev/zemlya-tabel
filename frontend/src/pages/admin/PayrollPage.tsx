@@ -95,12 +95,19 @@ function targetedAmounts(row: StatementRow): Record<number, number> {
 }
 
 /**
- * БАЗА распределения — «К выплате» (округлённая), а не «Итого начислено»
- * (task_it_arm_distribution ч.2): по юрлицам разносится ровно то, что платим.
- * Зеркало `distribution_base` из services/payroll_statement.py.
+ * БАЗА распределения — «Итого начислено», и только оно
+ * (task_distribution_base_fix). Распределение отражает ЗАТРАТЫ компании, а они
+ * возникают при начислении: удержания (займ, аванс) их не уменьшают, округление
+ * «К выплате» на них не влияет. Зеркало `distribution_base` из
+ * services/payroll_statement.py.
  */
 function distributionBase(row: StatementRow): number {
-  return num(row.net_payout)
+  return num(row.accrued_total)
+}
+
+/** Сколько из базы вообще можно разнести круглыми тысячами (округление ВНИЗ). */
+function distributable(base: number): number {
+  return Math.floor(base / 1000) * 1000
 }
 
 /** База каскада = база распределения − целевые, но не меньше нуля. */
@@ -341,6 +348,7 @@ export function PayrollPage() {
       overtime: 0, base: 0, vacation: 0, sick: 0, vacationDays: 0, sickDays: 0,
       night: 0, premium: 0, kpi: 0, accrued: 0, deductions: 0, net: 0,
       dist: {} as Record<number, number>,
+      distTotal: 0, unallocated: 0,
     }
     for (const c of companies) acc.dist[c.id] = 0
     for (const row of visibleRows) {
@@ -357,9 +365,15 @@ export function PayrollPage() {
       acc.deductions += num(row.deductions)
       acc.net += num(row.net_payout)
       const amounts = rowAmounts(row)
+      let rowTotal = 0
       for (const [cid, amt] of Object.entries(amounts)) {
         if (Number(cid) in acc.dist) acc.dist[Number(cid)] += amt
+        rowTotal += amt
       }
+      acc.distTotal += rowTotal
+      // Остаток складывается ПО СТРОКАМ (у каждой свой 0…999 ₽), а не берётся
+      // как «начислено − разнесённое» от итогов: так он сходится с колонкой.
+      acc.unallocated += distributionBase(row) - rowTotal
     }
     return acc
   }, [visibleRows, edits, companies])
@@ -463,7 +477,16 @@ export function PayrollPage() {
                     {companyLabel(c)} %/₽
                   </th>
                 ))}
-                <th className="px-2 py-2 text-center font-medium">Σ распред.</th>
+                <th
+                  className="px-2 py-2 text-center font-medium"
+                  title={
+                    'Сумма распределения по юрлицам: «Итого начислено», округлённое ' +
+                    'ВНИЗ до 1000 ₽. Разница 0…999 ₽ («ост.») — нераспределённый ' +
+                    'остаток, он не приписывается юрлицам. Удержания базу не уменьшают.'
+                  }
+                >
+                  Σ распред.
+                </th>
                 <th className="px-2 py-2 text-center font-medium">Примечание</th>
               </tr>
             </thead>
@@ -474,7 +497,7 @@ export function PayrollPage() {
               {visibleRows.map((row, i) => {
                 const key = rowKey(row)
                 // Фактические проценты и Σ распред. — от БАЗЫ распределения
-                // («К выплате»), а не от начисленного: разносится именно она.
+                // («Итого начислено»): затраты возникают при начислении.
                 const distBase = distributionBase(row)
                 // Есть целевые премии/KPI (task_funding_source) → показываем
                 // ФАКТИЧЕСКИЕ проценты: заданный каскадом их уже не описывает.
@@ -673,8 +696,8 @@ export function PayrollPage() {
                               className="text-[9px] text-violet-600"
                               title={
                                 targeted > 0
-                                  ? `Фактически ${effPct}% от «К выплате» (включая целевые ${formatMoney(String(targeted))})`
-                                  : `Фактически ${effPct}% от «К выплате»`
+                                  ? `Фактически ${effPct}% от «Итого начислено» (включая целевые ${formatMoney(String(targeted))})`
+                                  : `Фактически ${effPct}% от «Итого начислено»`
                               }
                             >
                               факт. {effPct}%{targeted > 0 ? ' 🎯' : ''}
@@ -683,10 +706,25 @@ export function PayrollPage() {
                         </td>
                       )
                     })}
-                    {/* Σ распред. обязана совпадать с «К выплате» строки —
-                        именно её расхождение с начисленным и чинит ч.2. */}
-                    <td className={`px-2 py-1.5 text-center font-medium ${liveDistTotal === Math.round(distBase) ? 'text-gray-600' : 'text-amber-600'}`}>
+                    {/* Σ распред. = «Итого начислено», округлённое ВНИЗ до
+                        тысячи. Разница (0…999 ₽) — нераспределённый остаток: он
+                        не приписывается юрлицам, иначе их затраты оказались бы
+                        больше начисленного. Показываем его прямо под суммой,
+                        иначе расхождение с «Итого начислено» выглядит ошибкой. */}
+                    <td className={`px-2 py-1.5 text-center font-medium ${liveDistTotal === distributable(distBase) ? 'text-gray-600' : 'text-amber-600'}`}>
                       {formatMoney(String(liveDistTotal))}
+                      {distBase - liveDistTotal > 0 && (
+                        <div
+                          className="text-[10px] text-gray-400"
+                          title={
+                            'Нераспределённый остаток: «Итого начислено» минус разнесённое. ' +
+                            'Суммы по юрлицам кратны 1000 ₽ и округляются вниз, ' +
+                            'поэтому остаётся 0…999 ₽ — они не приписываются никому.'
+                          }
+                        >
+                          ост. {formatMoney(String(Math.round((distBase - liveDistTotal) * 100) / 100))}
+                        </div>
+                      )}
                       {pctWarn && <div className="text-[10px] text-amber-600">Σ%={pctSum}</div>}
                     </td>
                     <td className="px-2 py-1.5 text-center whitespace-nowrap">
@@ -765,7 +803,21 @@ export function PayrollPage() {
                 {companies.map((c) => (
                   <td key={c.id} className="px-2 py-2 text-center text-gray-700 bg-indigo-50/40">{formatMoney(String(footer.dist[c.id] ?? 0))}</td>
                 ))}
-                <td className="px-2 py-2" />
+                <td className="px-2 py-2 text-center text-gray-700">
+                  {formatMoney(String(footer.distTotal), { showZero: true })}
+                  {footer.unallocated > 0 && (
+                    <div
+                      className="text-[10px] font-normal text-gray-400"
+                      title={
+                        'Нераспределённый остаток за месяц: «Итого начислено» минус ' +
+                        'разнесённое по юрлицам. Следствие округления сумм вниз до 1000 ₽; ' +
+                        'не путать с «Эффектом округления» на дашборде — тот про выплату.'
+                      }
+                    >
+                      ост. {formatMoney(String(Math.round(footer.unallocated * 100) / 100))}
+                    </div>
+                  )}
+                </td>
                 <td className="px-2 py-2" />
               </tr>
             </tfoot>
