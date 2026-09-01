@@ -88,3 +88,59 @@ export function splitEqually(
   for (const id of ids) weights[id] = 1
   return distribute(total, weights, mainKey, step)
 }
+
+/**
+ * Округление сумм распределения до ТЫСЯЧИ методом
+ * «floor + раздача недостающих тысяч по наибольшим хвостам»
+ * (task_it_arm_distribution ч.3).
+ *
+ * Зеркало `distribute_largest_remainder` из backend/app/services/distribution.py.
+ * Отличается от `distribute` не только шагом, но и способом добора: там остаток
+ * целиком уходит основной компании, здесь недостающие тысячи раздаются по одной
+ * тем, у кого больше отброшенный хвост.
+ *
+ * Округлять каждую долю независимо НЕЛЬЗЯ: на проверочном примере (57000 по 104
+ * АРМ) это даёт 58000 — на тысячу больше, чем выплачено.
+ *
+ * Тай-брейк при равных хвостах — `order` (настроенный порядок юрлиц), затем id.
+ * `total <= 0` (долг сотрудника) в тысячи не округляется — шаг рубль.
+ */
+export function distributeToThousands(
+  total: number,
+  weights: Record<number, number>,
+  order?: Record<number, number> | null,
+  step = 1000,
+): Record<number, number> {
+  const positive: Record<number, number> = {}
+  for (const [k, w] of Object.entries(weights)) {
+    if (Number.isFinite(w) && w > 0) positive[Number(k)] = w
+  }
+  const keys = Object.keys(positive).map(Number)
+  if (keys.length === 0) return {}
+  if (!(total > 0)) return distribute(total, positive, null, 1)
+
+  const weightSum = keys.reduce((s, k) => s + positive[k], 0)
+  const exact: Record<number, number> = {}
+  const parts: Record<number, number> = {}
+  const remainders: Record<number, number> = {}
+  for (const k of keys) {
+    exact[k] = (total * positive[k]) / weightSum
+    parts[k] = Math.floor(exact[k] / step) * step
+    remainders[k] = exact[k] - parts[k]
+  }
+  const tail = order ? Object.keys(order).length : 0
+  const ranked = [...keys].sort(
+    (a, b) =>
+      remainders[b] - remainders[a] ||
+      (order?.[a] ?? tail) - (order?.[b] ?? tail) ||
+      a - b,
+  )
+  const assigned = keys.reduce((s, k) => s + parts[k], 0)
+  const fullSteps = Math.floor((total - assigned) / step + 1e-9)
+  for (const k of ranked.slice(0, Math.max(0, fullSteps))) parts[k] += step
+  const residual = clean(total - keys.reduce((s, k) => s + parts[k], 0), 1)
+  if (residual !== 0) {
+    parts[fullSteps < ranked.length ? ranked[Math.max(0, fullSteps)] : ranked[0]] += residual
+  }
+  return parts
+}

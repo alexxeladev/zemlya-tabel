@@ -20,7 +20,7 @@
 """
 from __future__ import annotations
 
-from decimal import ROUND_HALF_EVEN, Decimal
+from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
 
 _ZERO = Decimal("0")
 _HUNDRED = Decimal("100")
@@ -90,3 +90,71 @@ def split_equally(
     if not ids:
         return {}
     return distribute(total, {cid: Decimal("1") for cid in ids}, main_key, step)
+
+
+# ── Округление распределения до тысяч (task_it_arm_distribution ч.3) ──────────
+
+#: Шаг округления СУММ РАСПРЕДЕЛЕНИЯ по юрлицам — тысяча рублей. Тот же шаг, что
+#: у округления «К выплате» (`payout.PAYOUT_ROUNDING_STEP`), и это не совпадение:
+#: база распределения — уже округлённая «К выплате», и доли обязаны сойтись с ней
+#: ровно, оставаясь круглыми.
+THOUSAND = Decimal("1000")
+
+
+def distribute_largest_remainder(
+    total: Decimal,
+    weights: dict[int, Decimal],
+    step: Decimal = THOUSAND,
+    order: dict[int, int] | None = None,
+) -> dict[int, Decimal]:
+    """Разложить `total` по весам с округлением до `step` методом
+    «floor + раздача недостающих шагов по наибольшим хвостам».
+
+    Отличается от `distribute` не только шагом, но и способом добора: там
+    остаток целиком уходит ОДНОЙ компании (основной), здесь недостающие тысячи
+    раздаются по одной тем, у кого больше отброшенный хвост.
+
+    Почему нельзя округлять каждую долю независимо (математически): на
+    проверочном примере ТЗ (57000 по 104 АРМ) независимое округление даёт 58000 —
+    на тысячу больше, чем реально выплачено. Floor гарантирует, что сумма долей
+    НЕ превышает `total`, а раздача ровно недостающих шагов доводит её до `total`.
+
+    Тай-брейк при равных хвостах — `order` (настроенный порядок юрлиц), затем id:
+    результат обязан быть одинаковым при каждом пересчёте, иначе суммы «плавают»
+    между открытиями ведомости.
+
+    `total <= 0` (нулевая или отрицательная «к выплате» — долг сотрудника)
+    шага в тысячу не терпит: округлять долг в любую сторону одинаково неверно,
+    поэтому такие суммы делятся с точностью до рубля обычным `distribute`.
+    """
+    positive = {k: _as_decimal(w) for k, w in weights.items()}
+    positive = {k: w for k, w in positive.items() if w > _ZERO}
+    if not positive:
+        return {}
+
+    total = _as_decimal(total)
+    if total <= _ZERO:
+        return distribute(total, positive, None, RUBLE)
+
+    weight_sum = sum(positive.values(), _ZERO)
+    exact = {k: total * w / weight_sum for k, w in positive.items()}
+    parts = {k: (v / step).to_integral_value(rounding=ROUND_FLOOR) * step
+             for k, v in exact.items()}
+    remainders = {k: exact[k] - parts[k] for k in positive}
+
+    order = order or {}
+    tail = len(order)
+    ranked = sorted(
+        positive, key=lambda k: (-remainders[k], order.get(k, tail), k)
+    )
+    missing = total - sum(parts.values(), _ZERO)
+    full_steps = int(missing / step)
+    for k in ranked[:full_steps]:
+        parts[k] += step
+    # Остаток меньше шага бывает только если сам `total` не кратен шагу
+    # («к выплате» кратна тысяче, но у отдела «по количественному показателю»
+    # база может прийти иной): отдаём его следующему по величине хвоста.
+    residual = total - sum(parts.values(), _ZERO)
+    if residual != _ZERO:
+        parts[ranked[full_steps] if full_steps < len(ranked) else ranked[0]] += residual
+    return parts
