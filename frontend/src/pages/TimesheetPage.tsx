@@ -23,6 +23,11 @@ import { toast } from '../store/toasts';
 import { timesheetApi } from '../api/timesheet';
 import { apiClient } from '../api/client';
 import { listDepartments } from '../api/departments';
+import {
+  departmentsForCompany,
+  departmentChoiceIsStale,
+  positionInCompany,
+} from '../utils/departments';
 import { companyColorByIndex } from '../utils/colors';
 import { companyLabel } from '../utils/companies';
 import { payoutRoundingHint } from '../utils/money';
@@ -323,27 +328,6 @@ export function posKey(employeeId: number, positionId: number | null | undefined
  * состояния, где `primaryPositionIdByEmp` недоступен: значение берётся из
  * того же снимка `data`, который правим.
  */
-/**
- * Относится ли рабочее место к юрлицу — ПО СПРАВОЧНЫМ ДАННЫМ, а не по
- * проставленным часам. Решает ОТДЕЛ: юрлицо рабочего места — это головная
- * компания его отдела (`head_company_id`). Поэтому выбор компании оставляет
- * в табеле ровно её отделы.
- *
- * Компания самой позиции (`company_id`) — запасной вариант и только для мест
- * БЕЗ отдела: иначе она тянула бы в выдачу отделы чужих компаний (основная
- * компания карточки сплошь и рядом не совпадает с компанией отдела), и фильтр
- * снова перестал бы отбирать.
- *
- * Часы не участвуют намеренно: расчёт мультикомпанийный, у большинства часы
- * размазаны почти по всем юрлицам, и час на чужое юрлицо не делает человека
- * его сотрудником.
- */
-function positionInCompany(position: Position, companyId: number): boolean {
-  if (position.department_id != null) {
-    return position.department?.head_company_id === companyId;
-  }
-  return position.company_id === companyId;
-}
 
 /**
  * Колонки с фильтром в заголовке (task_pilot_ux ч.2) — как в Excel: мультивыбор
@@ -1207,10 +1191,11 @@ export function TimesheetPage() {
 
   // Отделы, предлагаемые к выбору: при выбранном юрлице — только его отделы.
   // Иначе список звал бы в отделы, которых при этом фильтре в таблице нет.
-  const selectableDepartments = useMemo(() => {
-    if (companyFilter === null) return departments;
-    return departments.filter((d) => d.head_company_id === companyFilter);
-  }, [departments, companyFilter]);
+  // Правило общее с ведомостью — `utils/departments`.
+  const selectableDepartments = useMemo(
+    () => departmentsForCompany(departments, companyFilter),
+    [departments, companyFilter],
+  );
 
   /** Подпись выбранной выдачи для счётчика в шапке: «Стройдепартамент — 29
    *  сотрудников». У роли без выбора отдела (employee, единственный отдел)
@@ -1233,10 +1218,11 @@ export function TimesheetPage() {
 
   // Выбранный отдел не принадлежит выбранному юрлицу — возвращаемся ко «всем»:
   // сочетание «Парковый + отдел Земли МО» дало бы заведомо пустой экран.
+  // Пустой справочник сбросом не считается (см. `departmentChoiceIsStale`):
+  // на первом рендере он ещё не загружен, а выбор уже восстановлен из хранилища.
   useEffect(() => {
-    if (companyFilter === null || typeof deptChoice !== 'number') return;
-    if (!selectableDepartments.some((d) => d.id === deptChoice)) setDeptChoice('all');
-  }, [companyFilter, deptChoice, selectableDepartments, setDeptChoice]);
+    if (departmentChoiceIsStale(departments, companyFilter, deptChoice)) setDeptChoice('all');
+  }, [departments, companyFilter, deptChoice, setDeptChoice]);
 
   // Выбор отдела живёт в сторе и localStorage: переживает смену месяца, смену
   // пользователя в той же вкладке и перезагрузку страницы. Чужой (или

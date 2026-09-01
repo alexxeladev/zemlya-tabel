@@ -80,6 +80,12 @@ class StatementRow(BaseModel):
     main_company_id: int | None
     main_company_name: str | None
     department_name: str | None
+    # Отдел строки и его ГОЛОВНАЯ компания. Нужны фильтру юрлица в ведомости:
+    # он отбирает по тому же справочному правилу, что табель (юрлицо рабочего
+    # места = головная компания его отдела, у места без отдела — компания самой
+    # позиции, она же main_company_id). В деньгах не участвуют.
+    department_id: int | None = None
+    department_head_company_id: int | None = None
     position: str | None
     schedule_name: str | None
 
