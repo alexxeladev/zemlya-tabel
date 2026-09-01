@@ -1,14 +1,16 @@
-"""Распределение ИТ по количеству АРМ, база «К выплате», округление до тысячи
-(task_it_arm_distribution).
+"""Распределение ИТ по количеству АРМ и округление сумм до тысячи
+(task_it_arm_distribution + task_distribution_base_fix).
 
-Три связанных изменения:
   ч.1 — механизм распределения по заявкам HR обобщён до ЛЮБОГО количественного
         показателя отдела: у ИТ это число АРМ (рабочих мест) по юрлицам;
-  ч.2 — база распределения = «К выплате» (округлённая), а не «Итого начислено»:
-        по юрлицам разносим ровно то, что платим;
-  ч.3 — суммы по юрлицам округляются до 1000 ₽ методом floor + раздача
-        недостающих тысяч по наибольшим хвостам, поэтому Σ долей ВСЕГДА ровно
-        равна «К выплате».
+  ч.2 — база распределения. Здесь ею ошибочно сделали «К выплате»; откачено
+        task_distribution_base_fix: база — «Итого начислено», потому что
+        распределение отражает ЗАТРАТЫ, а они возникают при начислении, и
+        удержания (займ, аванс) их не уменьшают;
+  ч.3 — суммы по юрлицам округляются ВНИЗ до 1000 ₽ методом floor + раздача
+        недостающих тысяч по наибольшим хвостам, поэтому Σ долей НИКОГДА не
+        превышает начисленного, а разница 0…999 ₽ остаётся нераспределённым
+        остатком.
 
 Регрессия HR — в `test_hr_applications.py`, совместимость с целевыми премиями
 проверяется и здесь, и в `test_funding_source.py`.
@@ -42,7 +44,7 @@ ARM = {
     "ZMO": 45, "SD": 6, "EXP": 13, "KSRV": 7,
     "PROD": 5, "ESI": 9, "SEC": 12, "GHS": 7,
 }
-# Проверочный пример ТЗ: база «К выплате» 57 000 по этим же процентам.
+# Проверочный пример ТЗ: база 57 000 по этим же процентам.
 EXPECTED_57K = {
     "ZMO": 25000, "SD": 3000, "EXP": 7000, "KSRV": 4000,
     "PROD": 3000, "ESI": 5000, "SEC": 6000, "GHS": 4000,
@@ -81,12 +83,36 @@ class TestThousandRounding:
         assert naive == Decimal("58000")
 
     def test_sum_equals_base_on_many_amounts(self):
-        """Σ долей = базе на любых суммах, а сами доли кратны тысяче."""
+        """База кратна тысяче → Σ долей ровно равна базе, доли кратны тысяче."""
         weights = {i + 1: Decimal(n) for i, n in enumerate(ARM.values())}
         for base in ("1000", "57000", "123000", "1000000", "2000"):
             amounts = distribute_largest_remainder(Decimal(base), weights)
             assert sum(amounts.values()) == Decimal(base), base
             assert all(a % 1000 == 0 for a in amounts.values()), base
+
+    def test_never_overshoots_and_leaves_remainder_under_thousand(self):
+        """Переразнесения нет НИКОГДА: Σ ≤ базы, а остаток строго 0…999 ₽.
+
+        Именно ради этого округление ТОЛЬКО floor: математическое приписало бы
+        юрлицам больше затрат, чем начислено.
+        """
+        weights = {i + 1: Decimal(n) for i, n in enumerate(ARM.values())}
+        for base in ("152381", "1", "999", "1001", "57123", "99999", "100000"):
+            total = Decimal(base)
+            amounts = distribute_largest_remainder(total, weights)
+            assigned = sum(amounts.values())
+            assert assigned <= total, base
+            assert Decimal("0") <= total - assigned < Decimal("1000"), base
+            assert all(a % 1000 == 0 for a in amounts.values()), base
+
+    def test_check_example_152381_leaves_381(self):
+        """Пример задачи: начислено 152 381 → разнесено 152 000, остаток 381."""
+        amounts = distribute_largest_remainder(
+            Decimal("152381"), {1: Decimal(3), 2: Decimal(2)}
+        )
+        assert sum(amounts.values()) == Decimal("152000")
+        assert Decimal("152381") - sum(amounts.values()) == Decimal("381")
+        assert all(a % 1000 == 0 for a in amounts.values())
 
     def test_equal_remainders_are_deterministic(self):
         """Равные хвосты (в примере два по 837) разводятся порядком юрлиц —
@@ -335,16 +361,41 @@ class TestItStatement:
         assert "АРМ" in row["distribution_note"]
 
 
-# ── База распределения = «К выплате» (ч.2) ────────────────────────────────────
+# ── База распределения = «Итого начислено» (task_distribution_base_fix) ───────
 
-class TestDistributionBaseIsNetPayout:
-    def test_sum_equals_net_payout_not_accrued(
+class TestDistributionBaseIsAccrued:
+    def test_deductions_do_not_reduce_distributed_amount(
         self, client, db_session, admin, calendar, it_dept, companies, schedule
     ):
-        """С удержанием аванса «Итого начислено» и «К выплате» расходятся —
-        распределяется именно «К выплате» (это и была жалоба: 152 000 против
-        152 381)."""
+        """ОБЯЗАТЕЛЬНЫЙ тест задачи: начислено 100 000, удержан ЗАЁМ 20 000 →
+        распределяется 100 000, а не 80 000.
+
+        Займ — возврат ранее выданных денег, затраты компании на сотрудника он
+        не уменьшает: компания потратила ровно то, что начислила.
+        """
         emp = _worker(db_session, "Инженер", "IT-2", "100000", it_dept,
+                      companies["GHS"], schedule)
+        _full_norm(db_session, emp, companies["GHS"])
+        emp.loan_amount = Decimal("20000")
+        emp.loan_term_months = 1
+        emp.loan_start_date = date(2026, 5, 1)
+        db_session.commit()
+        _set_arm(db_session, it_dept, companies, ARM)
+        token = get_token(client, "itadmin@example.com", "admin123")
+
+        row = _row(_statement(client, token), emp.id)
+        assert Decimal(row["accrued_total"]) == Decimal("100000")
+        assert Decimal(row["deductions"]) == Decimal("20000")
+        assert Decimal(row["net_payout"]) == Decimal("80000")
+        # Разносится НАЧИСЛЕННОЕ, а не выплата.
+        assert sum(_amounts(row).values()) == Decimal("100000")
+        assert Decimal(row["unallocated_remainder"]) == Decimal("0")
+
+    def test_advance_does_not_reduce_distributed_amount(
+        self, client, db_session, admin, calendar, it_dept, companies, schedule
+    ):
+        """То же с авансом: он выплачен раньше, но затраты компании полные."""
+        emp = _worker(db_session, "Инженер", "IT-2A", "100000", it_dept,
                       companies["GHS"], schedule)
         _full_norm(db_session, emp, companies["GHS"])
         db_session.add(EmployeeAdjustment(
@@ -358,13 +409,13 @@ class TestDistributionBaseIsNetPayout:
         row = _row(_statement(client, token), emp.id)
         assert Decimal(row["accrued_total"]) == Decimal("100000")
         assert Decimal(row["net_payout"]) == Decimal("70000")
-        assert sum(_amounts(row).values()) == Decimal("70000")
+        assert sum(_amounts(row).values()) == Decimal("100000")
 
-    def test_rounding_tail_is_not_distributed(
+    def test_payout_rounding_does_not_touch_distribution(
         self, client, db_session, admin, calendar, it_dept, companies, schedule
     ):
-        """Хвост округления «к выплате» в затраты юрлиц НЕ разносится: он
-        остаётся показателем «Эффект округления» на дашборде."""
+        """Округление «к выплате» до 1000 ₽ на распределение не влияет вовсе:
+        это про выплату, а не про затраты. Оба показателя живут одновременно."""
         emp = _worker(db_session, "Инженер", "IT-3", "100000", it_dept,
                       companies["GHS"], schedule)
         _full_norm(db_session, emp, companies["GHS"])
@@ -377,17 +428,44 @@ class TestDistributionBaseIsNetPayout:
         token = get_token(client, "itadmin@example.com", "admin123")
 
         row = _row(_statement(client, token), emp.id)
+        # «Эффект округления» выплаты — компания доплатила 400 ₽ до тысячи.
         assert Decimal(row["net_payout_exact"]) == Decimal("69600")
         assert Decimal(row["net_payout"]) == Decimal("70000")
         assert Decimal(row["rounding_tail"]) == Decimal("-400")
-        # Разносится округлённая выплата, а не точная и не начисленное.
-        assert sum(_amounts(row).values()) == Decimal("70000")
+        # А распределение всё равно делит начисленное — и это ДРУГОЙ показатель.
+        assert sum(_amounts(row).values()) == Decimal("100000")
+        assert Decimal(row["unallocated_remainder"]) == Decimal("0")
 
-    def test_cascade_department_also_rounded_and_matches_payout(
+    def test_remainder_is_never_assigned_to_a_company(
+        self, client, db_session, admin, calendar, it_dept, companies, schedule
+    ):
+        """Начисление не кратно тысяче → Σ распределения меньше него на 0…999 ₽,
+        и этот остаток не приписан ни одному юрлицу (переразнесения нет)."""
+        emp = _worker(db_session, "Инженер", "IT-7", "100000", it_dept,
+                      companies["GHS"], schedule)
+        _full_norm(db_session, emp, companies["GHS"])
+        db_session.add(EmployeeAdjustment(
+            employee_id=emp.id, position_id=emp.primary_position.id,
+            year=2026, month=5, kind="premium", amount=Decimal("2381"),
+            reason="премия"))
+        db_session.commit()
+        _set_arm(db_session, it_dept, companies, ARM)
+        token = get_token(client, "itadmin@example.com", "admin123")
+
+        row = _row(_statement(client, token), emp.id)
+        accrued = Decimal(row["accrued_total"])
+        assert accrued == Decimal("102381")
+        amounts = _amounts(row)
+        assert sum(amounts.values()) == Decimal("102000")
+        assert Decimal(row["unallocated_remainder"]) == Decimal("381")
+        assert all(a % 1000 == 0 for a in amounts.values())
+        assert sum(amounts.values()) <= accrued
+
+    def test_cascade_department_also_uses_accrued(
         self, client, db_session, admin, calendar, plain_dept, companies, schedule
     ):
         """База и округление одни на все ветки: обычный отдел (каскад по часам)
-        тоже разносит «К выплате» круглыми тысячами."""
+        тоже разносит начисленное круглыми тысячами."""
         emp = _worker(db_session, "Бухгалтер", "ACC-1", "77000", plain_dept,
                       companies["ZMO"], schedule)
         for i, d in enumerate(MAY_WORKDAYS):
@@ -400,14 +478,16 @@ class TestDistributionBaseIsNetPayout:
 
         row = _row(_statement(client, token), emp.id)
         assert row["distribution_source"] == "hours"
+        accrued = Decimal(row["accrued_total"])
         amounts = _amounts(row)
-        assert sum(amounts.values()) == Decimal(row["net_payout"])
+        assert sum(amounts.values()) == (accrued // 1000) * 1000
+        assert Decimal(row["unallocated_remainder"]) == accrued % 1000
         assert all(a % 1000 == 0 for a in amounts.values())
 
-    def test_statement_totals_match_sum_of_net_payouts(
+    def test_statement_totals_match_sum_of_accrued(
         self, client, db_session, admin, calendar, engineer, it_dept, companies, schedule
     ):
-        """Итоговая строка: Σ по юрлицам сходится с Σ «К выплате» всех строк."""
+        """Итоговая строка: Σ по юрлицам + Σ остатков = Σ «Итого начислено»."""
         _full_norm(db_session, engineer, companies["GHS"])
         other = _worker(db_session, "Инженер 2", "IT-4", "83000", it_dept,
                         companies["ZMO"], schedule)
@@ -417,9 +497,14 @@ class TestDistributionBaseIsNetPayout:
 
         statement = _statement(client, token)
         totals = {int(k): Decimal(v) for k, v in statement["distribution_totals"].items()}
-        assert sum(totals.values()) == Decimal(statement["total_net_payout"])
+        rest = Decimal(statement["total_unallocated_remainder"])
+        assert sum(totals.values()) + rest == Decimal(statement["total_accrued"])
         for row in statement["rows"]:
-            assert sum(_amounts(row).values()) == Decimal(row["net_payout"])
+            accrued = Decimal(row["accrued_total"])
+            assert (
+                sum(_amounts(row).values()) + Decimal(row["unallocated_remainder"])
+                == accrued
+            )
 
 
 # ── Совместимость с целевыми премиями (task_funding_source) ───────────────────
@@ -429,7 +514,7 @@ class TestTargetedFundingTogether:
         self, client, db_session, admin, calendar, it_dept, companies, schedule
     ):
         """Целевая премия ложится на свою компанию, но округляется ВМЕСТЕ с
-        долями каскада: Σ по-прежнему ровно равна «К выплате»."""
+        долями каскада: Σ по-прежнему равна начисленному (оно кратно тысяче)."""
         emp = _worker(db_session, "Инженер", "IT-5", "57000", it_dept,
                       companies["GHS"], schedule)
         _full_norm(db_session, emp, companies["GHS"])
@@ -442,20 +527,22 @@ class TestTargetedFundingTogether:
         token = get_token(client, "itadmin@example.com", "admin123")
 
         row = _row(_statement(client, token), emp.id)
-        net = Decimal(row["net_payout"])
-        assert net == Decimal("70000")
+        accrued = Decimal(row["accrued_total"])
+        assert accrued == Decimal("70000")
         amounts = _amounts(row)
-        assert sum(amounts.values()) == net
+        assert sum(amounts.values()) == accrued
         assert all(a % 1000 == 0 for a in amounts.values())
         # Целевая утяжелила компанию-источник: её доля больше «своих» 11.54%.
-        assert amounts[companies["SEC"].id] > net * Decimal("0.1154")
+        assert amounts[companies["SEC"].id] > accrued * Decimal("0.1154")
         assert row["targeted_note"] and "13000" in row["targeted_note"]
 
-    def test_targeted_beyond_net_payout_does_not_break(
+    def test_targeted_survive_large_deductions(
         self, client, db_session, admin, calendar, it_dept, companies, schedule
     ):
-        """Целевые больше «К выплате» (съедено удержаниями) — не падаем,
-        разносим только их, пропорционально выплате, с предупреждением."""
+        """Огромный аванс съел выплату, но НЕ распределение: база — начисленное,
+        поэтому целевая премия остаётся на своей компании целиком, а
+        предупреждения «целевые превышают» больше нет (целевые — часть
+        начисленного и перевесить его не могут)."""
         emp = _worker(db_session, "Инженер", "IT-6", "50000", it_dept,
                       companies["GHS"], schedule)
         _full_norm(db_session, emp, companies["GHS"])
@@ -474,9 +561,13 @@ class TestTargetedFundingTogether:
         token = get_token(client, "itadmin@example.com", "admin123")
 
         row = _row(_statement(client, token), emp.id)
+        assert Decimal(row["accrued_total"]) == Decimal("70000")
         assert Decimal(row["net_payout"]) == Decimal("10000")
-        assert sum(_amounts(row).values()) == Decimal("10000")
-        assert "целевые начисления превышают" in row["distribution_note"]
+        amounts = _amounts(row)
+        assert sum(amounts.values()) == Decimal("70000")
+        # Целевые 20000 целиком на своём юрлице + его доля показателя.
+        assert amounts[companies["SEC"].id] >= Decimal("20000")
+        assert not row["distribution_note"]
 
 
 # ── API количественного показателя ────────────────────────────────────────────

@@ -60,7 +60,7 @@ class StatementCompanyAmount(BaseModel):
     # percent — процент, ЗАДАННЫЙ каскадом (его и правят в ведомости).
     percent: Decimal
     # effective_percent — ФАКТИЧЕСКАЯ доля юрлица в базе распределения
-    # («К выплате»). Она отличается от заданной и из-за целевых премий
+    # («Итого начислено»). Она отличается от заданной и из-за целевых премий
     # (task_funding_source: каскад 50/50 плюс целевая даёт 40/60), и из-за
     # округления долей до тысячи. Показывать надо именно её, а править —
     # percent, иначе правка молча учла бы целевую сумму дважды.
@@ -140,8 +140,8 @@ class StatementRow(BaseModel):
     #                   + надбавка за ночные
     accrued_total: Decimal
     deductions: Decimal           # Аванс/Удержано (займ + аванс)
-    # К выплате — округлено до ближайшей 1000 ₽. Оно же БАЗА распределения по
-    # юрлицам (task_it_arm_distribution ч.2): Σ distribution == net_payout.
+    # К выплате — округлено до ближайшей 1000 ₽. На распределение по юрлицам НЕ
+    # влияет: его база — «Итого начислено» (затраты возникают при начислении).
     net_payout: Decimal
     net_payout_exact: Decimal = Decimal("0")  # до округления (справочно)
     rounding_tail: Decimal = Decimal("0")     # хвост = точное − округлённое
@@ -166,14 +166,19 @@ class StatementRow(BaseModel):
     distribution_note: str | None = None
     # Целевые премии/KPI (task_funding_source): {company_id: сумма}, их итог и
     # человеческая пометка «включает целевую премию 20 000 ₽ (Секьюрити)».
-    # Каскад применяется к БАЗЕ РАСПРЕДЕЛЕНИЯ («К выплате») МИНУС
-    # targeted_total, поэтому Σ распределения всегда равна «К выплате».
+    # Каскад применяется к БАЗЕ РАСПРЕДЕЛЕНИЯ («Итого начислено») МИНУС
+    # targeted_total, поэтому целевые не считаются дважды.
     targeted_amounts: dict[int, Decimal] = {}
     targeted_total: Decimal = Decimal("0")
     targeted_note: str | None = None
     percent_sum: Decimal          # сумма процентов (для подсветки ≠ 100)
     distribution: list[StatementCompanyAmount]
     distribution_total: Decimal
+    # Нераспределённый остаток = «Итого начислено» − Σ распределения. Суммы по
+    # юрлицам округляются ВНИЗ до 1000 ₽, поэтому остаётся 0…999 ₽; они никому
+    # не приписываются (иначе затраты юрлиц превысили бы начисленное).
+    # Не путать с `rounding_tail` — тот про округление ВЫПЛАТЫ.
+    unallocated_remainder: Decimal = Decimal("0")
 
     is_calculable: bool
     note: str | None
@@ -203,5 +208,8 @@ class PayrollStatementRead(BaseModel):
     total_net_payout: Decimal  # Σ округлённых выплат (не округление суммы)
     total_net_payout_exact: Decimal = Decimal("0")
     total_rounding_tail: Decimal = Decimal("0")
+    # Σ нераспределённых остатков строк (округление РАСПРЕДЕЛЕНИЯ вниз до 1000).
+    # Отдельный показатель от total_rounding_tail (округление ВЫПЛАТЫ).
+    total_unallocated_remainder: Decimal = Decimal("0")
     # Итог распределения по каждой компании: {company_id: amount}
     distribution_totals: dict[int, Decimal]

@@ -19,7 +19,11 @@ from app.services.distribution import (
     distribute_largest_remainder,
     split_equally,
 )
-from app.services.payroll_statement import EMPTY_TARGETED, finalize_distribution
+from app.services.payroll_statement import (
+    EMPTY_TARGETED,
+    finalize_distribution,
+    unallocated_remainder,
+)
 from tests.conftest import get_token
 
 MAY_BASIC = {"year": 2026, "months": [{"month": 5, "days": "3,4,10,11,17,18,24,25,31"}]}
@@ -31,6 +35,11 @@ MAY_WORKDAYS = [d for d in range(1, 32) if d not in (3, 4, 10, 11, 17, 18, 24, 2
 def _by_percent(total, shares, main=None):
     """Суммы каскада без целевых премий — то, что считает ведомость."""
     return finalize_distribution(total, shares, EMPTY_TARGETED)
+
+
+def _floor_k(value: Decimal) -> Decimal:
+    """Сколько из базы вообще можно разнести круглыми тысячами."""
+    return (value // 1000) * 1000
 
 
 class TestDistributeByPercent:
@@ -45,17 +54,29 @@ class TestDistributeByPercent:
         assert sum(result.values()) == Decimal("120000")
 
     def test_sum_matches_total_with_rounding(self):
-        """Доли, не делящиеся нацело, всё равно сходятся с итогом."""
+        """Доли, не делящиеся нацело, сходятся с итогом, кратным тысяче."""
         result = _by_percent(
-            Decimal("100"), {1: Decimal("33.33"), 2: Decimal("33.33"), 3: Decimal("33.34")}
+            Decimal("100000"),
+            {1: Decimal("33.33"), 2: Decimal("33.33"), 3: Decimal("33.34")},
         )
-        assert sum(result.values()) == Decimal("100")
+        assert sum(result.values()) == Decimal("100000")
+        assert all(a % 1000 == 0 for a in result.values())
+
+    def test_base_not_multiple_of_thousand_leaves_remainder(self):
+        """База не кратна тысяче → Σ округляется ВНИЗ, разница остаётся
+        нераспределённым остатком и никому не приписывается."""
+        result = _by_percent(
+            Decimal("100381"),
+            {1: Decimal("33.33"), 2: Decimal("33.33"), 3: Decimal("33.34")},
+        )
+        assert sum(result.values()) == Decimal("100000")
+        assert unallocated_remainder(Decimal("100381"), result) == Decimal("381")
 
     def test_normalizes_non_100_sum(self):
         """Сумма процентов ≠ 100 — всё равно распределяет всю сумму (нормализация)."""
         shares = {1: Decimal("50"), 2: Decimal("50"), 3: Decimal("50")}
-        result = _by_percent(Decimal("100"), shares)
-        assert sum(result.values()) == Decimal("100")
+        result = _by_percent(Decimal("99000"), shares)
+        assert sum(result.values()) == Decimal("99000")
 
     def test_empty_shares(self):
         assert _by_percent(Decimal("1000"), {}) == {}
@@ -313,11 +334,11 @@ class TestAutoDistributionByHours:
 
     def test_auto_by_hours_no_manual_percent(self, client, admin, worker, companies,
                                              schedule, calendar, db_session):
-        """167 ksec + 4 rest, без ручных % → 97.66% / 2.34%, сумма = «К выплате».
+        """167 ksec + 4 rest, без ручных % → 97.66% / 2.34%.
 
-        База распределения — «К выплате» (task_it_arm_distribution ч.2), а сами
-        доли округлены до тысячи (ч.3): проценты справочные, суммы по ним не
-        пересчитываются в лоб.
+        База распределения — «Итого начислено» (task_distribution_base_fix), а
+        сами доли округлены ВНИЗ до тысячи: проценты справочные, суммы по ним не
+        пересчитываются в лоб, а Σ на 0…999 ₽ меньше базы.
         """
         self._two_company_entries(db_session, worker.id, companies[0].id, companies[1].id)
         token = get_token(client, "stmtadmin@example.com", "admin123")
@@ -330,10 +351,11 @@ class TestAutoDistributionByHours:
         assert pcts[companies[0].id] == Decimal("97.66")
         assert pcts[companies[1].id] == Decimal("2.34")
 
-        net = Decimal(row["net_payout"])
+        accrued = Decimal(row["accrued_total"])
         amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
-        assert sum(amounts.values()) == net
-        assert Decimal(row["distribution_total"]) == net
+        assert sum(amounts.values()) == _floor_k(accrued)
+        assert Decimal(row["distribution_total"]) == _floor_k(accrued)
+        assert Decimal(row["unallocated_remainder"]) == accrued - _floor_k(accrued)
         assert all(a % 1000 == 0 for a in amounts.values())
         # доля больших часов получает большую сумму
         assert amounts[companies[0].id] > amounts[companies[1].id]
@@ -352,13 +374,13 @@ class TestAutoDistributionByHours:
         r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
         row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
         assert row["is_auto_distributed"] is False
-        net = Decimal(row["net_payout"])
+        accrued = Decimal(row["accrued_total"])
         amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
-        # 50% от «К выплате», округлённые до тысячи (вниз, с раздачей остатка).
-        half = net * Decimal("50") / Decimal("100")
+        # 50% от «Итого начислено», округлённые ВНИЗ до тысячи.
+        half = accrued * Decimal("50") / Decimal("100")
         assert abs(amounts[companies[0].id] - half) < Decimal("1000")
         assert amounts[companies[0].id] % 1000 == 0
-        assert sum(amounts.values()) == net
+        assert sum(amounts.values()) == _floor_k(accrued)
         assert companies[2].id in amounts  # компания без часов, но с ручным %
 
     def test_clearing_manual_returns_to_auto(self, client, admin, worker, companies,
@@ -696,9 +718,10 @@ class TestScreenMatchesExcel:
 
         r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
         row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
+        # База распределения — «Итого начислено» = 350000 (кратно тысяче,
+        # поэтому нераспределённого остатка не будет).
         assert Decimal(row["accrued_total"]) == Decimal("350000")
-        # Удержаний нет → «К выплате» = 350000, она же база распределения.
-        assert Decimal(row["net_payout"]) == Decimal("350000")
+        assert Decimal(row["unallocated_remainder"]) == Decimal("0")
         screen = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
         assert sum(screen.values()) == Decimal("350000")
         assert sorted(screen.values()) == [Decimal("58000")] * 4 + [Decimal("59000")] * 2

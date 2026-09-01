@@ -47,7 +47,7 @@ from app.services.org_access import (
     managed_department_ids,
 )
 from app.services.payroll import EmployeePayroll, calculate_position_payroll
-from app.services.payroll_statement import build_payroll_summary
+from app.services.payroll_statement import build_payroll_statement
 from app.services.positions import entries_by_position, in_department, visible_positions
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 
@@ -218,7 +218,9 @@ def _hours_by_department(db: Session, results: _MonthResults) -> list[Department
 
 # ── Блок 2: ФОТ ───────────────────────────────────────────────────────────────
 
-def _payroll_totals(results: _MonthResults, rounding_effect: Decimal) -> PayrollTotalsRead:
+def _payroll_totals(
+    results: _MonthResults, rounding_effect: Decimal, unallocated: Decimal
+) -> PayrollTotalsRead:
     # Не вошедшие в расчёт считаются по РАЗНЫМ рабочим местам, а не по строкам:
     # в диапазоне месяцев один и тот же сотрудник без графика встречается
     # столько раз, сколько месяцев выбрано, и счётчик бы врал.
@@ -234,26 +236,34 @@ def _payroll_totals(results: _MonthResults, rounding_effect: Decimal) -> Payroll
         off_schedule=sum((p.off_schedule_amount for *_, p in results), _ZERO),
         holiday=sum((p.holiday_amount for *_, p in results), _ZERO),
         rounding_effect=rounding_effect,
+        unallocated_remainder=unallocated,
         non_calculable_employees=len(non_calculable),
     )
 
 
-def _rounding_effect(db: Session, actor: Employee, year: int, month: int) -> Decimal:
-    """Σ хвостов округления «к выплате» до 1000 ₽ за месяц.
+def _rounding_and_unallocated(
+    db: Session, actor: Employee, year: int, month: int
+) -> tuple[Decimal, Decimal]:
+    """Два РАЗНЫХ показателя округления за месяц, одним проходом.
 
-    Знак ЛЮБОЙ и по строкам, и в сумме: округление вниз оседает в пользу
-    компании (+), вверх — компания доплачивает до тысячи (−). Итог за период
-    поэтому может выйти отрицательным, и это нормально, а не ошибка.
+    1. «Эффект округления» — Σ хвостов округления «к выплате» до 1000 ₽. Знак
+       ЛЮБОЙ и по строкам, и в сумме: вниз оседает в пользу компании (+), вверх
+       компания доплачивает (−). Отрицательный итог за период нормален.
+    2. «Нераспределённый остаток» — Σ (Итого начислено − Σ распределения по
+       юрлицам). Суммы по юрлицам округляются ВНИЗ до 1000 ₽, поэтому по строке
+       остаётся 0…999 ₽; никому не приписывается. Всегда ≥ 0.
 
-    Считается через `build_payroll_summary` — тот же путь, что у табеля и
-    ведомости (премии/KPI/удержания в ФОТ дашборда не входят, поэтому «к
-    выплате» из результатов _month_payrolls не получить).
-    Видимость по ролям — через `visible_employees_for_actor` (manager видит
-    только свой отдел).
+    Смешивать их нельзя: первый про выплату, второй про затраты юрлиц.
+
+    Считается через `build_payroll_statement` — тот же путь, что у ведомости
+    (премии/KPI/удержания и распределение в ФОТ дашборда не входят, поэтому из
+    результатов _month_payrolls этих чисел не получить). Видимость по ролям —
+    через `visible_employees_for_actor` (manager видит только свой отдел).
     """
     employees = visible_employees_for_actor(db, actor, None, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
-    return build_payroll_summary(db, employees, entries, year, month).total_rounding_tail
+    statement = build_payroll_statement(db, employees, entries, year, month, actor)
+    return statement.total_rounding_tail, statement.total_unallocated_remainder
 
 
 def _payroll_by_department(db: Session, results: _MonthResults) -> list[DepartmentPayrollRead]:
@@ -476,11 +486,12 @@ def build_dashboard(
     # Показатели диапазона — по всем его месяцам разом.
     current: _MonthResults = [r for m in months for r in by_month[m]]
 
-    rounding = (
-        sum((_rounding_effect(db, actor, y, m) for y, m in months), _ZERO)
-        if include_money
-        else _ZERO
-    )
+    rounding, unallocated = _ZERO, _ZERO
+    if include_money:
+        for y, m in months:
+            tail, rest = _rounding_and_unallocated(db, actor, y, m)
+            rounding += tail
+            unallocated += rest
     trend_months = months if len(months) > 1 else _last_n_months(year, month, TREND_MONTHS)
 
     return DashboardResponse(
@@ -492,7 +503,9 @@ def build_dashboard(
         role=actor.role,
         hours=_hours_summary(current),
         hours_by_department=[] if is_employee else _hours_by_department(db, current),
-        payroll=_payroll_totals(current, rounding) if include_money else None,
+        payroll=(
+            _payroll_totals(current, rounding, unallocated) if include_money else None
+        ),
         payroll_by_department=(
             _payroll_by_department(db, current) if include_money else []
         ),

@@ -87,6 +87,10 @@ _TAIL_HEADERS = [
     "Обоснование удержаний",
     "Ночных смен",
     "Надбавка за ночные",
+    # Итого начислено − Σ распределения: суммы по юрлицам круглые (округление
+    # ВНИЗ до 1000 ₽), поэтому «ИТОГО Разбивка» меньше начисленного на 0…999 ₽.
+    # Без этой колонки выгрузка не объясняла бы расхождение.
+    "Нераспределённый остаток",
 ]
 
 # Колонки, которые суммируются в строках ИТОГО, и откуда берётся сумма.
@@ -274,7 +278,8 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
     tail_start = note_col + 1
     last_col = tail_start + len(_TAIL_HEADERS) - 1
     (premium_reason_col, kpi_reason_col, deduction_reason_col,
-     night_shifts_col, night_amount_col) = range(tail_start, tail_start + 5)
+     night_shifts_col, night_amount_col,
+     unallocated_col) = range(tail_start, tail_start + 6)
 
     # ── Шапка образца: организация / подразделение / период ────────────────────
     heading = [
@@ -382,6 +387,7 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
         for col, val in (
             (night_shifts_col, r.night_shifts or ""),
             (night_amount_col, _money(r.night_amount)),
+            (unallocated_col, _money(r.unallocated_remainder)),
         ):
             c = ws.cell(row=row, column=col, value=val)
             c.font = normal
@@ -452,6 +458,10 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
             row=totals_row, column=night_amount_col,
             value=_money(statement.total_night_amount),
         ).number_format = _MONEY_FMT
+        ws.cell(
+            row=totals_row, column=unallocated_col,
+            value=_money(statement.total_unallocated_remainder),
+        ).number_format = _MONEY_FMT
 
     # ── Ширины колонок и заморозка шапки ──────────────────────────────────────
     ws.column_dimensions[get_column_letter(1)].width = 3  # узкий отступ образца
@@ -463,6 +473,8 @@ def generate_statement_excel(statement: PayrollStatementRead) -> bytes:
             width = _NOTE_WIDTH
         elif col in (premium_reason_col, kpi_reason_col, deduction_reason_col):
             width = _REASON_WIDTH
+        elif col == unallocated_col:
+            width = 16
         else:
             width = _DEFAULT_WIDTH
         ws.column_dimensions[get_column_letter(col)].width = width
