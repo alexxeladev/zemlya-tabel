@@ -91,6 +91,7 @@ def reset_data(assume_yes: bool = False) -> None:
     from app.models.loan_deductions import LoanDeduction
     from app.models.positions import EmployeePosition
     from app.models.production_calendars import ProductionCalendar
+    from app.models.reference_changes import ReferenceChange
     from app.models.schedules import Schedule
     from app.models.timesheet_entries import TimesheetEntry
     from app.models.timesheet_periods import TimesheetPeriod
@@ -122,6 +123,11 @@ def reset_data(assume_yes: bool = False) -> None:
         # Зависимые от employees / справочников — удаляем первыми.
         for model in (
             AuditLog,
+            # Журнал изменений справочников (task_audit_log): после сброса
+            # данных его записи ссылались бы на несуществующие id. Внешних
+            # ключей у него нет, поэтому падать нечему — но и смысла хранить
+            # историю стёртой базы тоже.
+            ReferenceChange,
             TimesheetEntry,
             TimesheetPeriod,
             EmployeeAbsence,
@@ -182,10 +188,14 @@ def seed_test_data() -> None:
     from app.models.employee_absences import EmployeeAbsence
     from app.models.employees import Employee
     from app.models.positions import EmployeePosition
+    from app.models.reference_changes import SOURCE_CLI
     from app.models.schedules import Schedule
 
     today = datetime.date.today()
     db = SessionLocal()
+    # Сиды помечаются в журнале изменений как «команда/сид»: заведённые ими
+    # карточки не должны выглядеть как чья-то ручная правка (task_audit_log).
+    db.info["audit_source"] = SOURCE_CLI
     created: dict[str, int] = {
         "companies": 0, "departments": 0, "schedules": 0,
         "employees": 0, "calendar": 0, "absences": 0,
@@ -432,6 +442,7 @@ def seed_demo_data(employees: int, date_from: str | None, date_to: str | None) -
     import datetime
 
     from app.database import SessionLocal
+    from app.models.reference_changes import SOURCE_CLI
     from app.services.demo_data import QA_PASSWORD, generate_demo_data
 
     def parse(value: str | None) -> datetime.date | None:
@@ -446,6 +457,9 @@ def seed_demo_data(employees: int, date_from: str | None, date_to: str | None) -
         sys.exit(1)
 
     db = SessionLocal()
+    # Как и seed-test-data: демо-данные помечаются «команда/сид», иначе 200
+    # заведённых карточек засоряют журнал видом ручных правок.
+    db.info["audit_source"] = SOURCE_CLI
     try:
         stats = generate_demo_data(db, employees, parse(date_from), parse(date_to))
     except ValueError as exc:

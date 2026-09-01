@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.security import decode_token
 from app.database import get_db
 from app.models.employees import Employee
+from app.services.reference_audit import set_audit_actor
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
@@ -33,6 +34,10 @@ def get_current_user(
         raise credentials_exc
     if not emp.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
+    # Кто правит справочники — журналу изменений (app/services/reference_audit).
+    # Ставится ОДИН раз здесь, на сессии запроса: иначе каждый обработчик должен
+    # был бы помнить про аудит, и первый же новый забыл бы.
+    set_audit_actor(db, emp)
     return emp
 
 

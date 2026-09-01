@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import SessionLocal
 from app.models.production_calendars import ProductionCalendar
+from app.routers.audit import router as audit_router
 from app.routers.auth import router as auth_router
 from app.routers.calendar import router as calendar_router
 from app.routers.companies import router as companies_router
@@ -17,6 +18,10 @@ from app.routers.employees import router as employees_router
 from app.routers.org import router as org_router
 from app.routers.schedules import router as schedules_router
 from app.routers.timesheet import router as timesheet_router
+# `reference_audit` импортируется РАДИ ПОБОЧНОГО ЭФФЕКТА: он регистрирует
+# слушатели сессии, которые ведут журнал изменений справочников. Без этого
+# импорта журнал молча пуст.
+from app.services import reference_audit  # noqa: F401
 from app.services.calendar import CalendarFetchError, ensure_calendar
 
 logger = logging.getLogger(__name__)
@@ -58,6 +63,7 @@ app.include_router(calendar_router, prefix="/api/calendar", tags=["calendar"])
 app.include_router(timesheet_router, prefix="/api/timesheet", tags=["timesheet"])
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(org_router, prefix="/api/org", tags=["org"])
+app.include_router(audit_router, prefix="/api/audit", tags=["audit"])
 
 
 @app.get("/health")
