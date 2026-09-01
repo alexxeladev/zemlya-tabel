@@ -19,8 +19,12 @@ class DepartmentBase(BaseModel):
 class DepartmentCreate(DepartmentBase):
     # Фонд ночных смен на месяц; не задан — дефолт модели (100 000).
     night_shift_fund: Optional[Decimal] = None
-    # Распределять зарплату отдела по заявкам на подбор (task_hr_applications).
-    uses_applications_distribution: Optional[bool] = None
+    # Распределять зарплату отдела по количественному показателю (заявки у HR,
+    # АРМ у ИТ) вместо каскада процентов.
+    uses_quantity_distribution: Optional[bool] = None
+    quantity_metric_name: Optional[str] = None
+    quantity_part1_name: Optional[str] = None
+    quantity_part2_name: Optional[str] = None
 
 
 class DepartmentRead(DepartmentBase):
@@ -31,9 +35,14 @@ class DepartmentRead(DepartmentBase):
     # Из фонда вычисляется ставка ночной смены и лимит их числа за месяц
     # (task_night_shifts_rework) — деньги, поэтому табельщику не отдаётся.
     night_shift_fund: Optional[Decimal] = None
-    # Зарплата отдела делится по заявкам на подбор, а не по каскаду
-    # (task_hr_applications). Не деньги, а правило — видно всем, кто видит отдел.
-    uses_applications_distribution: bool = False
+    # Зарплата отдела делится по количественному показателю, а не по каскаду.
+    # Не деньги, а правило — видно всем, кто видит отдел.
+    uses_quantity_distribution: bool = False
+    # Как показатель называется и из каких частей состоит: «Заявки» /
+    # «В работе» + «Закрытые» у HR, «АРМ» без частей у ИТ.
+    quantity_metric_name: Optional[str] = None
+    quantity_part1_name: Optional[str] = None
+    quantity_part2_name: Optional[str] = None
 
 
 class DepartmentUpdate(BaseModel):
@@ -41,7 +50,10 @@ class DepartmentUpdate(BaseModel):
     code: Optional[str] = None
     head_company_id: Optional[int] = None
     night_shift_fund: Optional[Decimal] = None
-    uses_applications_distribution: Optional[bool] = None
+    uses_quantity_distribution: Optional[bool] = None
+    quantity_metric_name: Optional[str] = None
+    quantity_part1_name: Optional[str] = None
+    quantity_part2_name: Optional[str] = None
     is_active: Optional[bool] = None
 
 

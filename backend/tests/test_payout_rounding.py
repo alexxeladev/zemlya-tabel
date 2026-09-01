@@ -274,23 +274,31 @@ class TestStatementRounding:
             assert Decimal(row["rounding_tail"]) == Decimal(tail)
         assert Decimal(data["total_rounding_tail"]) == _TOTAL_TAIL
 
-    def test_distribution_untouched_by_rounding(self, client, admin, workers, company,
-                                                calendar_2026, db_session):
-        """База распределения — Итого начислено, округление «к выплате» её не трогает."""
+    def test_distribution_follows_rounded_payout(self, client, admin, workers, company,
+                                                 calendar_2026, db_session):
+        """База распределения — ОКРУГЛЁННАЯ «К выплате» (task_it_arm_distribution ч.2).
+
+        Раньше распределялось «Итого начислено», и «Σ распред.» не сходилась с
+        «К выплате» (110407 против 110000). Теперь по юрлицам разносится ровно
+        то, что платим; сам хвост округления (407 ₽) в затраты юрлиц НЕ идёт —
+        он остаётся показателем «Эффект округления» на дашборде, что проверяет
+        TestDashboardRoundingEffect ниже.
+        """
         h = _auth(client)
         _make_tails(client, h, workers)
         data = client.get("/api/timesheet/2026/5/statement", headers=h).json()
         by_id = {r["employee_id"]: r for r in data["rows"]}
 
         first = by_id[workers[0].id]
-        assert Decimal(first["accrued_total"]) == Decimal("110407")   # не 110000
-        assert Decimal(first["distribution_total"]) == Decimal("110407")
+        assert Decimal(first["accrued_total"]) == Decimal("110407")
+        assert Decimal(first["net_payout"]) == Decimal("110000")
+        assert Decimal(first["distribution_total"]) == Decimal("110000")
 
         for row in data["rows"]:
-            # сумма частей по компаниям = Итого начислено, а не «к выплате»
-            assert Decimal(row["distribution_total"]) == Decimal(row["accrued_total"])
+            # сумма частей по компаниям = «К выплате», а не начисленное
+            assert Decimal(row["distribution_total"]) == Decimal(row["net_payout"])
             parts = sum((Decimal(d["amount"]) for d in row["distribution"]), Decimal("0"))
-            assert parts == Decimal(row["accrued_total"])
+            assert parts == Decimal(row["net_payout"])
 
 
 # ── Дашборд: эффект округления ────────────────────────────────────────────────

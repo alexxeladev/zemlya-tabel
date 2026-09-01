@@ -1,9 +1,16 @@
-"""Распределение зарплаты по заявкам на подбор (task_hr_applications).
+"""Распределение зарплаты HR по заявкам на подбор (task_hr_applications).
 
-Отдел с флагом «распределение по заявкам» (у нас HR) делит зарплату СВОИХ
-сотрудников по числу отработанных за месяц заявок для каждого юрлица; обычный
-каскад (месяц% → карточка → отдел → часы) для него не применяется. Остальные
-отделы не затронуты — это проверяется отдельно.
+Отдел с флагом «распределение по количественному показателю» (у HR показатель —
+заявки на подбор) делит зарплату СВОИХ сотрудников по числу отработанных за
+месяц заявок для каждого юрлица; обычный каскад (месяц% → карточка → отдел →
+часы) для него не применяется. Остальные отделы не затронуты — это проверяется
+отдельно.
+
+Механизм обобщён в task_it_arm_distribution (тот же расчёт работает для ИТ по
+числу АРМ), поэтому файл ещё и РЕГРЕССИОННЫЙ: он держит поведение HR неизменным.
+Суммы здесь округлены до тысячи, а база распределения — «К выплате»
+(task_it_arm_distribution чч.2–3): у сотрудников без удержаний она совпадает с
+«Итого начислено», поэтому проценты и раскладка те же, что были.
 """
 from datetime import date
 from decimal import Decimal
@@ -15,14 +22,14 @@ from sqlalchemy.orm import Session
 from app.core.security import hash_password
 from app.models.companies import Company
 from app.models.company_shares import DepartmentCompanyShare
-from app.models.department_applications import DepartmentApplication
+from app.models.department_quantities import DepartmentQuantity
 from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
-from app.services.applications import application_percents, application_weights
-from app.services.distribution import distribute
+from app.services.quantity_distribution import quantity_percents, quantity_weights
+from app.services.distribution import distribute_largest_remainder
 from tests.conftest import get_token
 
 MAY_BASIC = {"year": 2026, "months": [{"month": 5, "days": "3,4,10,11,17,18,24,25,31"}]}
@@ -40,38 +47,45 @@ EXAMPLE = {
 class TestApplicationPercents:
     def test_example_from_task(self):
         """ЗМО 16 из 43 → 37.21%."""
-        percents = application_percents({1: 16, 2: 9, 3: 2, 4: 2, 5: 3, 6: 6, 7: 2, 8: 3})
+        percents = quantity_percents({1: 16, 2: 9, 3: 2, 4: 2, 5: 3, 6: 6, 7: 2, 8: 3})
         assert percents[1] == Decimal("37.21")
 
     def test_percents_sum_to_exactly_100(self):
         """Проценты показываются человеку и обязаны давать ровно 100.00 —
         считаются тем же методом наибольшего остатка, что и деньги."""
-        percents = application_percents({1: 16, 2: 9, 3: 2, 4: 2, 5: 3, 6: 6, 7: 2, 8: 3})
+        percents = quantity_percents({1: 16, 2: 9, 3: 2, 4: 2, 5: 3, 6: 6, 7: 2, 8: 3})
         assert sum(percents.values()) == Decimal("100.00")
 
     def test_percents_do_not_depend_on_employee(self):
         """Набор один на отдел: остаток округления НЕ уходит на основную компанию
         сотрудника, иначе у разных людей проценты разошлись бы."""
         counts = {1: 1, 2: 1, 3: 1}
-        assert application_percents(counts) == application_percents(counts)
-        assert sum(application_percents(counts).values()) == Decimal("100.00")
+        assert quantity_percents(counts) == quantity_percents(counts)
+        assert sum(quantity_percents(counts).values()) == Decimal("100.00")
 
     def test_zero_counts_ignored(self):
-        assert application_percents({1: 5, 2: 0}) == {1: Decimal("100.00")}
+        assert quantity_percents({1: 5, 2: 0}) == {1: Decimal("100.00")}
 
     def test_no_applications_no_percents(self):
-        assert application_percents({}) == {}
+        assert quantity_percents({}) == {}
 
     def test_amount_from_counts_not_from_rounded_percent(self):
-        """320000 × 16/43 = 119069.77 → 119070 ₽ (шаг округления — рубль, как во
-        всём распределении). Считать от округлённого процента нельзя: 37.21% дало
-        бы 119072."""
+        """Суммы считаются от ЧИСЛА заявок, а не от округлённого процента.
+
+        320000 × 16/43 = 119069.77; после округления долей до тысячи
+        (task_it_arm_distribution ч.3) на ЗМО ложится 119000, а сумма всех долей
+        ровно равна базе. От округлённых 37.21% вышло бы 119072 — и Σ поехала бы.
+        """
         counts = {1: 16, 2: 9, 3: 2, 4: 2, 5: 3, 6: 6, 7: 2, 8: 3}
         exact = Decimal("320000") * 16 / 43
         assert exact.quantize(Decimal("0.01")) == Decimal("119069.77")
-        amounts = distribute(Decimal("320000"), application_weights(counts), main_key=8)
-        assert amounts[1] == Decimal("119070")
+        amounts = distribute_largest_remainder(
+            Decimal("320000"), quantity_weights(counts),
+            order={cid: cid for cid in counts},
+        )
+        assert amounts[1] == Decimal("119000")
         assert sum(amounts.values()) == Decimal("320000")
+        assert all(a % 1000 == 0 for a in amounts.values())
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -94,7 +108,9 @@ def companies(db_session: Session) -> dict[str, Company]:
 @pytest.fixture
 def hr_dept(db_session: Session) -> Department:
     d = Department(name="HR", code="HR", is_active=True,
-                   uses_applications_distribution=True)
+                   uses_quantity_distribution=True,
+                   quantity_metric_name="Заявки",
+                   quantity_part1_name="В работе", quantity_part2_name="Закрытые")
     db_session.add(d)
     db_session.commit()
     db_session.refresh(d)
@@ -175,10 +191,10 @@ def _set_applications(db: Session, dept: Department, companies, counts: dict[str
     """Заводит заявки по общему числу: одна закрыта, остальные в работе —
     распределение считается от суммы, поэтому раскладка на него не влияет."""
     for code, n in counts.items():
-        db.add(DepartmentApplication(
+        db.add(DepartmentQuantity(
             department_id=dept.id, company_id=companies[code].id,
             year=year, month=month,
-            in_progress=max(0, n - 1), closed=min(1, n),
+            part1=max(0, n - 1), part2=min(1, n),
         ))
     db.commit()
 
@@ -212,15 +228,17 @@ class TestHrDistribution:
     def test_employee_split_by_applications(
         self, client, db_session, admin, calendar, recruiter, hr_dept, companies
     ):
-        """320000 × 16/43 = 119069.77 → 119070 ₽ на ЗМО, сумма частей = 320000."""
+        """320000 × 16/43 → 119000 ₽ на ЗМО (доли округлены до тысячи),
+        сумма частей ровно равна «К выплате» = 320000."""
         _full_norm(db_session, recruiter, companies["GHS"])
         _set_applications(db_session, hr_dept, companies, EXAMPLE)
         token = get_token(client, "hradmin@example.com", "admin123")
 
         row = _row(_statement(client, token), recruiter.id)
         assert Decimal(row["accrued_total"]) == Decimal("320000")
-        assert row["distribution_source"] == "applications"
-        assert _amount(row, companies["ZMO"]) == Decimal("119070")
+        assert row["distribution_source"] == "quantity"
+        assert _amount(row, companies["ZMO"]) == Decimal("119000")
+        assert Decimal(row["net_payout"]) == Decimal("320000")
         assert sum(Decimal(d["amount"]) for d in row["distribution"]) == Decimal("320000")
 
     def test_percent_shown_next_to_amount(
@@ -255,6 +273,9 @@ class TestHrDistribution:
         head_row = _row(statement, hr_head.id)
         assert Decimal(head_row["accrued_total"]) == Decimal("150000")
         assert sum(Decimal(d["amount"]) for d in head_row["distribution"]) == Decimal("150000")
+        # …и обе строки разложены круглыми тысячами
+        for r in (_row(statement, recruiter.id), head_row):
+            assert all(Decimal(d["amount"]) % 1000 == 0 for d in r["distribution"])
 
     def test_applications_replace_cascade(
         self, client, db_session, admin, calendar, recruiter, hr_dept, companies
@@ -270,9 +291,10 @@ class TestHrDistribution:
         token = get_token(client, "hradmin@example.com", "admin123")
 
         row = _row(_statement(client, token), recruiter.id)
-        assert row["distribution_source"] == "applications"
-        # 100% дефолта отдела не применились: SEC получила свои 2 заявки из 43.
-        assert _amount(row, companies["SEC"]) == Decimal("14884")
+        assert row["distribution_source"] == "quantity"
+        # 100% дефолта отдела не применились: SEC получила свои 2 заявки из 43
+        # (320000 × 2/43 = 14883.72 → 15000 после раздачи недостающих тысяч).
+        assert _amount(row, companies["SEC"]) == Decimal("15000")
 
     def test_monthly_applications_do_not_leak_to_other_month(
         self, client, db_session, admin, calendar, recruiter, hr_dept, companies
@@ -283,9 +305,9 @@ class TestHrDistribution:
         token = get_token(client, "hradmin@example.com", "admin123")
 
         assert _row(_statement(client, token, month=5), recruiter.id)["distribution_source"] \
-            == "applications"
+            == "quantity"
         june = _row(_statement(client, token, month=6), recruiter.id)
-        assert june["distribution_source"] != "applications"
+        assert june["distribution_source"] != "quantity"
         assert june["distribution_note"]
 
     def test_different_counts_per_month(
@@ -356,7 +378,7 @@ class TestOtherDepartmentsUntouched:
         token = get_token(client, "hradmin@example.com", "admin123")
         statement = _statement(client, token)
 
-        assert _row(statement, recruiter.id)["distribution_source"] == "applications"
+        assert _row(statement, recruiter.id)["distribution_source"] == "quantity"
         other = _row(statement, worker.id)
         assert other["distribution_source"] == "hours"
         assert _amount(other, companies["ZMO"]) == Decimal("100000")
@@ -369,64 +391,64 @@ class TestApplicationsApi:
         token = get_token(client, "hradmin@example.com", "admin123")
         payload = {
             "department_id": hr_dept.id, "year": 2026, "month": 5,
-            "applications": [
-                {"company_id": companies[code].id, "in_progress": n - 1, "closed": 1}
+            "items": [
+                {"company_id": companies[code].id, "part1": n - 1, "part2": 1}
                 for code, n in EXAMPLE.items()
             ],
         }
-        r = client.put("/api/timesheet/applications", json=payload, headers=_h(token))
+        r = client.put("/api/timesheet/quantities", json=payload, headers=_h(token))
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["total_applications"] == 43
+        assert body["total_count"] == 43
         assert body["is_empty"] is False
-        zmo = next(a for a in body["applications"] if a["company_id"] == companies["ZMO"].id)
-        assert (zmo["in_progress"], zmo["closed"]) == (15, 1)
+        zmo = next(a for a in body["items"] if a["company_id"] == companies["ZMO"].id)
+        assert (zmo["part1"], zmo["part2"]) == (15, 1)
         # «Всего» не хранится, а считается — сумма частей, как в файле HR.
         assert zmo["count"] == 16
         assert Decimal(zmo["percent"]) == Decimal("37.21")
-        assert body["total_in_progress"] == 43 - len(EXAMPLE)
-        assert body["total_closed"] == len(EXAMPLE)
-        assert body["total_in_progress"] + body["total_closed"] == 43
+        assert body["total_part1"] == 43 - len(EXAMPLE)
+        assert body["total_part2"] == len(EXAMPLE)
+        assert body["total_part1"] + body["total_part2"] == 43
 
-        r = client.get("/api/timesheet/2026/5/applications", headers=_h(token))
+        r = client.get("/api/timesheet/2026/5/quantities", headers=_h(token))
         assert r.status_code == 200
-        assert r.json()[0]["total_applications"] == 43
+        assert r.json()[0]["total_count"] == 43
 
     def test_replaces_previous_set(self, client, db_session, admin, hr_dept, companies):
         token = get_token(client, "hradmin@example.com", "admin123")
         base = {"department_id": hr_dept.id, "year": 2026, "month": 5}
-        client.put("/api/timesheet/applications", headers=_h(token), json={
-            **base, "applications": [
-                {"company_id": companies["ZMO"].id, "in_progress": 16, "closed": 0}]})
-        r = client.put("/api/timesheet/applications", headers=_h(token), json={
-            **base, "applications": [
-                {"company_id": companies["SD"].id, "in_progress": 1, "closed": 3}]})
+        client.put("/api/timesheet/quantities", headers=_h(token), json={
+            **base, "items": [
+                {"company_id": companies["ZMO"].id, "part1": 16, "part2": 0}]})
+        r = client.put("/api/timesheet/quantities", headers=_h(token), json={
+            **base, "items": [
+                {"company_id": companies["SD"].id, "part1": 1, "part2": 3}]})
         assert r.status_code == 200
-        assert r.json()["total_applications"] == 4
-        assert len(r.json()["applications"]) == 1
+        assert r.json()["total_count"] == 4
+        assert len(r.json()["items"]) == 1
 
     def test_zero_counts_are_not_stored(self, client, db_session, admin, hr_dept, companies):
         token = get_token(client, "hradmin@example.com", "admin123")
-        r = client.put("/api/timesheet/applications", headers=_h(token), json={
+        r = client.put("/api/timesheet/quantities", headers=_h(token), json={
             "department_id": hr_dept.id, "year": 2026, "month": 5,
-            "applications": [
-                {"company_id": companies["ZMO"].id, "in_progress": 3, "closed": 2},
-                {"company_id": companies["SD"].id, "in_progress": 0, "closed": 0},
+            "items": [
+                {"company_id": companies["ZMO"].id, "part1": 3, "part2": 2},
+                {"company_id": companies["SD"].id, "part1": 0, "part2": 0},
             ]})
         assert r.status_code == 200
-        assert len(r.json()["applications"]) == 1
+        assert len(r.json()["items"]) == 1
         assert r.json()["is_empty"] is False
 
     def test_department_without_flag_rejected(
         self, client, db_session, admin, other_dept, companies
     ):
         token = get_token(client, "hradmin@example.com", "admin123")
-        r = client.put("/api/timesheet/applications", headers=_h(token), json={
+        r = client.put("/api/timesheet/quantities", headers=_h(token), json={
             "department_id": other_dept.id, "year": 2026, "month": 5,
-            "applications": [
-                {"company_id": companies["ZMO"].id, "in_progress": 5, "closed": 0}]})
+            "items": [
+                {"company_id": companies["ZMO"].id, "part1": 5, "part2": 0}]})
         assert r.status_code == 422
-        assert "заявк" in r.json()["detail"].lower()
+        assert "количественному показателю" in r.json()["detail"]
 
     def test_only_flagged_departments_listed(
         self, client, db_session, admin, hr_dept, other_dept
@@ -434,12 +456,12 @@ class TestApplicationsApi:
         """В выдаче только отделы с флагом; отдел с флагом и без заявок —
         с признаком is_empty (иначе блок ввода негде показать)."""
         token = get_token(client, "hradmin@example.com", "admin123")
-        r = client.get("/api/timesheet/2026/5/applications", headers=_h(token))
+        r = client.get("/api/timesheet/2026/5/quantities", headers=_h(token))
         assert r.status_code == 200
         body = r.json()
         assert [d["department_id"] for d in body] == [hr_dept.id]
         assert body[0]["is_empty"] is True
-        assert body[0]["total_applications"] == 0
+        assert body[0]["total_count"] == 0
 
     def test_applications_in_month_response(
         self, client, db_session, admin, calendar, recruiter, hr_dept, companies
@@ -448,9 +470,9 @@ class TestApplicationsApi:
         token = get_token(client, "hradmin@example.com", "admin123")
         r = client.get(f"/api/timesheet/2026/5?department_id={hr_dept.id}", headers=_h(token))
         assert r.status_code == 200
-        apps = r.json()["applications"]
+        apps = r.json()["quantities"]
         assert len(apps) == 1
-        assert apps[0]["total_applications"] == 43
+        assert apps[0]["total_count"] == 43
 
     def test_timekeeper_cannot_read_or_write(
         self, client, db_session, admin, hr_dept, companies
@@ -463,17 +485,17 @@ class TestApplicationsApi:
         db_session.commit()
         token = get_token(client, "hrkeeper@example.com", "keeper123")
 
-        assert client.get("/api/timesheet/2026/5/applications",
+        assert client.get("/api/timesheet/2026/5/quantities",
                           headers=_h(token)).status_code == 403
-        assert client.put("/api/timesheet/applications", headers=_h(token), json={
+        assert client.put("/api/timesheet/quantities", headers=_h(token), json={
             "department_id": hr_dept.id, "year": 2026, "month": 5,
-            "applications": [
-                {"company_id": companies["ZMO"].id, "in_progress": 5, "closed": 0}],
+            "items": [
+                {"company_id": companies["ZMO"].id, "part1": 5, "part2": 0}],
         }).status_code == 403
         # …и в табеле заявок он тоже не видит
         r = client.get(f"/api/timesheet/2026/5?department_id={hr_dept.id}", headers=_h(token))
         assert r.status_code == 200
-        assert r.json()["applications"] == []
+        assert r.json()["quantities"] == []
 
     def test_manager_of_other_department_forbidden(
         self, client, db_session, admin, hr_dept, other_dept, companies
@@ -486,12 +508,12 @@ class TestApplicationsApi:
         db_session.commit()
         token = get_token(client, "hrother@example.com", "mgr123")
 
-        assert client.put("/api/timesheet/applications", headers=_h(token), json={
+        assert client.put("/api/timesheet/quantities", headers=_h(token), json={
             "department_id": hr_dept.id, "year": 2026, "month": 5,
-            "applications": [
-                {"company_id": companies["ZMO"].id, "in_progress": 5, "closed": 0}],
+            "items": [
+                {"company_id": companies["ZMO"].id, "part1": 5, "part2": 0}],
         }).status_code == 403
-        r = client.get("/api/timesheet/2026/5/applications", headers=_h(token))
+        r = client.get("/api/timesheet/2026/5/quantities", headers=_h(token))
         assert r.status_code == 200
         assert r.json() == []
 
@@ -504,18 +526,18 @@ class TestDepartmentFlag:
         db_session.add(d)
         db_session.commit()
         db_session.refresh(d)
-        assert d.uses_applications_distribution is False
+        assert d.uses_quantity_distribution is False
 
     def test_admin_can_switch_flag(self, client, db_session, admin, other_dept):
         token = get_token(client, "hradmin@example.com", "admin123")
         r = client.patch(f"/api/departments/{other_dept.id}",
-                         json={"uses_applications_distribution": True}, headers=_h(token))
+                         json={"uses_quantity_distribution": True}, headers=_h(token))
         assert r.status_code == 200
-        assert r.json()["uses_applications_distribution"] is True
+        assert r.json()["uses_quantity_distribution"] is True
 
         r = client.patch(f"/api/departments/{other_dept.id}",
-                         json={"uses_applications_distribution": False}, headers=_h(token))
-        assert r.json()["uses_applications_distribution"] is False
+                         json={"uses_quantity_distribution": False}, headers=_h(token))
+        assert r.json()["uses_quantity_distribution"] is False
 
     def test_other_patch_does_not_reset_flag(self, client, db_session, admin, hr_dept):
         """Правка соседнего поля не сбрасывает флаг: null означает «не менять»."""
@@ -523,7 +545,7 @@ class TestDepartmentFlag:
         r = client.patch(f"/api/departments/{hr_dept.id}",
                          json={"name": "Подбор персонала"}, headers=_h(token))
         assert r.status_code == 200
-        assert r.json()["uses_applications_distribution"] is True
+        assert r.json()["uses_quantity_distribution"] is True
 
 
 # ── Заявки «в работе» / «закрытые» и распределение в табеле ───────────────────
@@ -532,18 +554,18 @@ class TestApplicationsBreakdown:
     def test_total_is_sum_of_parts(self, client, db_session, admin, hr_dept, companies):
         """«Заявок» не хранится, а считается: в работе + закрытые (как в файле HR)."""
         token = get_token(client, "hradmin@example.com", "admin123")
-        r = client.put("/api/timesheet/applications", headers=_h(token), json={
+        r = client.put("/api/timesheet/quantities", headers=_h(token), json={
             "department_id": hr_dept.id, "year": 2026, "month": 5,
-            "applications": [
-                {"company_id": companies["ZMO"].id, "in_progress": 13, "closed": 3},
-                {"company_id": companies["SD"].id, "in_progress": 8, "closed": 1},
+            "items": [
+                {"company_id": companies["ZMO"].id, "part1": 13, "part2": 3},
+                {"company_id": companies["SD"].id, "part1": 8, "part2": 1},
             ]})
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["total_in_progress"] == 21
-        assert body["total_closed"] == 4
-        assert body["total_applications"] == 25
-        zmo = next(a for a in body["applications"] if a["company_id"] == companies["ZMO"].id)
+        assert body["total_part1"] == 21
+        assert body["total_part2"] == 4
+        assert body["total_count"] == 25
+        zmo = next(a for a in body["items"] if a["company_id"] == companies["ZMO"].id)
         assert zmo["count"] == 16
 
     def test_split_does_not_change_distribution(
@@ -555,18 +577,18 @@ class TestApplicationsBreakdown:
         token = get_token(client, "hradmin@example.com", "admin123")
         base = {"department_id": hr_dept.id, "year": 2026, "month": 5}
         payloads = [
-            [{"company_id": companies[c].id, "in_progress": n, "closed": 0}
+            [{"company_id": companies[c].id, "part1": n, "part2": 0}
              for c, n in EXAMPLE.items()],
-            [{"company_id": companies[c].id, "in_progress": 0, "closed": n}
+            [{"company_id": companies[c].id, "part1": 0, "part2": n}
              for c, n in EXAMPLE.items()],
         ]
         amounts = []
         for applications in payloads:
-            client.put("/api/timesheet/applications", headers=_h(token),
-                       json={**base, "applications": applications})
+            client.put("/api/timesheet/quantities", headers=_h(token),
+                       json={**base, "items": applications})
             row = _row(_statement(client, token), recruiter.id)
             amounts.append(_amount(row, companies["ZMO"]))
-        assert amounts[0] == amounts[1] == Decimal("119070")
+        assert amounts[0] == amounts[1] == Decimal("119000")
 
     def test_distribution_in_month_response(
         self, client, db_session, admin, calendar, recruiter, hr_dept, companies
@@ -582,17 +604,17 @@ class TestApplicationsBreakdown:
             headers=_h(token),
         )
         assert r.status_code == 200, r.text
-        rows = r.json()["applications_distribution"]
+        rows = r.json()["quantity_distribution"]
         assert len(rows) == 1
         row = rows[0]
         assert row["employee_id"] == recruiter.id
-        assert Decimal(row["accrued_total"]) == Decimal("320000")
-        assert Decimal(row["amounts"][str(companies["ZMO"].id)]) == Decimal("119070")
+        assert Decimal(row["base_amount"]) == Decimal("320000")
+        assert Decimal(row["amounts"][str(companies["ZMO"].id)]) == Decimal("119000")
         assert sum(Decimal(v) for v in row["amounts"].values()) == Decimal("320000")
 
         # …и ровно то же число в ведомости
         stmt_row = _row(_statement(client, token), recruiter.id)
-        assert _amount(stmt_row, companies["ZMO"]) == Decimal("119070")
+        assert _amount(stmt_row, companies["ZMO"]) == Decimal("119000")
 
     def test_no_distribution_without_payroll(
         self, client, db_session, admin, calendar, recruiter, hr_dept, companies
@@ -604,7 +626,7 @@ class TestApplicationsBreakdown:
         token = get_token(client, "hradmin@example.com", "admin123")
         r = client.get(f"/api/timesheet/2026/5?department_id={hr_dept.id}", headers=_h(token))
         assert r.status_code == 200
-        assert r.json()["applications_distribution"] == []
+        assert r.json()["quantity_distribution"] == []
 
     def test_no_distribution_for_other_departments(
         self, client, db_session, admin, calendar, other_dept, companies, schedule
@@ -619,8 +641,8 @@ class TestApplicationsBreakdown:
             headers=_h(token),
         )
         assert r.status_code == 200
-        assert r.json()["applications"] == []
-        assert r.json()["applications_distribution"] == []
+        assert r.json()["quantities"] == []
+        assert r.json()["quantity_distribution"] == []
 
     def test_flag_without_applications_gives_no_distribution_block(
         self, client, db_session, admin, calendar, recruiter, hr_dept, companies
@@ -634,5 +656,5 @@ class TestApplicationsBreakdown:
             headers=_h(token),
         )
         assert r.status_code == 200
-        assert r.json()["applications"][0]["is_empty"] is True
-        assert r.json()["applications_distribution"] == []
+        assert r.json()["quantities"][0]["is_empty"] is True
+        assert r.json()["quantity_distribution"] == []

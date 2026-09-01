@@ -7,7 +7,7 @@ import type {
 import { timesheetApi } from '../../api/timesheet'
 import { apiClient } from '../../api/client'
 import { formatHours, formatMoney, payoutRoundingHint } from '../../utils/money'
-import { distribute } from '../../utils/distribution'
+import { distributeToThousands } from '../../utils/distribution'
 import { companyLabel } from '../../utils/companies'
 import { usePeriodStore } from '../../store/period'
 import { usePersistentState } from '../../hooks/usePersistentState'
@@ -37,34 +37,34 @@ const rowKey = (row: Pick<StatementRow, 'employee_id' | 'position_id'>): string 
 
 // Откуда взято распределение по юрлицам (каскад task_distribution_v2 ч.3):
 // месячная правка > карточка сотрудника > дефолт отдела > авто по часам.
-// applications — вне каскада: отдел с флагом «распределение по заявкам»
-// (task_hr_applications) делится по числу заявок, каскад к нему не применяется.
+// quantity — вне каскада: отдел с флагом «распределение по количественному
+// показателю» (заявки у HR, АРМ у ИТ) делится по нему, каскад не применяется.
 const SOURCE_LABEL: Record<DistributionSource, string> = {
   month: 'правка на месяц',
   employee: 'из карточки',
   department: 'дефолт отдела',
   hours: 'авто по часам',
-  applications: 'по заявкам',
+  quantity: 'по показателю отдела',
 }
 const SOURCE_STYLE: Record<DistributionSource, string> = {
   month: 'text-indigo-500',
   employee: 'text-gray-500',
   department: 'text-teal-600',
   hours: 'italic text-gray-400',
-  applications: 'font-medium text-emerald-600',
+  quantity: 'font-medium text-emerald-600',
 }
 
 /**
- * Строка отдела, который делится по заявкам на подбор (task_hr_applications).
- * Проценты приходят из заявок месяца, вводятся в табеле отдела и каскад
- * заменяют — поэтому здесь такая строка только показывается.
+ * Строка отдела, который делится по количественному показателю (заявки у HR,
+ * АРМ у ИТ). Проценты приходят из показателя месяца, вводятся в табеле отдела и
+ * каскад заменяют — поэтому здесь такая строка только показывается.
  */
-function isApplicationsRow(row: StatementRow): boolean {
-  return row.distribution_source === 'applications'
+function isQuantityRow(row: StatementRow): boolean {
+  return row.distribution_source === 'quantity'
 }
 
-/** Процент компании из заявок — показывается плейсхолдером, править нельзя. */
-function applicationsPct(row: StatementRow, companyId: number): string {
+/** Процент компании из показателя — плейсхолдер, править нельзя. */
+function quantityPct(row: StatementRow, companyId: number): string {
   const found = row.distribution.find((d) => d.company_id === companyId)
   return found ? String(Math.round(num(found.percent) * 100) / 100) : '0'
 }
@@ -83,9 +83,18 @@ function targetedAmounts(row: StatementRow): Record<number, number> {
   return out
 }
 
-/** База каскада = Итого начислено − целевые, но не меньше нуля. */
+/**
+ * БАЗА распределения — «К выплате» (округлённая), а не «Итого начислено»
+ * (task_it_arm_distribution ч.2): по юрлицам разносится ровно то, что платим.
+ * Зеркало `distribution_base` из services/payroll_statement.py.
+ */
+function distributionBase(row: StatementRow): number {
+  return num(row.net_payout)
+}
+
+/** База каскада = база распределения − целевые, но не меньше нуля. */
 function cascadeBase(row: StatementRow): number {
-  return Math.max(0, num(row.accrued_total) - num(row.targeted_total))
+  return Math.max(0, distributionBase(row) - num(row.targeted_total))
 }
 
 function buildEdits(stmt: PayrollStatement): Edits {
@@ -96,10 +105,10 @@ function buildEdits(stmt: PayrollStatement): Edits {
     // Авто-распределённые строки (ручной % не задан) НЕ префиллим — поля остаются
     // пустыми (плейсхолдер), чтобы видна была разница «авто по часам» vs «ручной».
     if (row.is_auto_distributed) continue
-    // Строки отдела «по заявкам» тоже: их проценты приходят из заявок месяца и
-    // правятся в табеле отдела, а не здесь (правка тут молча ничего не дала бы —
-    // заявки перекрывают каскад).
-    if (isApplicationsRow(row)) continue
+    // Строки отдела «по количественному показателю» тоже: их проценты приходят
+    // из показателя месяца и правятся в табеле отдела, а не здесь (правка тут
+    // молча ничего не дала бы — показатель перекрывает каскад).
+    if (isQuantityRow(row)) continue
     for (const d of row.distribution) {
       // Нулевой % — компания попала в разбивку только целевой премией
       // (task_funding_source), каскадом ей ничего не задано: инпут остаётся
@@ -200,11 +209,14 @@ export function PayrollPage() {
     row.is_auto_distributed && rowPercentSum(rowKey(row)) === 0
 
   // Суммы распределения строки. Считаются ТЕМ ЖЕ алгоритмом, что на бэке
-  // (utils/distribution ≡ services/distribution.py): сумма долей ровно равна
-  // «Итого начислено», остаток — основной компании. Иначе экран и Excel
-  // разъезжаются (350010 против 350000).
+  // (utils/distribution ≡ services/distribution.py): доли округляются до
+  // ТЫСЯЧИ методом floor + раздача недостающих тысяч по наибольшим хвостам, и
+  // их сумма ровно равна «К выплате». Иначе экран и Excel разъезжаются.
+  const companyOrder: Record<number, number> = {}
+  ;(data?.companies ?? []).forEach((c, i) => { companyOrder[c.id] = i })
+
   const rowAmounts = (row: StatementRow): Record<number, number> => {
-    if (isAutoRow(row) || isApplicationsRow(row)) {
+    if (isAutoRow(row) || isQuantityRow(row)) {
       const m: Record<number, number> = {}
       for (const d of row.distribution) m[d.company_id] = num(d.amount)
       return m
@@ -213,13 +225,27 @@ export function PayrollPage() {
     for (const [cid, v] of Object.entries(edits[rowKey(row)] ?? {})) {
       if (num(v) > 0) weights[Number(cid)] = num(v)
     }
-    // Каскад делит базу БЕЗ целевых сумм, потом целевые прибавляются к своим
-    // юрлицам — тот же порядок, что в services/payroll_statement.py.
-    const amounts = distribute(cascadeBase(row), weights, row.main_company_id)
-    for (const [cid, amount] of Object.entries(targetedAmounts(row))) {
-      amounts[Number(cid)] = (amounts[Number(cid)] ?? 0) + amount
+    const targeted = targetedAmounts(row)
+    const base = distributionBase(row)
+    // Без целевых сумм округляется сразу распределение базы по весам. С ними
+    // сначала считаются ТОЧНЫЕ доли каскада от базы без целевых, к ним
+    // прибавляются целевые, и до тысячи округляется уже весь набор — тот же
+    // порядок, что в services/payroll_statement.py (finalize_distribution).
+    if (Object.keys(targeted).length === 0) {
+      return distributeToThousands(base, weights, companyOrder)
     }
-    return amounts
+    const cascade = cascadeBase(row)
+    const weightSum = Object.values(weights).reduce((s, w) => s + w, 0)
+    const exact: Record<number, number> = {}
+    if (weightSum > 0) {
+      for (const [cid, w] of Object.entries(weights)) {
+        exact[Number(cid)] = (cascade * w) / weightSum
+      }
+    }
+    for (const [cid, amount] of Object.entries(targeted)) {
+      exact[Number(cid)] = (exact[Number(cid)] ?? 0) + amount
+    }
+    return distributeToThousands(base, exact, companyOrder)
   }
 
   // Проценты сохраняются РАБОЧЕМУ МЕСТУ строки: у совместителя вторая позиция
@@ -436,7 +462,9 @@ export function PayrollPage() {
               )}
               {visibleRows.map((row, i) => {
                 const key = rowKey(row)
-                const accrued = num(row.accrued_total)
+                // Фактические проценты и Σ распред. — от БАЗЫ распределения
+                // («К выплате»), а не от начисленного: разносится именно она.
+                const distBase = distributionBase(row)
                 // Есть целевые премии/KPI (task_funding_source) → показываем
                 // ФАКТИЧЕСКИЕ проценты: заданный каскадом их уже не описывает.
                 const hasTargeted = num(row.targeted_total) > 0
@@ -453,7 +481,7 @@ export function PayrollPage() {
                 if (auto) for (const d of row.distribution) autoByCompany[d.company_id] = d
                 const amounts = rowAmounts(row)
                 // Ввод % вручную (ещё не сохранён) — это уже правка на месяц.
-                const byApplications = isApplicationsRow(row)
+                const byQuantity = isQuantityRow(row)
                 const sourceKey: DistributionSource =
                   auto ? 'hours' : (pctSum > 0 && row.distribution_source === 'hours'
                     ? 'month' : row.distribution_source)
@@ -597,8 +625,8 @@ export function PayrollPage() {
                       // каскаде (50/50 → 40/60), и без этой цифры расхождение
                       // выглядит ошибкой расчёта.
                       const targeted = targetedAmounts(row)[c.id] ?? 0
-                      const effPct = hasTargeted && accrued > 0
-                        ? Math.round((amount / accrued) * 10000) / 100
+                      const effPct = hasTargeted && distBase > 0
+                        ? Math.round((amount / distBase) * 10000) / 100
                         : null
                       return (
                         <td key={c.id} className="px-1.5 py-1 text-center bg-indigo-50/40">
@@ -608,14 +636,14 @@ export function PayrollPage() {
                               min={0}
                               max={100}
                               step="0.1"
-                              disabled={!canEdit || byApplications}
-                              value={byApplications ? '' : pct}
+                              disabled={!canEdit || byQuantity}
+                              value={byQuantity ? '' : pct}
                               onChange={(ev) => setPercent(key, c.id, ev.target.value)}
                               className={`w-12 rounded border px-1 py-0.5 text-right text-[11px] ${pctWarn ? 'border-amber-400 bg-amber-50' : 'border-gray-300'} ${autoEntry ? 'border-dashed text-gray-400 placeholder:text-gray-400' : ''} disabled:bg-gray-100`}
-                              placeholder={byApplications ? applicationsPct(row, c.id) : autoPctLabel}
+                              placeholder={byQuantity ? quantityPct(row, c.id) : autoPctLabel}
                               title={
-                                byApplications
-                                  ? 'Процент из заявок на подбор — правится в табеле отдела'
+                                byQuantity
+                                  ? 'Процент из количественного показателя отдела — правится в его табеле'
                                   : autoEntry ? 'Авто по часам — введите % чтобы задать вручную' : undefined
                               }
                             />
@@ -629,8 +657,8 @@ export function PayrollPage() {
                               className="text-[9px] text-violet-600"
                               title={
                                 targeted > 0
-                                  ? `Фактически ${effPct}% от «Итого начислено» (включая целевые ${formatMoney(String(targeted))})`
-                                  : `Фактически ${effPct}% от «Итого начислено»`
+                                  ? `Фактически ${effPct}% от «К выплате» (включая целевые ${formatMoney(String(targeted))})`
+                                  : `Фактически ${effPct}% от «К выплате»`
                               }
                             >
                               факт. {effPct}%{targeted > 0 ? ' 🎯' : ''}
@@ -639,12 +667,14 @@ export function PayrollPage() {
                         </td>
                       )
                     })}
-                    <td className={`px-2 py-1.5 text-center font-medium ${liveDistTotal === Math.round(accrued) ? 'text-gray-600' : 'text-amber-600'}`}>
+                    {/* Σ распред. обязана совпадать с «К выплате» строки —
+                        именно её расхождение с начисленным и чинит ч.2. */}
+                    <td className={`px-2 py-1.5 text-center font-medium ${liveDistTotal === Math.round(distBase) ? 'text-gray-600' : 'text-amber-600'}`}>
                       {formatMoney(String(liveDistTotal))}
                       {pctWarn && <div className="text-[10px] text-amber-600">Σ%={pctSum}</div>}
                     </td>
                     <td className="px-2 py-1.5 text-center whitespace-nowrap">
-                      {canEdit && !byApplications && (
+                      {canEdit && !byQuantity && (
                         <div className="flex items-center justify-center gap-1">
                           <button
                             disabled={savingKey === key}

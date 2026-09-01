@@ -5,7 +5,7 @@ from app.models.company_shares import (
     DepartmentCompanyShare,
     EmployeeCompanyShare,
 )
-from app.models.department_applications import DepartmentApplication
+from app.models.department_quantities import DepartmentQuantity
 from app.models.department_managers import department_managers
 from app.models.departments import Department
 from app.models.employee_absences import (
@@ -40,7 +40,7 @@ __all__ = [
     "Company",
     "CompanyShareOverride",
     "Department",
-    "DepartmentApplication",
+    "DepartmentQuantity",
     "DepartmentCompanyShare",
     "Employee",
     "EmployeeAbsence",

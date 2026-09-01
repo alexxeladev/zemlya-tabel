@@ -2,9 +2,20 @@
 Сводная ведомость «Расчёт ЗП» (задача 3.11b).
 
 Использует ТОТ ЖЕ расчёт что табель (calculate_employee_payroll + compute_payout),
-поверх него — управленческое распределение Итого начислено между юрлицами в %.
+поверх него — управленческое распределение между юрлицами в %.
 Распределение: дефолт из карточки сотрудника + помесячное переопределение (гибрид
-как у займа). База распределения — Итого начислено (ДО вычета удержаний).
+как у займа).
+
+База распределения — «К выплате», уже ОКРУГЛЁННАЯ до тысячи
+(task_it_arm_distribution ч.2; раньше было «Итого начислено»). Разносим по
+юрлицам то, что реально платим: иначе в ведомости «К выплате» 152000, а
+«Σ распред.» 152381. Разница «Начислено − К выплате» (удержания и хвост
+округления) в затраты юрлиц НЕ разносится — хвост остаётся показателем
+«Эффект округления» на дашборде.
+
+Сами суммы по юрлицам округляются до ТЫСЯЧИ (ч.3) методом floor + раздача
+недостающих тысяч по наибольшим хвостам, поэтому Σ долей всегда ровно равна
+«К выплате».
 """
 from __future__ import annotations
 
@@ -17,7 +28,7 @@ from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
-from app.schemas.application import ApplicationsDistributionRow
+from app.schemas.quantity import QuantityDistributionRow
 from app.schemas.payroll import (
     CompanyBreakdownRead,
     EmployeePayrollRead,
@@ -34,11 +45,11 @@ from app.services.absences import (
     schedules_by_employee,
     sick_days_used_before_month,
 )
-from app.services.applications import (
-    application_percents,
-    application_weights,
-    applications_department_ids,
-    load_application_counts,
+from app.services.quantity_distribution import (
+    load_quantity_counts,
+    quantity_department_ids,
+    quantity_percents,
+    quantity_weights,
 )
 from app.services.company_order import (
     company_display_name,
@@ -50,7 +61,7 @@ from app.services.company_shares import (
     load_employee_shares,
     load_month_overrides,
 )
-from app.services.distribution import distribute
+from app.services.distribution import distribute, distribute_largest_remainder
 from app.services.night_shifts import load_night_context
 from app.services.payout import (
     compute_payout,
@@ -318,10 +329,10 @@ SOURCE_MONTH = "month"          # ручной % за конкретный ме�
 SOURCE_EMPLOYEE = "employee"    # распределение в карточке сотрудника
 SOURCE_DEPARTMENT = "department"  # дефолт отдела
 SOURCE_HOURS = "hours"          # авто по фактическим часам табеля
-# Отдел с флагом «распределение по заявкам» (task_hr_applications) — заявки на
-# подбор ЗАМЕНЯЮТ каскад целиком, поэтому это не ещё один его уровень, а ветка
-# выше него: см. `_applications_shares`.
-SOURCE_APPLICATIONS = "applications"
+# Отдел с флагом «распределение по количественному показателю» (заявки у HR,
+# АРМ у ИТ — task_hr_applications / task_it_arm_distribution) ЗАМЕНЯЕТ каскад
+# целиком, поэтому это не ещё один его уровень, а ветка выше него.
+SOURCE_QUANTITY = "quantity"
 
 
 def resolve_shares(
@@ -351,19 +362,33 @@ def resolve_shares(
 
 
 def accrued_total(p: EmployeePayrollRead) -> Decimal:
-    """«Итого начислено» строки — БАЗА распределения по юрлицам.
+    """«Итого начислено» строки — колонка ведомости.
 
-    Одно место на всю систему: ведомость и блок распределения в табеле обязаны
-    делить одно и то же число, иначе экран табеля и /statement разойдутся.
-    Оклад считается вместе с обеими повышенными категориями (вне графика и
-    праздничные): отдельных колонок под них в форме финдира нет, а в базу
-    распределения они входить обязаны.
+    БАЗОЙ распределения по юрлицам она БЫТЬ ПЕРЕСТАЛА (task_it_arm_distribution
+    ч.2) — ею стала «К выплате», см. `distribution_base`. Оклад считается вместе
+    с обеими повышенными категориями (вне графика и праздничные): отдельных
+    колонок под них в форме финдира нет.
     """
     return (
         p.base_amount + p.off_schedule_amount + p.holiday_amount
         + p.overtime_amount + p.vacation_amount + p.sick_amount
         + p.night_amount + p.premium_amount + p.kpi_amount
     )
+
+
+def distribution_base(p: EmployeePayrollRead) -> Decimal:
+    """БАЗА распределения по юрлицам — «К выплате», уже округлённая до тысячи.
+
+    Одно место на всю систему: ведомость, блок распределения в табеле и Excel
+    обязаны делить одно и то же число, иначе экраны разойдутся.
+
+    Раньше базой было «Итого начислено», и колонка «Σ распред.» не сходилась с
+    «К выплате» (152381 против 152000): по юрлицам разносилось начисленное, а
+    платили округлённое. Разносим то, что платим. Удержания (аванс, займ) и хвост
+    округления «к выплате» в затраты юрлиц не попадают — хвост живёт отдельным
+    показателем «Эффект округления» на дашборде, и это осознанно.
+    """
+    return p.net_payout
 
 
 # ── Источник финансирования премий и KPI (task_funding_source) ────────────────
@@ -402,7 +427,7 @@ EMPTY_TARGETED = TargetedFunding({}, _ZERO, None, False)
 
 def build_targeted_funding(
     items: list[tuple[int, str, Decimal]] | None,
-    accrued: Decimal,
+    base: Decimal,
     company_names: dict[int, str],
 ) -> TargetedFunding:
     """[(company_id, kind, amount)] → суммы по юрлицам, итог и пометка.
@@ -425,17 +450,19 @@ def build_targeted_funding(
         amounts=amounts,
         total=total,
         note="включает " + ", ".join(notes),
-        # Практически невозможно (целевые — часть начисленного), но если сумма
-        # целевых всё же перевесила начисление, база каскада обнуляется и
-        # распределение состоит из одних целевых: отрицательной она быть не может.
-        exceeds_accrued=total > accrued,
+        # Целевые — часть начисленного, но база распределения — «К выплате»
+        # (task_it_arm_distribution ч.2), и при больших удержаниях целевые вполне
+        # могут её перевесить. Тогда база каскада обнуляется, а сами целевые
+        # ужимаются до «К выплате» пропорционально: разнести больше, чем
+        # выплачено, нельзя. Отрицательной база не бывает.
+        exceeds_accrued=total > base,
     )
 
 
-def cascade_base_amount(accrued: Decimal, targeted: TargetedFunding) -> Decimal:
-    """База каскада = Итого начислено − целевые, но не меньше нуля."""
-    base = accrued - targeted.total
-    return base if base > _ZERO else _ZERO
+def cascade_base_amount(base: Decimal, targeted: TargetedFunding) -> Decimal:
+    """База каскада = база распределения («К выплате») − целевые, но не меньше нуля."""
+    rest = base - targeted.total
+    return rest if rest > _ZERO else _ZERO
 
 
 def merge_targeted(
@@ -454,72 +481,94 @@ def merge_targeted(
     return merged
 
 
-def effective_percent(amount: Decimal, accrued: Decimal) -> Decimal:
-    """Фактическая доля юрлица в «Итого начислено», в процентах.
+def effective_percent(amount: Decimal, base: Decimal) -> Decimal:
+    """Фактическая доля юрлица в базе распределения («К выплате»), в процентах.
 
     С целевыми суммами она не совпадает с заданным в каскаде процентом — именно
-    её и надо показывать в ведомости (40/60 при каскаде 50/50).
+    её и надо показывать в ведомости (40/60 при каскаде 50/50). Из-за округления
+    долей до тысячи она и без целевых может слегка отличаться от заданной.
     """
-    if accrued <= _ZERO:
+    if base <= _ZERO:
         return _ZERO
-    return (amount / accrued * _HUNDRED).quantize(Decimal("0.01"))
+    return (amount / base * _HUNDRED).quantize(Decimal("0.01"))
 
 
-def _applications_context(
+def _quantity_context(
     db: Session, department_ids: list[int | None], year: int, month: int
 ) -> tuple[set[int], dict[int, dict[int, int]]]:
-    """(отделы с флагом, {department_id: {company_id: заявок}} за ЭТОТ месяц) —
-    task_hr_applications.
+    """(отделы с флагом, {department_id: {company_id: количество}} за ЭТОТ месяц).
 
-    Флаг и заявки возвращаются РАЗДЕЛЬНО: отдел с флагом, но без заявок месяца —
-    это не «как все», а отдельное состояние (уходит на каскад с предупреждением).
-    Оба набора пустые → в ведомости ничего не меняется, всё идёт по каскаду.
+    Флаг и количества возвращаются РАЗДЕЛЬНО: отдел с флагом, но без показателя
+    за месяц — это не «как все», а отдельное состояние (уходит на каскад с
+    предупреждением). Оба набора пустые → всё идёт по каскаду.
     """
-    flagged = applications_department_ids(db, [d for d in department_ids if d])
+    flagged = quantity_department_ids(db, [d for d in department_ids if d])
     if not flagged:
         return set(), {}
-    return flagged, load_application_counts(db, flagged, year, month)
+    return flagged, load_quantity_counts(db, flagged, year, month)
 
 
-def distribute_by_percent(
-    total: Decimal, shares: dict[int, Decimal], main_company_id: int | None = None
-) -> dict[int, Decimal]:
-    """Распределяет total по компаниям пропорционально процентам так, чтобы сумма
-    частей была РОВНО равна total. Вся логика округления — в `services.distribution`
-    (один источник для экрана, Excel и фронта). Нормализует, если Σ% ≠ 100.
+def _exact_shares(total: Decimal, weights: dict[int, Decimal]) -> dict[int, Decimal]:
+    """Точные (НЕокруглённые) доли по весам. Округляется потом весь набор сразу.
+
+    Промежуточного округления быть не должно: целевые суммы прибавляются к долям
+    каскада ДО округления, и округляется уже итог по юрлицу (иначе округлили бы
+    дважды и Σ разошлась бы с базой).
     """
-    return distribute(total, shares, main_company_id)
+    positive = {k: w for k, w in weights.items() if w > _ZERO}
+    weight_sum = sum(positive.values(), _ZERO)
+    if not positive or weight_sum <= _ZERO:
+        return {}
+    return {k: total * w / weight_sum for k, w in positive.items()}
 
 
-def _auto_shares_by_hours(
-    total: Decimal,
-    breakdown,
-    main_company,
-) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
+def finalize_distribution(
+    base: Decimal,
+    cascade_weights: dict[int, Decimal],
+    targeted: TargetedFunding,
+    company_order: dict[int, int] | None = None,
+) -> dict[int, Decimal]:
+    """Суммы по юрлицам: каскад делит базу без целевых, целевые ложатся на свои
+    юрлица, и ВЕСЬ набор округляется до тысячи так, что Σ = `base` ровно.
+
+    Округление одно на весь набор (task_it_arm_distribution ч.3): целевые суммы
+    участвуют в нём наравне с долями каскада — иначе итог не сошёлся бы с
+    «К выплате». Тай-брейк равных хвостов — настроенный порядок юрлиц.
+
+    Веса передаются СЫРЫЕ (проценты, количества, часы), а не уже посчитанные
+    суммы: при нулевой базе доли обнулились бы, и юрлица молча выпали бы из
+    разбивки. Как только появляются целевые, набор приходится собирать из точных
+    сумм — иначе целевые не с чем сложить.
+    """
+    if not targeted.amounts:
+        return distribute_largest_remainder(base, cascade_weights, order=company_order)
+    exact = merge_targeted(
+        _exact_shares(cascade_base_amount(base, targeted), cascade_weights), targeted
+    )
+    return distribute_largest_remainder(base, exact, order=company_order)
+
+
+def _auto_shares_by_hours(breakdown, main_company) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
     """Авто-распределение, когда ручной % не задан: пропорционально фактическим
     часам сотрудника по компаниям (из табеля).
 
-    Возвращает (shares %, amounts ₽). Доли в рублях — через общий `distribute`
-    (сумма частей = total, остаток основной компании). Проценты — справочные
-    (часы/всего × 100, до сотых).
-    Если часов нет — вся сумма на основную компанию (default_company).
+    Возвращает (shares % справочно, weights — часы). Суммы считает общий
+    `finalize_distribution`: округление до тысячи одно на все ветки каскада.
+    Если часов нет — всё на основную компанию (default_company).
     """
     company_hours = {bd.company_id: bd.hours for bd in breakdown if bd.hours > _ZERO}
     total_hours = sum(company_hours.values(), _ZERO)
 
     if total_hours > _ZERO:
-        amounts = distribute(
-            total, company_hours, main_company.id if main_company else None
-        )
         shares = {
             cid: (h / total_hours * _HUNDRED).quantize(Decimal("0.01"))
             for cid, h in company_hours.items()
         }
-        return shares, amounts
+        return shares, company_hours
 
-    # Нет часов вообще → вся сумма на основную компанию.
+    # Нет часов вообще → всё на основную компанию.
     if main_company is not None:
-        return {main_company.id: _HUNDRED}, {main_company.id: total}
+        return {main_company.id: _HUNDRED}, {main_company.id: _HUNDRED}
     return {}, {}
 
 
@@ -546,31 +595,33 @@ def _reason_lines(items: list[tuple[Decimal, str]] | None) -> list[str]:
     ]
 
 
-# ── Распределение по заявкам для ТАБЕЛЯ (task_hr_applications) ────────────────
+# ── Распределение по количественному показателю для ТАБЕЛЯ ────────────────────
 
-def build_applications_distribution(
+def build_quantity_distribution(
     db: Session,
     summary: PayrollSummaryRead,
     positions_by_employee: dict[int, list[EmployeePosition]],
     year: int,
     month: int,
-) -> list[ApplicationsDistributionRow]:
-    """Суммы распределения по юрлицам для строк табеля отдела «по заявкам».
+    company_order: dict[int, int] | None = None,
+) -> list[QuantityDistributionRow]:
+    """Суммы распределения по юрлицам для строк табеля отдела, делящегося по
+    количественному показателю (заявки у HR, АРМ у ИТ).
 
     Считается поверх УЖЕ посчитанного расчёта (`build_payroll_summary`) теми же
-    `accrued_total` и `distribute`, что и ведомость — цифры в табеле и в
-    /statement обязаны совпадать, а не «примерно сходиться».
+    `distribution_base` и `finalize_distribution`, что и ведомость — цифры в
+    табеле и в /statement обязаны совпадать, а не «примерно сходиться».
 
     В выдачу попадают только рабочие места отделов с флагом И только там, где
-    заявки за месяц заданы: без заявок распределение идёт обычным каскадом, и
+    показатель за месяц задан: без него распределение идёт обычным каскадом, и
     показывать его в этом блоке было бы враньём.
     """
     position_by_id = {
         pos.id: pos for positions in positions_by_employee.values() for pos in positions
     }
     dept_ids = [pos.department_id for pos in position_by_id.values()]
-    flagged, applications_by_dept = _applications_context(db, dept_ids, year, month)
-    if not flagged or not applications_by_dept:
+    flagged, counts_by_dept = _quantity_context(db, dept_ids, year, month)
+    if not flagged or not counts_by_dept:
         return []
 
     # Целевые премии/KPI уменьшают базу распределения и здесь тоже — иначе блок
@@ -592,32 +643,26 @@ def build_applications_distribution(
         db, emp_ids, year, month, primary_position_ids
     )
 
-    rows: list[ApplicationsDistributionRow] = []
+    rows: list[QuantityDistributionRow] = []
     for p in summary.employees:
         position = position_by_id.get(p.position_id)
         if position is None:
             continue
-        counts = applications_by_dept.get(position.department_id) or {}
+        counts = counts_by_dept.get(position.department_id) or {}
         if not counts:
             continue
-        accrued = accrued_total(p)
+        base = distribution_base(p)
         targeted = build_targeted_funding(
-            targeted_funding.get(p.employee_id, {}).get(p.position_id), accrued, {}
+            targeted_funding.get(p.employee_id, {}).get(p.position_id), base, {}
         )
-        amounts = merge_targeted(
-            distribute(
-                cascade_base_amount(accrued, targeted),
-                application_weights(counts),
-                position.company_id,
-            ),
-            targeted,
-        )
-        rows.append(ApplicationsDistributionRow(
+        rows.append(QuantityDistributionRow(
             employee_id=p.employee_id,
             position_id=p.position_id,
             department_id=position.department_id,
-            accrued_total=accrued,
-            amounts=amounts,
+            base_amount=base,
+            amounts=finalize_distribution(
+                base, quantity_weights(counts), targeted, company_order
+            ),
         ))
     return rows
 
@@ -695,12 +740,18 @@ def build_payroll_statement(
     dept_shares = load_department_shares(
         db, [pos.department_id for pos in position_by_id.values() if pos.department_id]
     )
-    # Заявки на подбор (task_hr_applications): для отделов с флагом они ЗАМЕНЯЮТ
-    # каскад целиком. Загружаются один раз на всю ведомость — набор общий для
-    # всех сотрудников отдела.
-    applications_departments, applications_by_dept = _applications_context(
+    # Количественный показатель отдела (заявки у HR, АРМ у ИТ): для отделов с
+    # флагом он ЗАМЕНЯЕТ каскад целиком. Загружается один раз на всю ведомость —
+    # набор общий для всех сотрудников отдела.
+    quantity_departments, quantity_by_dept = _quantity_context(
         db, [pos.department_id for pos in position_by_id.values()], year, month
     )
+    quantity_metric_names = {
+        d.id: d.quantity_metric_label
+        for d in db.query(Department).filter(
+            Department.id.in_(quantity_departments or [0])
+        ).all()
+    }
 
     # Обоснования премий/KPI/аванса — только для отчётности, в расчёт не входят.
     adjustment_reasons = load_adjustment_reasons(
@@ -728,39 +779,36 @@ def build_payroll_statement(
         # значит, базы распределения по юрлицам (ни отсутствие, ни ночная смена
         # к юрлицу не привязаны — их разносит каскад процентов).
         accrued = accrued_total(p)
+        # БАЗА распределения — «К выплате» (округлённая), а не начисленное:
+        # разносим по юрлицам ровно то, что платим (task_it_arm_distribution ч.2).
+        base = distribution_base(p)
         main_company = position.company if position else None
 
         position_dept_id = position.department_id if position else None
-        # Отдел с флагом «распределение по заявкам» (HR) делится по заявкам на
-        # подбор, а не по каскаду: проценты одни на весь отдел. Заявки за месяц
-        # не заведены — предупреждаем и уходим на обычный каскад, иначе правка
+        # Отдел с флагом «распределение по количественному показателю» делится по
+        # нему, а не по каскаду: проценты одни на весь отдел. Показатель за месяц
+        # не заведён — предупреждаем и уходим на обычный каскад, иначе правка
         # флага молча обнулила бы распределение отдела.
-        app_counts = applications_by_dept.get(position_dept_id) or {}
+        qty_counts = quantity_by_dept.get(position_dept_id) or {}
         distribution_note = None
 
         # Целевые премии/KPI (task_funding_source) вычитаются из базы ДО каскада:
-        # добавить их сверху распределённого «Итого начислено» значило бы
-        # посчитать эти деньги дважды, и ведомость перестала бы сходиться.
+        # добавить их сверху распределённой базы значило бы посчитать эти деньги
+        # дважды, и ведомость перестала бы сходиться.
         targeted = build_targeted_funding(
             targeted_funding.get(p.employee_id, {}).get(p.position_id),
-            accrued,
+            base,
             company_names,
         )
-        cascade_base = cascade_base_amount(accrued, targeted)
 
-        if app_counts:
-            source = SOURCE_APPLICATIONS
+        if qty_counts:
+            source = SOURCE_QUANTITY
             is_overridden = False
             is_auto = False
-            shares = application_percents(app_counts)
-            # Суммы — от ЧИСЛА заявок напрямую (не от округлённого процента):
-            # доля компании = начислено × заявки / Σзаявок, остаток — основной
-            # компании. Округление то же самое, что в каскаде (`distribute`).
-            dist_amounts = distribute(
-                cascade_base,
-                application_weights(app_counts),
-                main_company.id if main_company else None,
-            )
+            shares = quantity_percents(qty_counts)
+            # Веса — САМИ количества, а не округлённые проценты: доля компании =
+            # база × количество / Σколичеств точно (57000 × 45/104, а не × 43.27%).
+            weights = quantity_weights(qty_counts)
         else:
             shares, source = resolve_shares(
                 position_id=p.position_id,
@@ -772,35 +820,33 @@ def build_payroll_statement(
             is_overridden = source == SOURCE_MONTH
             is_auto = source == SOURCE_HOURS
 
-            if position_dept_id in applications_departments:
+            if position_dept_id in quantity_departments:
+                metric = quantity_metric_names.get(position_dept_id, "Количество")
                 distribution_note = (
-                    "Заявки на подбор за месяц не заданы — "
+                    f"Показатель «{metric}» за месяц не задан — "
                     "распределение по обычному каскаду"
                 )
 
             if not is_auto:
-                dist_amounts = distribute_by_percent(
-                    cascade_base, shares, main_company.id if main_company else None
-                )
+                weights = shares
             else:
                 # Ни на одном уровне каскада % не задан → авто по фактическим часам.
-                shares, dist_amounts = _auto_shares_by_hours(
-                    cascade_base, p.breakdown_by_company, main_company,
+                shares, weights = _auto_shares_by_hours(
+                    p.breakdown_by_company, main_company,
                 )
         percent_sum = sum(shares.values(), _ZERO)
 
-        # Целевые суммы прибавляются ПОСЛЕ каскада — к своим юрлицам и точно
-        # (в округлении долей они не участвуют). Итог по-прежнему ровно равен
-        # «Итого начислено».
-        dist_amounts = merge_targeted(dist_amounts, targeted)
+        # Каскад делит базу без целевых, целевые ложатся на свои юрлица, и весь
+        # набор округляется до ТЫСЯЧИ (ч.3): Σ долей ровно равна «К выплате».
+        dist_amounts = finalize_distribution(base, weights, targeted, company_order)
         # Пометка о целевых суммах живёт в СВОЁМ поле (`targeted_note`):
         # `distribution_note` — про предупреждения каскада, и подпись
-        # «⚠ заявки не заданы» на экране относится именно к нему.
+        # «⚠ показатель не задан» на экране относится именно к нему.
         if targeted.exceeds_accrued:
             distribution_note = (
                 (distribution_note + "; " if distribution_note else "")
-                + "целевые начисления превышают «Итого начислено» — "
-                "распределены только они"
+                + "целевые начисления превышают «К выплате» — "
+                "распределены только они, пропорционально выплате"
             )
 
         # Компания-источник попадает в разбивку, даже если в обычном
@@ -816,7 +862,7 @@ def build_payroll_statement(
                 # Фактическая доля юрлица в начислении: с целевыми суммами она
                 # отличается от заданного в каскаде процента (40/60 при 50/50).
                 effective_percent=effective_percent(
-                    dist_amounts.get(cid, _ZERO), accrued
+                    dist_amounts.get(cid, _ZERO), base
                 ),
                 amount=dist_amounts.get(cid, _ZERO),
             )

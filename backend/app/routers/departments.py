@@ -50,7 +50,10 @@ def _to_dict(obj: Department) -> dict:
         "code": obj.code,
         "head_company_id": obj.head_company_id,
         "night_shift_fund": str(obj.night_shift_fund),
-        "uses_applications_distribution": obj.uses_applications_distribution,
+        "uses_quantity_distribution": obj.uses_quantity_distribution,
+        "quantity_metric_name": obj.quantity_metric_name,
+        "quantity_part1_name": obj.quantity_part1_name,
+        "quantity_part2_name": obj.quantity_part2_name,
         "is_active": obj.is_active,
     }
 
@@ -121,8 +124,12 @@ def create_department(
     if payload.night_shift_fund is not None:
         _check_night_fund(payload.night_shift_fund)
         dept.night_shift_fund = payload.night_shift_fund
-    if payload.uses_applications_distribution is not None:
-        dept.uses_applications_distribution = payload.uses_applications_distribution
+    if payload.uses_quantity_distribution is not None:
+        dept.uses_quantity_distribution = payload.uses_quantity_distribution
+    for field in ("quantity_metric_name", "quantity_part1_name", "quantity_part2_name"):
+        value = getattr(payload, field, None)
+        if value is not None:
+            setattr(dept, field, value.strip() or None)
     db.add(dept)
     db.flush()
     log_action(db, actor, "department", dept.id, "create", after=_to_dict(dept))
@@ -165,10 +172,15 @@ def update_department(
         # это 0. Пришедший null трактуем как «не менять».
         if changes["night_shift_fund"] is None:
             changes.pop("night_shift_fund")
-    if changes.get("uses_applications_distribution") is None:
-        # Флаг «по заявкам» — обязательная колонка: пришедший null означает
-        # «не менять», как и у фонда.
-        changes.pop("uses_applications_distribution", None)
+    if changes.get("uses_quantity_distribution") is None:
+        # Флаг «по количественному показателю» — обязательная колонка: пришедший
+        # null означает «не менять», как и у фонда.
+        changes.pop("uses_quantity_distribution", None)
+    # Подписи показателя, наоборот, обнуляются явно: пустая строка = «нет
+    # подписи» (у показателя без разбивки частей нет вовсе).
+    for field in ("quantity_metric_name", "quantity_part1_name", "quantity_part2_name"):
+        if field in changes:
+            changes[field] = (changes[field] or "").strip() or None
     for field, value in changes.items():
         setattr(dept, field, value)
     db.flush()

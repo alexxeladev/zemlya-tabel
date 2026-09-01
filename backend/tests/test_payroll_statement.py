@@ -14,8 +14,12 @@ from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.company_order import company_display_name
-from app.services.distribution import distribute, split_equally
-from app.services.payroll_statement import distribute_by_percent
+from app.services.distribution import (
+    distribute,
+    distribute_largest_remainder,
+    split_equally,
+)
+from app.services.payroll_statement import EMPTY_TARGETED, finalize_distribution
 from tests.conftest import get_token
 
 MAY_BASIC = {"year": 2026, "months": [{"month": 5, "days": "3,4,10,11,17,18,24,25,31"}]}
@@ -24,10 +28,15 @@ MAY_WORKDAYS = [d for d in range(1, 32) if d not in (3, 4, 10, 11, 17, 18, 24, 2
 
 # ── Unit: распределение по процентам ──────────────────────────────────────────
 
+def _by_percent(total, shares, main=None):
+    """Суммы каскада без целевых премий — то, что считает ведомость."""
+    return finalize_distribution(total, shares, EMPTY_TARGETED)
+
+
 class TestDistributeByPercent:
     def test_example_from_task(self):
         """120000 при 50/30/20 → 60000 / 36000 / 24000."""
-        result = distribute_by_percent(
+        result = _by_percent(
             Decimal("120000"), {1: Decimal("50"), 2: Decimal("30"), 3: Decimal("20")}
         )
         assert result[1] == Decimal("60000")
@@ -37,7 +46,7 @@ class TestDistributeByPercent:
 
     def test_sum_matches_total_with_rounding(self):
         """Доли, не делящиеся нацело, всё равно сходятся с итогом."""
-        result = distribute_by_percent(
+        result = _by_percent(
             Decimal("100"), {1: Decimal("33.33"), 2: Decimal("33.33"), 3: Decimal("33.34")}
         )
         assert sum(result.values()) == Decimal("100")
@@ -45,11 +54,11 @@ class TestDistributeByPercent:
     def test_normalizes_non_100_sum(self):
         """Сумма процентов ≠ 100 — всё равно распределяет всю сумму (нормализация)."""
         shares = {1: Decimal("50"), 2: Decimal("50"), 3: Decimal("50")}
-        result = distribute_by_percent(Decimal("100"), shares)
+        result = _by_percent(Decimal("100"), shares)
         assert sum(result.values()) == Decimal("100")
 
     def test_empty_shares(self):
-        assert distribute_by_percent(Decimal("1000"), {}) == {}
+        assert _by_percent(Decimal("1000"), {}) == {}
 
 
 # ── Unit: единый модуль распределения (task_distribution_v2 ч.1) ───────────────
@@ -85,12 +94,13 @@ class TestDistributionRounding:
             result = distribute(total, shares, main_key=1)
             assert sum(result.values()) == total
 
-    def test_statement_uses_same_function(self):
-        """distribute_by_percent — тонкая обёртка над общим distribute."""
+    def test_statement_uses_the_thousand_rounding(self):
+        """Ведомость (без целевых премий) складывается ровно из общего
+        `distribute_largest_remainder` — своей арифметики у неё нет."""
         shares = {1: Decimal("16.67"), 2: Decimal("16.67"), 3: Decimal("16.67"),
                   4: Decimal("16.67"), 5: Decimal("16.67"), 6: Decimal("16.65")}
-        assert (distribute_by_percent(Decimal("350000"), shares, 1)
-                == distribute(Decimal("350000"), shares, 1))
+        assert (finalize_distribution(Decimal("350000"), shares, EMPTY_TARGETED)
+                == distribute_largest_remainder(Decimal("350000"), shares))
 
 
 class TestSplitEqually:
@@ -303,7 +313,12 @@ class TestAutoDistributionByHours:
 
     def test_auto_by_hours_no_manual_percent(self, client, admin, worker, companies,
                                              schedule, calendar, db_session):
-        """167 ksec + 4 rest, без ручных % → 97.66% / 2.34%, сумма = Итого начислено."""
+        """167 ksec + 4 rest, без ручных % → 97.66% / 2.34%, сумма = «К выплате».
+
+        База распределения — «К выплате» (task_it_arm_distribution ч.2), а сами
+        доли округлены до тысячи (ч.3): проценты справочные, суммы по ним не
+        пересчитываются в лоб.
+        """
         self._two_company_entries(db_session, worker.id, companies[0].id, companies[1].id)
         token = get_token(client, "stmtadmin@example.com", "admin123")
         r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
@@ -315,10 +330,11 @@ class TestAutoDistributionByHours:
         assert pcts[companies[0].id] == Decimal("97.66")
         assert pcts[companies[1].id] == Decimal("2.34")
 
-        accrued = Decimal(row["accrued_total"])
+        net = Decimal(row["net_payout"])
         amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
-        assert sum(amounts.values()) == accrued
-        assert Decimal(row["distribution_total"]) == accrued
+        assert sum(amounts.values()) == net
+        assert Decimal(row["distribution_total"]) == net
+        assert all(a % 1000 == 0 for a in amounts.values())
         # доля больших часов получает большую сумму
         assert amounts[companies[0].id] > amounts[companies[1].id]
 
@@ -336,9 +352,13 @@ class TestAutoDistributionByHours:
         r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
         row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
         assert row["is_auto_distributed"] is False
-        accrued = Decimal(row["accrued_total"])
+        net = Decimal(row["net_payout"])
         amounts = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
-        assert amounts[companies[0].id] == (accrued * Decimal("50") / Decimal("100")).quantize(Decimal("1"))
+        # 50% от «К выплате», округлённые до тысячи (вниз, с раздачей остатка).
+        half = net * Decimal("50") / Decimal("100")
+        assert abs(amounts[companies[0].id] - half) < Decimal("1000")
+        assert amounts[companies[0].id] % 1000 == 0
+        assert sum(amounts.values()) == net
         assert companies[2].id in amounts  # компания без часов, но с ручным %
 
     def test_clearing_manual_returns_to_auto(self, client, admin, worker, companies,
@@ -643,10 +663,11 @@ class TestScreenMatchesExcel:
     """AC 1 и 6: 350000 на 6 компаний — сумма ровно 350000 и на экране, и в Excel.
 
     Суммы следуют ЗАФИКСИРОВАННЫМ процентам (5 × 16.67% + основная 16.65%), а не
-    идеальной 1/6: иначе ₽ в строке не сходились бы с показанным рядом %. Ровно
-    1/6 (58333×5 + 58335 основной) получается при равных весах — см.
-    TestDistributionRounding.test_350000_on_six_companies. В обоих случаях сумма
-    частей ровно равна итогу, остаток — основной компании.
+    идеальной 1/6: иначе ₽ в строке не сходились бы с показанным рядом %.
+    С task_it_arm_distribution ч.3 доли ещё и округлены до ТЫСЯЧИ: точные 58345
+    и 58275 floor-ятся до 58000, а две недостающие тысячи уходят наибольшим
+    хвостам (345 против 275 — то есть 16.67-процентным, в порядке юрлиц).
+    Сумма частей при этом по-прежнему ровно равна базе.
     """
 
     def test_six_equal_shares_sum_exactly(
@@ -676,11 +697,12 @@ class TestScreenMatchesExcel:
         r = client.get("/api/timesheet/2026/5/statement", headers=_h(client, token))
         row = next(x for x in r.json()["rows"] if x["employee_id"] == worker.id)
         assert Decimal(row["accrued_total"]) == Decimal("350000")
+        # Удержаний нет → «К выплате» = 350000, она же база распределения.
+        assert Decimal(row["net_payout"]) == Decimal("350000")
         screen = {d["company_id"]: Decimal(d["amount"]) for d in row["distribution"]}
         assert sum(screen.values()) == Decimal("350000")
-        # 16.67% → 58345 у пяти компаний, основная добирает остаток до итога
-        assert sorted(screen.values()) == [Decimal("58275")] + [Decimal("58345")] * 5
-        assert screen[worker.default_company_id] == Decimal("58275")
+        assert sorted(screen.values()) == [Decimal("58000")] * 4 + [Decimal("59000")] * 2
+        assert all(a % 1000 == 0 for a in screen.values())
         assert len(screen) == 6
 
         # Excel считает те же суммы (единый источник распределения)

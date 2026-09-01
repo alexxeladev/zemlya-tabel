@@ -35,8 +35,9 @@ _SOURCE_LABELS = {
     "employee": "проценты из карточки сотрудника",
     "department": "дефолт отдела",
     "hours": "распределено по часам (авто)",
-    # Отдел с флагом «распределение по заявкам» (task_hr_applications)
-    "applications": "по заявкам на подбор",
+    # Отдел с флагом «распределение по количественному показателю»
+    # (заявки у HR, АРМ у ИТ) — каскад к нему не применяется вовсе.
+    "quantity": "по количественному показателю отдела",
 }
 
 _MONTHS = [
@@ -190,8 +191,8 @@ def _note_text(row: StatementRow) -> str:
     source_label = _SOURCE_LABELS.get(row.distribution_source)
     if source_label and row.distribution:
         note = (note + "; " if note else "") + source_label
-    # Отдел «по заявкам», но заявок за месяц нет — распределение ушло на каскад,
-    # и в выгрузке это должно быть видно (task_hr_applications).
+    # Отдел «по количественному показателю», но показателя за месяц нет —
+    # распределение ушло на каскад, и в выгрузке это должно быть видно.
     if row.distribution_note:
         note = (note + "; " if note else "") + row.distribution_note
     # Целевые премии/KPI (task_funding_source): без этой строки в выгрузке
