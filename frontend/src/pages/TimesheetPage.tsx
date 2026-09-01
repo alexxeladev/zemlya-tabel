@@ -1670,11 +1670,11 @@ export function TimesheetPage() {
   // Ниже — БЕЗ useMemo: этот участок идёт после ранних return-ов (гейт отдела,
   // загрузка, пустой ответ), а хук после условного выхода ломает порядок хуков
   // и роняет страницу. Данных тут десятки строк, считать их каждый рендер дёшево.
-  /** posKey → {company_id: сумма} — суммы считает бэк, фронт их только рисует. */
+  /** posKey → строка распределения — суммы считает бэк, фронт их только рисует. */
   const distByPos = (() => {
-    const map = new Map<string, Record<number, string>>();
+    const map = new Map<string, QuantityDistributionRow>();
     for (const r of data.quantity_distribution ?? []) {
-      map.set(posKey(r.employee_id, r.position_id), r.amounts);
+      map.set(posKey(r.employee_id, r.position_id), r);
     }
     return map;
   })();
@@ -2057,10 +2057,15 @@ export function TimesheetPage() {
                  Суммы приходят с бэка теми же числами, что в ведомости; фронт
                  базу распределения из кусков расчёта не пересобирает. */}
             {distributionOn && (() => {
-              const amounts = distByPos.get(posKey(emp.id, position.id)) ?? null;
+              const distRow = distByPos.get(posKey(emp.id, position.id)) ?? null;
+              const amounts = distRow?.amounts ?? null;
               const rowTotal = amounts
                 ? Object.values(amounts).reduce((acc, v) => acc + num(v), 0)
                 : 0;
+              // Остаток округления распределения вниз до 1000 ₽ (0…999 ₽):
+              // он не приписан ни одному юрлицу, поэтому ИТОГО меньше
+              // «Итого начислено» строки — без подписи это выглядит ошибкой.
+              const rowRest = num(distRow?.unallocated_remainder ?? '0');
               return (
                 <>
                   {distCompanies.map((c) => (
@@ -2079,6 +2084,18 @@ export function TimesheetPage() {
                     className="border border-gray-200 px-2 py-2 text-right font-mono font-semibold text-emerald-800 bg-emerald-100/60"
                   >
                     {rowTotal > 0 ? fmtMoney(String(rowTotal)) : '—'}
+                    {rowRest > 0 && (
+                      <div
+                        className="text-[10px] font-normal text-gray-500"
+                        title={
+                          'Нераспределённый остаток: «Итого начислено» минус разнесённое. ' +
+                          'Суммы по юрлицам кратны 1000 ₽ и округляются вниз, ' +
+                          'поэтому остаётся 0…999 ₽ — они не приписываются никому.'
+                        }
+                      >
+                        ост. {fmtMoney(String(rowRest))}
+                      </div>
+                    )}
                   </td>
                 </>
               );
@@ -2617,7 +2634,8 @@ export function TimesheetPage() {
                   </th>
                 </>
               )}
-              {/* Распределение начисленного по юрлицам — по заявкам на подбор */}
+              {/* Распределение НАЧИСЛЕННОГО по юрлицам (заявки у HR, АРМ у ИТ):
+                  база — «Итого начислено», удержания её не уменьшают. */}
               {distributionOn && (
                 <>
                   {distCompanies.map((c) => (
@@ -2625,7 +2643,7 @@ export function TimesheetPage() {
                       key={`dist-h-${c.id}`}
                       className="sticky top-0 bg-emerald-50 border border-gray-200 px-2 py-2 text-right font-medium text-emerald-800 leading-tight"
                       style={{ minWidth: 96, maxWidth: 130, zIndex: 20 }}
-                      title={`Распределение по заявкам: ${c.name}`}
+                      title={`Распределение начисленного: ${c.name}`}
                     >
                       {companyLabel(c)}
                     </th>
@@ -2633,7 +2651,11 @@ export function TimesheetPage() {
                   <th
                     className="sticky top-0 bg-emerald-100 border border-gray-200 px-2 py-2 text-right font-semibold text-emerald-900"
                     style={{ minWidth: 100, zIndex: 20 }}
-                    title="Итого распределено — равно «Итого ₽» строки"
+                    title={
+                      'Итого распределено: «Итого начислено» строки, округлённое ' +
+                      'ВНИЗ до 1000 ₽. Разница 0…999 ₽ — нераспределённый остаток, ' +
+                      'он не приписывается юрлицам.'
+                    }
                   >
                     ИТОГО
                   </th>
