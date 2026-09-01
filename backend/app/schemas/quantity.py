@@ -74,8 +74,10 @@ class QuantityDistributionRow(BaseModel):
     employee_id: int
     position_id: int | None = None
     department_id: int | None = None
-    # База распределения — «К выплате» строки (округлённая до тысячи,
-    # task_it_arm_distribution ч.2), а не «Итого начислено».
+    # База распределения — «Итого начислено» строки: затраты компании возникают
+    # при начислении, удержания их не уменьшают.
     base_amount: Decimal
-    # company_id → сумма; сумма значений ровно равна base_amount
+    # company_id → сумма, каждая кратна 1000 ₽ (округление ВНИЗ)
     amounts: dict[int, Decimal]
+    # base_amount − Σ amounts, от 0 до 999 ₽: никому не приписано.
+    unallocated_remainder: Decimal = Decimal("0")
