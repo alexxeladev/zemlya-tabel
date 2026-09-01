@@ -32,10 +32,10 @@ import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
 import { usePeriodStore } from '../store/period';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { UI_KEYS } from '../utils/persist';
-import { ApplicationsPanel } from '../components/ApplicationsPanel';
+import { QuantityPanel } from '../components/QuantityPanel';
 import { ColumnFilter } from '../components/ColumnFilter';
 import { RowCheckBox, RowCheckProgress } from '../components/RowCheck';
-import type { AbsenceKind, ApplicationsDistributionRow, AutofillPreview, DepartmentApplications, NightFund, NightShift } from '../types/api';
+import type { AbsenceKind, AutofillPreview, DepartmentQuantities, NightFund, NightShift, QuantityDistributionRow } from '../types/api';
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
@@ -265,9 +265,9 @@ export type MonthResponse = {
   /** фонд ночных смен по отделам: ставка, лимит смен и остаток */
   night_funds?: NightFund[];
   /** заявки на подбор отделов с флагом «распределение по заявкам» */
-  applications?: DepartmentApplications[];
+  quantities?: DepartmentQuantities[];
   /** суммы распределения по юрлицам для строк таких отделов (считает бэк) */
-  applications_distribution?: ApplicationsDistributionRow[];
+  quantity_distribution?: QuantityDistributionRow[];
   /** доп. юрлица сотрудника (кроме основного), где у него есть часы */
   extra_companies_by_employee?: Record<number, number[]>;
   payroll: PayrollSummary | null;
@@ -768,7 +768,7 @@ export function TimesheetPage() {
                 // Суммы распределения считаются вместе с расчётом: без него бэк
                 // присылает пустой список, и колонки «Распределение» мигали бы
                 // прочерками на каждую введённую цифру.
-                applications_distribution: prev.applications_distribution,
+                quantity_distribution: prev.quantity_distribution,
               }
         );
         setCalendar(cal);
@@ -831,7 +831,7 @@ export function TimesheetPage() {
   const refreshPayroll = useCallback(async (): Promise<boolean> => {
     if (!deptChosen || !canSeeHourStats) return false;
     if (!canSeeMoney) return fetchMonth(true);
-    if ((dataRef.current?.applications ?? []).length > 0) return fetchMonth(true);
+    if ((dataRef.current?.quantities ?? []).length > 0) return fetchMonth(true);
     try {
       const payroll = await timesheetApi.getPayroll(
         year, month, departmentFilter ?? undefined,
@@ -1658,12 +1658,13 @@ export function TimesheetPage() {
   const MONEY_COLS = 15;
   const HOUR_COLS = 8;
 
-  // ── Блок «Распределение» (task_hr_applications) ──
-  // Показывается только в табеле отдела «по заявкам» и только тем, кто видит
-  // деньги. Видимость завязана на сами ЗАЯВКИ, а не на присланные суммы: суммы
-  // приходят вместе с расчётом, и колонки прыгали бы после каждой правки часа.
+  // ── Блок «Распределение» (заявки у HR, АРМ у ИТ) ──
+  // Показывается только в табеле отдела «по количественному показателю» и только
+  // тем, кто видит деньги. Видимость завязана на сам ПОКАЗАТЕЛЬ, а не на
+  // присланные суммы: суммы приходят вместе с расчётом, и колонки прыгали бы
+  // после каждой правки часа.
   const distributionOn =
-    canSeeMoney && (data.applications ?? []).some((a) => !a.is_empty);
+    canSeeMoney && (data.quantities ?? []).some((a) => !a.is_empty);
   const distCompanies = distributionOn ? data.companies : [];
   const distCols = distributionOn ? distCompanies.length + 1 : 0;
   // Ниже — БЕЗ useMemo: этот участок идёт после ранних return-ов (гейт отдела,
@@ -1672,7 +1673,7 @@ export function TimesheetPage() {
   /** posKey → {company_id: сумма} — суммы считает бэк, фронт их только рисует. */
   const distByPos = (() => {
     const map = new Map<string, Record<number, string>>();
-    for (const r of data.applications_distribution ?? []) {
+    for (const r of data.quantity_distribution ?? []) {
       map.set(posKey(r.employee_id, r.position_id), r.amounts);
     }
     return map;
@@ -1686,7 +1687,7 @@ export function TimesheetPage() {
     const totals: Record<number, number> = {};
     const byDept = new Map<number, { totals: Record<number, number>; grand: number }>();
     let grand = 0;
-    for (const r of data.applications_distribution ?? []) {
+    for (const r of data.quantity_distribution ?? []) {
       const dept = r.department_id;
       if (dept != null && !byDept.has(dept)) byDept.set(dept, { totals: {}, grand: 0 });
       const bucket = dept != null ? byDept.get(dept)! : null;
@@ -2052,9 +2053,9 @@ export function TimesheetPage() {
             >
               {pay?.is_calculable ? fmtMoney(pay?.net_payout ?? null) : '—'}
             </td>
-            {/* ── Распределение по заявкам (task_hr_applications) ──
+            {/* ── Распределение по количественному показателю ──
                  Суммы приходят с бэка теми же числами, что в ведомости; фронт
-                 «Итого начислено» из кусков расчёта не пересобирает. */}
+                 базу распределения из кусков расчёта не пересобирает. */}
             {distributionOn && (() => {
               const amounts = distByPos.get(posKey(emp.id, position.id)) ?? null;
               const rowTotal = amounts
@@ -2376,11 +2377,12 @@ export function TimesheetPage() {
         </div>
       </div>
 
-      {/* ───── Заявки на подбор (task_hr_applications) ─────
-           Показывается только для отделов с флагом «распределение по заявкам»
-           (у остальных блока нет вовсе) и только тем, кто видит распределение. */}
-      <ApplicationsPanel
-        applications={data.applications ?? []}
+      {/* ───── Количественный показатель отдела (заявки у HR, АРМ у ИТ) ─────
+           Показывается только для отделов с флагом «распределение по
+           количественному показателю» (у остальных блока нет вовсе) и только
+           тем, кто видит распределение. */}
+      <QuantityPanel
+        quantities={data.quantities ?? []}
         companies={data.companies}
         year={year}
         month={month}

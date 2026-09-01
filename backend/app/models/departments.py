@@ -20,6 +20,11 @@ if TYPE_CHECKING:
 # следует лимит числа смен — вручную ставка больше не задаётся.
 DEFAULT_NIGHT_SHIFT_FUND = Decimal("100000")
 
+# Нейтральная подпись количественного показателя отдела, когда своя не задана
+# (task_it_arm_distribution): механизм один, называется он у каждого отдела
+# по-своему — «Заявки» у HR, «АРМ» у ИТ.
+DEFAULT_QUANTITY_METRIC = "Количество"
+
 
 class Department(Base):
     __tablename__ = "departments"
@@ -46,15 +51,40 @@ class Department(Base):
         nullable=False,
     )
 
-    # Распределение зарплаты по ЗАЯВКАМ НА ПОДБОР (task_hr_applications).
-    # Флаг, а не имя отдела: «HR» — это про конкретный отдел сегодня, а правило
-    # («делим по числу отработанных заявок») может понадобиться и другому.
-    # Включён → проценты по юрлицам берутся из `department_applications` месяца
+    # Распределение зарплаты по КОЛИЧЕСТВЕННОМУ ПОКАЗАТЕЛЮ отдела
+    # (task_hr_applications → обобщено в task_it_arm_distribution).
+    # Флаг, а не имя отдела: правило «делим по количеству» одно, а что именно
+    # считается — настройка. У HR это заявки на подбор, у ИТ — число АРМ.
+    # Включён → проценты по юрлицам берутся из `department_quantities` месяца
     # и ЗАМЕНЯЮТ обычный каскад для ВСЕХ сотрудников отдела. Выключен (дефолт) —
     # отдел живёт по каскаду, как и раньше.
-    uses_applications_distribution: Mapped[bool] = mapped_column(
+    uses_quantity_distribution: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false", nullable=False
     )
+
+    # Как называется показатель — подпись в табеле, ведомости и Excel:
+    # «Заявки» у HR, «АРМ» у ИТ. Пусто → нейтральное DEFAULT_QUANTITY_METRIC.
+    quantity_metric_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Подписи ДВУХ ЧАСТЕЙ показателя, если он из них состоит: у HR «В работе» и
+    # «Закрытые». Обе пусты → показатель вводится ОДНИМ числом (АРМ). Именно
+    # подписи, а не отдельный флаг: без имени часть всё равно нечем подписать,
+    # а два источника одного признака разъехались бы.
+    quantity_part1_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    quantity_part2_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    @property
+    def quantity_metric_label(self) -> str:
+        """Подпись показателя для UI и выгрузок."""
+        return (self.quantity_metric_name or "").strip() or DEFAULT_QUANTITY_METRIC
+
+    @property
+    def quantity_has_parts(self) -> bool:
+        """Показатель состоит из двух частей (у HR — «в работе»/«закрытые»)."""
+        return bool(
+            (self.quantity_part1_name or "").strip()
+            or (self.quantity_part2_name or "").strip()
+        )
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[str] = mapped_column(server_default=func.now())

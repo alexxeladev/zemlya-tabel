@@ -461,8 +461,10 @@ class TestAbsenceInPayrollResponse:
         assert row["vacation_days"] == 1
         assert Decimal(row["vacation_amount"]) == Decimal("2395")
         assert Decimal(row["accrued_total"]) == Decimal("2395")
-        # вся сумма разнесена по юрлицам без потерь
-        assert Decimal(row["distribution_total"]) == Decimal("2395")
+        # По юрлицам разносится «К выплате» (task_it_arm_distribution ч.2), и
+        # она округлена до тысячи: 2395 → 2000. Разнесена без потерь.
+        assert Decimal(row["net_payout"]) == Decimal("2000")
+        assert Decimal(row["distribution_total"]) == Decimal("2000")
 
 
 # ── Годовой лимит больничного (часть 2) ───────────────────────────────────────

@@ -69,8 +69,13 @@ type DepartmentForm = {
   head_company_id: number | null
   /** фонд ночных смен на месяц; из него считаются ставка и лимит числа смен */
   night_shift_fund: string
-  /** делить зарплату отдела по заявкам на подбор вместо каскада процентов */
-  uses_applications_distribution: boolean
+  /** делить зарплату отдела по количественному показателю вместо каскада */
+  uses_quantity_distribution: boolean
+  /** как показатель называется: «Заявки» у HR, «АРМ» у ИТ */
+  quantity_metric_name: string
+  /** подписи двух частей показателя; обе пусты — вводится одним числом */
+  quantity_part1_name: string
+  quantity_part2_name: string
 }
 
 /** Ставка ночной смены = фонд ÷ календарные дни месяца, лимит смен = число дней
@@ -158,12 +163,12 @@ function DepartmentNode({
               🌙 {Math.round(Number(dept.night_shift_fund)).toLocaleString('ru-RU')} ₽/мес
             </span>
           )}
-          {dept.uses_applications_distribution && (
+          {dept.uses_quantity_distribution && (
             <span
               className="text-xs text-emerald-600"
-              title="Зарплата отдела распределяется по числу заявок на подбор за месяц, а не по каскаду процентов"
+              title="Зарплата отдела распределяется по количественному показателю за месяц, а не по каскаду процентов"
             >
-              📋 по заявкам
+              📋 по «{dept.quantity_metric_name || 'Количество'}»
             </span>
           )}
         </button>
@@ -398,7 +403,10 @@ export function OrgStructurePage() {
       code: deptForm.code.trim(),
       head_company_id: deptForm.head_company_id,
       night_shift_fund: String(Number(deptForm.night_shift_fund.replace(',', '.')) || 0),
-      uses_applications_distribution: deptForm.uses_applications_distribution,
+      uses_quantity_distribution: deptForm.uses_quantity_distribution,
+      quantity_metric_name: deptForm.quantity_metric_name.trim(),
+      quantity_part1_name: deptForm.quantity_part1_name.trim(),
+      quantity_part2_name: deptForm.quantity_part2_name.trim(),
     }
     if (!payload.name || !payload.code) {
       toast.error('Название и код обязательны')
@@ -480,7 +488,10 @@ export function OrgStructurePage() {
         code: d.code,
         head_company_id: d.head_company_id,
         night_shift_fund: d.night_shift_fund ?? '100000',
-        uses_applications_distribution: d.uses_applications_distribution,
+        uses_quantity_distribution: d.uses_quantity_distribution,
+        quantity_metric_name: d.quantity_metric_name ?? '',
+        quantity_part1_name: d.quantity_part1_name ?? '',
+        quantity_part2_name: d.quantity_part2_name ?? '',
       }),
     onDelete: setDeleteDeptTarget,
     onManagers: setManagersFor,
@@ -527,7 +538,8 @@ export function OrgStructurePage() {
             onAddDepartment={(companyId) =>
               openDeptForm({
                 name: '', code: '', head_company_id: companyId,
-                night_shift_fund: '100000', uses_applications_distribution: false,
+                night_shift_fund: '100000', uses_quantity_distribution: false,
+                quantity_metric_name: '', quantity_part1_name: '', quantity_part2_name: '',
               })
             }
             {...deptNodeProps}
@@ -713,30 +725,84 @@ export function OrgStructurePage() {
               </p>
             </Field>
 
-            {/* Распределение по заявкам на подбор (task_hr_applications).
-                Флаг, а не имя отдела: правило может понадобиться не только HR. */}
+            {/* Распределение по количественному показателю отдела
+                (task_hr_applications → обобщено в task_it_arm_distribution).
+                Флаг и НАЗВАНИЕ показателя, а не имя отдела: правило одно, а что
+                считается — настройка (заявки у HR, АРМ у ИТ). */}
             <label className="flex cursor-pointer items-start gap-2">
               <input
                 type="checkbox"
                 className="mt-0.5 h-4 w-4 rounded border-gray-300"
-                checked={deptForm.uses_applications_distribution}
+                checked={deptForm.uses_quantity_distribution}
                 onChange={(e) =>
                   setDeptForm({
                     ...deptForm,
-                    uses_applications_distribution: e.target.checked,
+                    uses_quantity_distribution: e.target.checked,
                   })
                 }
               />
               <span className="text-sm text-gray-700">
-                Распределение по заявкам на подбор
+                Распределение по количественному показателю
                 <span className="mt-0.5 block text-[11px] text-gray-400">
-                  Зарплата сотрудников отдела делится между юрлицами по числу заявок,
-                  отработанных за месяц (заявки вводятся в табеле отдела). Каскад ниже
-                  для такого отдела НЕ применяется — он остаётся запасным вариантом на
-                  месяцы, когда заявки не заведены.
+                  Зарплата сотрудников отдела делится между юрлицами по количеству,
+                  набранному за месяц (вводится в табеле отдела). Каскад ниже для
+                  такого отдела НЕ применяется — он остаётся запасным вариантом на
+                  месяцы, когда показатель не заведён.
                 </span>
               </span>
             </label>
+
+            {deptForm.uses_quantity_distribution && (
+              <div className="ml-6 flex flex-col gap-2 border-l-2 border-emerald-100 pl-3">
+                <Field label="Название показателя">
+                  <input
+                    className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                    value={deptForm.quantity_metric_name}
+                    onChange={(e) =>
+                      setDeptForm({ ...deptForm, quantity_metric_name: e.target.value })
+                    }
+                    placeholder="Заявки / АРМ"
+                  />
+                  <p className="mt-1 text-[11px] text-gray-400">
+                    Подпись в табеле, ведомости и выгрузке: «Заявки» у HR, «АРМ» у ИТ.
+                    Пусто — нейтральное «Количество».
+                  </p>
+                </Field>
+                {/* Подписи частей — они же признак «показатель из двух частей»:
+                    заполнены у HR («в работе» / «закрытые»), пусты у АРМ, и
+                    тогда показатель вводится одним числом. Отдельного флага
+                    нет намеренно: два источника одного признака разъехались бы. */}
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Часть 1 (необязательно)">
+                    <input
+                      className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                      value={deptForm.quantity_part1_name}
+                      onChange={(e) =>
+                        setDeptForm({ ...deptForm, quantity_part1_name: e.target.value })
+                      }
+                      placeholder="В работе"
+                    />
+                  </Field>
+                  <Field label="Часть 2 (необязательно)">
+                    <input
+                      className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                      value={deptForm.quantity_part2_name}
+                      onChange={(e) =>
+                        setDeptForm({ ...deptForm, quantity_part2_name: e.target.value })
+                      }
+                      placeholder="Закрытые"
+                    />
+                  </Field>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  Если показатель делится на две части (как заявки HR — «в работе»
+                  и «закрытые»), назовите их здесь: в табеле появятся две строки
+                  ввода, а «{deptForm.quantity_metric_name.trim() || 'Количество'}»
+                  будет их суммой. Оставьте пустыми — показатель вводится одним
+                  числом (АРМ).
+                </p>
+              </div>
+            )}
 
             {/* Дефолт распределения затрат по юрлицам (task_distribution_v2 ч.3).
                 Это и есть «на кого работают» в деньгах — в отличие от головной

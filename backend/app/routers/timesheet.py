@@ -20,9 +20,9 @@ from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
 from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.absence import AbsenceInput, AbsenceRead
-from app.schemas.application import (
-    DepartmentApplicationsRead,
-    DepartmentApplicationsUpdate,
+from app.schemas.quantity import (
+    DepartmentQuantitiesRead,
+    DepartmentQuantitiesUpdate,
 )
 from app.schemas.night_shift import NightFundRead, NightShiftInput, NightShiftRead
 from app.schemas.payout import (
@@ -61,9 +61,9 @@ from app.services.absences import (
     schedules_by_employee,
     set_absence,
 )
-from app.services.applications import (
-    department_applications_state,
-    set_department_applications,
+from app.services.quantity_distribution import (
+    department_quantities_state,
+    set_department_quantities,
 )
 from app.services.company_order import (
     company_display_name,
@@ -89,7 +89,7 @@ from app.services.org_access import (
     managed_department_ids,
 )
 from app.services.payroll_statement import (
-    build_applications_distribution,
+    build_quantity_distribution,
     build_payroll_statement,
     build_payroll_summary,
 )
@@ -137,11 +137,12 @@ def _check_year_month(year: int, month: int) -> None:
         )
 
 
-def _applications_department_scope(
+def _quantity_department_scope(
     actor: Employee, department_id: int | None
 ) -> list[int] | None:
-    """Отделы, чьи заявки на подбор отдавать: выбранный, все свои у менеджера,
-    None («все с флагом») у admin/accountant. Отделы БЕЗ флага отсеет сам сервис.
+    """Отделы, чей количественный показатель отдавать: выбранный, все свои у
+    менеджера, None («все с флагом») у admin/accountant. Отделы БЕЗ флага
+    отсеет сам сервис.
     """
     if department_id is not None:
         return [department_id]
@@ -465,41 +466,41 @@ def delete_distribution_override(
     db.commit()
 
 
-# ── Заявки на подбор (task_hr_applications) ───────────────────────────────────
+# ── Количественный показатель отдела (заявки у HR, АРМ у ИТ) ──────────────────
 #
-# Отдел с флагом `uses_applications_distribution` (HR) делит зарплату своих
-# сотрудников по числу отработанных за месяц заявок, а не по каскаду. Заявки —
-# управленческая настройка распределения, поэтому права те же, что у процентов
-# в ведомости: финансовые роли, менеджер — только свои отделы. Статус периода
-# не при чём: это не факт времени, а правило разнесения затрат.
+# Отдел с флагом `uses_quantity_distribution` делит зарплату своих сотрудников
+# по набранному за месяц количеству, а не по каскаду. Это управленческая
+# настройка распределения, поэтому права те же, что у процентов в ведомости:
+# финансовые роли, менеджер — только свои отделы. Статус периода не при чём:
+# это не факт времени, а правило разнесения затрат.
 
-@router.get("/{year}/{month}/applications", response_model=list[DepartmentApplicationsRead])
-def get_applications(
+@router.get("/{year}/{month}/quantities", response_model=list[DepartmentQuantitiesRead])
+def get_quantities(
     year: int,
     month: int,
     department_id: Optional[int] = Query(default=None),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    """Заявки на подбор за месяц и вычисленные из них проценты — по отделам с
-    флагом «распределение по заявкам». Отделов без флага в выдаче нет."""
+    """Количественный показатель за месяц и вычисленные из него проценты — по
+    отделам с флагом. Отделов без флага в выдаче нет."""
     _require_finance_role(actor)
     _check_year_month(year, month)
     _require_dept_access(actor, department_id)
-    return department_applications_state(
-        db, _applications_department_scope(actor, department_id), year, month
+    return department_quantities_state(
+        db, _quantity_department_scope(actor, department_id), year, month
     )
 
 
-@router.put("/applications", response_model=DepartmentApplicationsRead)
-def set_applications(
-    payload: DepartmentApplicationsUpdate,
+@router.put("/quantities", response_model=DepartmentQuantitiesRead)
+def set_quantities(
+    payload: DepartmentQuantitiesUpdate,
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    """Задать заявки отдела за месяц целиком (что прислали, то и будет).
+    """Задать количества отдела за месяц целиком (что прислали, то и будет).
 
-    Только для отдела с флагом: без него заявки некуда применить, и молча
+    Только для отдела с флагом: без него показатель некуда применить, и молча
     сохранённый набор был бы данными-призраком.
     """
     _require_finance_role(actor)
@@ -510,16 +511,16 @@ def set_applications(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Department not found"
         )
-    if not dept.uses_applications_distribution:
+    if not dept.uses_quantity_distribution:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"Отдел «{dept.name}» не распределяется по заявкам — "
-                "включите признак в карточке отдела"
+                f"Отдел «{dept.name}» не распределяется по количественному "
+                "показателю — включите признак в карточке отдела"
             ),
         )
     seen: set[int] = set()
-    for item in payload.applications:
+    for item in payload.items:
         _check_company_exists(db, item.company_id)
         if item.company_id in seen:
             raise HTTPException(
@@ -528,19 +529,19 @@ def set_applications(
             )
         seen.add(item.company_id)
 
-    set_department_applications(
-        db, dept.id, payload.year, payload.month, payload.applications, actor.id
+    set_department_quantities(
+        db, dept.id, payload.year, payload.month, payload.items, actor.id
     )
     log_action(
-        db, actor, "department_applications", dept.id, "set",
+        db, actor, "department_quantities", dept.id, "set",
         after={"year": payload.year, "month": payload.month,
-               "applications": {
-                   i.company_id: {"in_progress": i.in_progress, "closed": i.closed}
-                   for i in payload.applications
+               "items": {
+                   i.company_id: {"part1": i.part1, "part2": i.part2}
+                   for i in payload.items
                }},
     )
     db.commit()
-    state = department_applications_state(db, [dept.id], payload.year, payload.month)
+    state = department_quantities_state(db, [dept.id], payload.year, payload.month)
     return state[0]
 
 
@@ -677,12 +678,12 @@ def get_month(
 
     payroll = None
     adjustments: list[AdjustmentRead] = []
-    # Заявки на подбор: блок ввода в табеле отдела с флагом. Распределение — это
-    # деньги, поэтому набор отдаётся только финансовым ролям; отделы берутся из
-    # тех, что реально попали в выдачу.
-    applications = (
-        department_applications_state(
-            db, _applications_department_scope(actor, department_id), year, month
+    # Количественный показатель: блок ввода в табеле отдела с флагом.
+    # Распределение — это деньги, поэтому набор отдаётся только финансовым ролям;
+    # отделы берутся из тех, что реально попали в выдачу.
+    quantities = (
+        department_quantities_state(
+            db, _quantity_department_scope(actor, department_id), year, month
         )
         if can_see_finances(actor)
         else []
@@ -702,13 +703,14 @@ def get_month(
         payroll = _build_payroll_summary(
             db, employees, entries, year, month, actor, department_id
         )
-    # Суммы распределения по заявкам — для блока «Распределение» в табеле.
+    # Суммы распределения по показателю — для блока «Распределение» в табеле.
     # Только когда расчёт вообще считался: делить нечего, пока нет начисленного.
-    applications_distribution = (
-        build_applications_distribution(
-            db, payroll, positions_by_employee, year, month
+    quantity_distribution = (
+        build_quantity_distribution(
+            db, payroll, positions_by_employee, year, month,
+            order_index(c.id for c in companies),
         )
-        if applications and payroll is not None
+        if quantities and payroll is not None
         else []
     )
     # include_payroll от employee игнорируем молча — проверка принудительная на
@@ -736,8 +738,8 @@ def get_month(
         absences=absences,
         night_shifts=night_shifts,
         night_funds=night_funds,
-        applications=applications,
-        applications_distribution=applications_distribution,
+        quantities=quantities,
+        quantity_distribution=quantity_distribution,
         payroll=payroll,
         adjustments=adjustments,
         checked_positions=checked_positions,

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { timesheetApi } from '../api/timesheet'
 import { usePersistentState } from '../hooks/usePersistentState'
 import { toast } from '../store/toasts'
-import type { DepartmentApplications } from '../types/api'
+import type { DepartmentQuantities } from '../types/api'
 import { companyColorByIndex } from '../utils/colors'
 import { companyLabel } from '../utils/companies'
 import { distribute } from '../utils/distribution'
@@ -13,21 +13,21 @@ import { Button } from './Button'
 type PanelCompany = { id: number; code: string; name: string; is_active?: boolean }
 
 type Props = {
-  /** отделы с флагом «распределение по заявкам», попавшие в текущий табель */
-  applications: DepartmentApplications[]
+  /** отделы с флагом «распределение по количественному показателю» из табеля */
+  quantities: DepartmentQuantities[]
   companies: PanelCompany[]
   year: number
   month: number
-  /** править заявки может тот же, кто правит распределение (финансовые роли) */
+  /** править показатель может тот же, кто правит распределение (финансовые роли) */
   canEdit: boolean
   /** суммы распределения по юрлицам за месяц, по отделам — итоговая строка блока */
   totalsByDepartment?: Map<number, { totals: Record<number, number>; grand: number }>
-  /** перечитать месяц: изменившиеся заявки меняют суммы в табеле и ведомости */
+  /** перечитать месяц: изменившийся показатель меняет суммы в табеле и ведомости */
   onSaved: () => void
 }
 
-/** Пара полей ввода на юрлицо: заявки в работе и закрытые. */
-type Draft = Record<number, { in_progress: string; closed: string }>
+/** Пара полей ввода на юрлицо: две части показателя (вторая может не использоваться). */
+type Draft = Record<number, { part1: string; part2: string }>
 
 const int = (v: string | undefined): number => {
   const n = Number(String(v ?? '').replace(/[^\d]/g, ''))
@@ -39,39 +39,43 @@ const fmtPercent = (v: number): string =>
   v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 /**
- * Заявки на подбор по юрлицам за месяц (task_hr_applications).
+ * Количественный показатель отдела по юрлицам за месяц
+ * (task_hr_applications → обобщено в task_it_arm_distribution).
  *
- * Повторяет шапку исходного файла HR: строки «в работе» и «закрытые», под ними
- * «Заявок» (их сумма — она же база распределения), процент и распределённая
- * сумма по каждому юрлицу.
+ * ОДИН блок на все такие отделы: у HR показатель называется «Заявки» и состоит
+ * из двух частей («в работе» / «закрытые», как в исходном файле HR), у ИТ — это
+ * «АРМ» и вводится одним числом. Что показывать, решают настройки отдела
+ * (`metric_name`, `has_parts`), а не ветка в коде: механизм и расчёт общие.
  *
  * Проценты считаются здесь тем же алгоритмом, что на бэке (`utils/distribution`
  * — зеркало `services/distribution.py`), поэтому цифра под инпутом совпадает с
  * той, по которой реально разнесётся зарплата, ещё до сохранения. Суммы, в
- * отличие от процентов, приходят с бэка: пересобирать «Итого начислено» из
- * кусков расчёта на фронте нельзя — разъедется с ведомостью.
+ * отличие от процентов, приходят с бэка: пересобирать базу распределения на
+ * фронте нельзя — разъедется с ведомостью.
  *
  * Блок показывается только для отделов с флагом и **сворачивается** — вместе с
  * колонками распределения он съедал пол-экрана. Свёрнутый оставляет в заголовке
- * главные цифры (сколько заявок и сколько по ним распределено), выбор
- * запоминается (`UI_KEYS.timesheetApplications`) и переживает перезагрузку.
- * Свёрнутый блок остаётся смонтированным (`hidden`), а не размонтируется:
- * иначе набранные, но не сохранённые цифры молча пропали бы.
+ * главные цифры, выбор запоминается (`UI_KEYS.timesheetQuantities`) и переживает
+ * перезагрузку. Свёрнутый блок остаётся смонтированным (`hidden`), а не
+ * размонтируется: иначе набранные, но не сохранённые цифры молча пропали бы.
  */
-export function ApplicationsPanel({
-  applications, companies, year, month, canEdit, totalsByDepartment, onSaved,
+export function QuantityPanel({
+  quantities, companies, year, month, canEdit, totalsByDepartment, onSaved,
 }: Props) {
   // Хук ДО раннего выхода: вызов после условного return ломает порядок хуков.
   const [open, setOpen] = usePersistentState(
-    UI_KEYS.timesheetApplications, false, (v) => typeof v === 'boolean',
+    UI_KEYS.timesheetQuantities, false, (v) => typeof v === 'boolean',
   )
-  if (applications.length === 0) return null
+  if (quantities.length === 0) return null
 
-  const totalApplications = applications.reduce((s, d) => s + d.total_applications, 0)
-  const totalMoney = applications.reduce(
+  const totalCount = quantities.reduce((s, d) => s + d.total_count, 0)
+  const totalMoney = quantities.reduce(
     (s, d) => s + (totalsByDepartment?.get(d.department_id)?.grand ?? 0), 0,
   )
-  const names = applications.map((d) => d.department_name ?? 'отдел').join(', ')
+  const names = quantities.map((d) => d.department_name ?? 'отдел').join(', ')
+  // Показателей может быть несколько разных (HR и ИТ в одном табеле) — тогда
+  // в заголовке перечисляются оба имени, иначе оно одно.
+  const metrics = [...new Set(quantities.map((d) => d.metric_name || 'Количество'))]
 
   return (
     <div className="flex-shrink-0 border-b border-gray-200 bg-emerald-50/40">
@@ -79,17 +83,17 @@ export function ApplicationsPanel({
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-1.5 px-6 py-1.5 text-left text-xs font-semibold uppercase tracking-wide text-emerald-700 hover:bg-emerald-100/60"
-        title={open ? 'Свернуть заявки' : 'Развернуть заявки'}
+        title={open ? 'Свернуть показатель' : 'Развернуть показатель'}
       >
         <span className="text-[10px] leading-none">{open ? '▾' : '▸'}</span>
-        📋 Заявки на подбор — {names}
+        📋 {metrics.join(' / ')} — {names}
         {open ? (
           <span className="font-normal normal-case tracking-normal text-gray-500">
             зарплата отдела делится по этим процентам (обычный каскад не применяется)
           </span>
         ) : (
           <span className="font-normal normal-case tracking-normal text-gray-500">
-            — свёрнуто · заявок: {fmtInt(totalApplications)}
+            — свёрнуто · всего: {fmtInt(totalCount)}
             {totalMoney > 0 && ` · распределено: ${fmtInt(Math.round(totalMoney))} ₽`}
           </span>
         )}
@@ -98,7 +102,7 @@ export function ApplicationsPanel({
           переключается КЛАССОМ: атрибут hidden не сработал бы — `display:flex`
           из класса перебивает правило браузера для [hidden]. */}
       <div className={`flex-col gap-4 px-6 pb-3 ${open ? 'flex' : 'hidden'}`}>
-        {applications.map((dept) => (
+        {quantities.map((dept) => (
           <DepartmentBlock
             key={dept.department_id}
             dept={dept}
@@ -119,7 +123,7 @@ export function ApplicationsPanel({
 function DepartmentBlock({
   dept, companies, year, month, canEdit, totals, grandTotal, onSaved,
 }: {
-  dept: DepartmentApplications
+  dept: DepartmentQuantities
   companies: PanelCompany[]
   year: number
   month: number
@@ -129,19 +133,25 @@ function DepartmentBlock({
   onSaved: () => void
 }) {
   const active = useMemo(() => companies.filter((c) => c.is_active !== false), [companies])
+  const metric = dept.metric_name || 'Количество'
+  // Показатель без разбивки (АРМ) вводится ОДНИМ числом: строка ввода одна и
+  // подписана именем показателя, отдельной строки-итога над ней нет.
+  const partFields = dept.has_parts
+    ? ([['part1', dept.part1_name || 'часть 1'], ['part2', dept.part2_name || 'часть 2']] as const)
+    : ([['part1', metric]] as const)
 
   // Ключ сбрасывает черновик, когда с сервера пришёл другой месяц или другой
   // набор: иначе введённые цифры «переехали» бы в чужой период.
-  const serverKey = `${dept.department_id}:${year}-${month}:${dept.applications
-    .map((a) => `${a.company_id}=${a.in_progress}/${a.closed}`)
+  const serverKey = `${dept.department_id}:${year}-${month}:${dept.items
+    .map((a) => `${a.company_id}=${a.part1}/${a.part2}`)
     .join(',')}`
   const [draft, setDraft] = useState<Draft>({})
   const [saving, setSaving] = useState(false)
 
   const fromServer = (): Draft => {
     const next: Draft = {}
-    for (const a of dept.applications) {
-      next[a.company_id] = { in_progress: String(a.in_progress), closed: String(a.closed) }
+    for (const a of dept.items) {
+      next[a.company_id] = { part1: String(a.part1), part2: String(a.part2) }
     }
     return next
   }
@@ -152,12 +162,12 @@ function DepartmentBlock({
   }, [serverKey])
 
   const parts = (id: number) => ({
-    work: int(draft[id]?.in_progress),
-    closed: int(draft[id]?.closed),
+    p1: int(draft[id]?.part1),
+    p2: dept.has_parts ? int(draft[id]?.part2) : 0,
   })
   const countOf = (id: number) => {
     const p = parts(id)
-    return p.work + p.closed
+    return p.p1 + p.p2
   }
 
   const weights = useMemo(() => {
@@ -170,9 +180,9 @@ function DepartmentBlock({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, active])
 
-  const totalWork = active.reduce((s, c) => s + parts(c.id).work, 0)
-  const totalClosed = active.reduce((s, c) => s + parts(c.id).closed, 0)
-  const totalCount = totalWork + totalClosed
+  const totalPart1 = active.reduce((s, c) => s + parts(c.id).p1, 0)
+  const totalPart2 = active.reduce((s, c) => s + parts(c.id).p2, 0)
+  const totalCount = totalPart1 + totalPart2
   // Проценты — тем же методом наибольшего остатка, что и на бэке: сумма ровно 100.
   const percents = useMemo(() => distribute(100, weights, null, 0.01), [weights])
 
@@ -180,19 +190,19 @@ function DepartmentBlock({
     const saved = fromServer()
     const ids = new Set([...Object.keys(saved), ...Object.keys(draft)].map(Number))
     for (const id of ids) {
-      if (int(saved[id]?.in_progress) !== int(draft[id]?.in_progress)) return true
-      if (int(saved[id]?.closed) !== int(draft[id]?.closed)) return true
+      if (int(saved[id]?.part1) !== int(draft[id]?.part1)) return true
+      if (int(saved[id]?.part2) !== int(draft[id]?.part2)) return true
     }
     return false
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, dept.applications])
+  }, [draft, dept.items])
 
-  const setPart = (id: number, field: 'in_progress' | 'closed', value: string) => {
+  const setPart = (id: number, field: 'part1' | 'part2', value: string) => {
     setDraft({
       ...draft,
       [id]: {
-        in_progress: draft[id]?.in_progress ?? '',
-        closed: draft[id]?.closed ?? '',
+        part1: draft[id]?.part1 ?? '',
+        part2: draft[id]?.part2 ?? '',
         [field]: value.replace(/[^\d]/g, ''),
       },
     })
@@ -201,21 +211,21 @@ function DepartmentBlock({
   const save = async () => {
     setSaving(true)
     try {
-      await timesheetApi.setApplications({
+      await timesheetApi.setQuantities({
         department_id: dept.department_id,
         year,
         month,
-        applications: active.map((c) => ({
+        items: active.map((c) => ({
           company_id: c.id,
-          in_progress: parts(c.id).work,
-          closed: parts(c.id).closed,
+          part1: parts(c.id).p1,
+          part2: parts(c.id).p2,
         })),
       })
-      toast.success('Заявки сохранены')
+      toast.success(`${metric}: сохранено`)
       onSaved()
     } catch (e) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      toast.error(detail ?? 'Не удалось сохранить заявки')
+      toast.error(detail ?? 'Не удалось сохранить показатель')
     } finally {
       setSaving(false)
     }
@@ -230,7 +240,7 @@ function DepartmentBlock({
           сворачивания); здесь остаются только кнопки сохранения. */}
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
         <span className="text-xs font-medium text-gray-500">
-          {dept.department_name ?? 'отдел'}
+          {dept.department_name ?? 'отдел'} · {metric}
         </span>
         {canEdit && (
           <span className="ml-auto flex items-center gap-2">
@@ -248,8 +258,8 @@ function DepartmentBlock({
 
       {totalCount === 0 && (
         <p className="mb-1.5 text-xs text-amber-700">
-          Заявки за месяц не заведены — пока распределение идёт по обычному каскаду
-          (проценты сотрудника / дефолт отдела / часы).
+          Показатель «{metric}» за месяц не заведён — пока распределение идёт по
+          обычному каскаду (проценты сотрудника / дефолт отдела / часы).
         </p>
       )}
 
@@ -279,9 +289,9 @@ function DepartmentBlock({
             </tr>
           </thead>
           <tbody>
-            {(['in_progress', 'closed'] as const).map((field) => (
+            {partFields.map(([field, label]) => (
               <tr key={field}>
-                <td className={labelCls}>{field === 'in_progress' ? 'в работе' : 'закрытые'}</td>
+                <td className={labelCls}>{label}</td>
                 {active.map((c) => (
                   <td key={c.id} className={cellCls}>
                     <input
@@ -295,25 +305,29 @@ function DepartmentBlock({
                   </td>
                 ))}
                 <td className="border border-emerald-200 bg-emerald-50/60 px-2 py-1 text-right font-mono font-semibold">
-                  {fmtInt(field === 'in_progress' ? totalWork : totalClosed)}
+                  {fmtInt(field === 'part1' ? totalPart1 : totalPart2)}
                 </td>
               </tr>
             ))}
-            {/* «Заявок» не вводится: это сумма частей и одновременно база
-                распределения — второй способ её задать неминуемо разъехался бы. */}
-            <tr className="bg-emerald-50/60">
-              <td className={`${labelCls} font-semibold text-gray-800`}>Заявок</td>
-              {active.map((c) => (
-                <td key={c.id} className={`${cellCls} font-semibold`}>
-                  {countOf(c.id) > 0 ? fmtInt(countOf(c.id)) : '—'}
+            {/* Строка «всего» нужна только у показателя из двух частей: она не
+                вводится, а СЧИТАЕТСЯ (второй способ её задать неминуемо
+                разъехался бы с частями). У показателя одним числом она
+                дублировала бы строку ввода. */}
+            {dept.has_parts && (
+              <tr className="bg-emerald-50/60">
+                <td className={`${labelCls} font-semibold text-gray-800`}>{metric}</td>
+                {active.map((c) => (
+                  <td key={c.id} className={`${cellCls} font-semibold`}>
+                    {countOf(c.id) > 0 ? fmtInt(countOf(c.id)) : '—'}
+                  </td>
+                ))}
+                <td className="border border-emerald-200 bg-emerald-100 px-2 py-1 text-right font-mono font-bold text-emerald-900">
+                  {fmtInt(totalCount)}
                 </td>
-              ))}
-              <td className="border border-emerald-200 bg-emerald-100 px-2 py-1 text-right font-mono font-bold text-emerald-900">
-                {fmtInt(totalCount)}
-              </td>
-            </tr>
+              </tr>
+            )}
             <tr>
-              <td className={labelCls} title="Заявки компании ÷ всего заявок">
+              <td className={labelCls} title={`${metric} компании ÷ всего`}>
                 % распределения
               </td>
               {active.map((c) => (
@@ -327,7 +341,10 @@ function DepartmentBlock({
             </tr>
             {totals && (
               <tr>
-                <td className={`${labelCls} font-semibold text-gray-800`} title="Сумма распределения по всем сотрудникам отдела за месяц">
+                <td
+                  className={`${labelCls} font-semibold text-gray-800`}
+                  title="Сумма распределения («К выплате») по всем сотрудникам отдела за месяц"
+                >
                   Сумма ₽
                 </td>
                 {active.map((c) => (

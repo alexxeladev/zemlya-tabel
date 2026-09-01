@@ -142,50 +142,57 @@ export interface DepartmentShares {
 /**
  * Откуда взято распределение по юрлицам.
  * Каскад: month (правка на месяц) > employee (карточка) > department > hours.
- * applications — отдел с флагом «распределение по заявкам»
- * (task_hr_applications): каскад для него не применяется вовсе.
+ * quantity — отдел с флагом «распределение по количественному показателю»
+ * (заявки у HR, АРМ у ИТ): каскад для него не применяется вовсе.
  */
-export type DistributionSource = 'month' | 'employee' | 'department' | 'hours' | 'applications'
+export type DistributionSource = 'month' | 'employee' | 'department' | 'hours' | 'quantity'
 
 /**
- * Заявки на подбор, отработанные отделом для юрлица за месяц.
- * Хранятся две части; `count` (всего) — их сумма, считается на бэке.
+ * Количественный показатель отдела по юрлицу за месяц.
+ * Хранятся две части (у HR «в работе»/«закрытые»); `count` (всего) — их сумма,
+ * считается на бэке. У показателя без разбивки (АРМ) заполнена только part1.
  */
-export interface ApplicationShare {
+export interface QuantityShare {
   company_id: number
-  in_progress: number
-  closed: number
-  /** всего = в работе + закрытые; это и есть база распределения */
+  part1: number
+  part2: number
+  /** всего = part1 + part2; это и есть база распределения */
   count: number
-  /** заявки компании / сумма заявок × 100, до сотых; сумма ровно 100.00 */
+  /** количество компании / сумму × 100, до сотых; сумма ровно 100.00 */
   percent: string
 }
 
-/** Заявки отдела за месяц + проценты, по которым делится зарплата отдела. */
-export interface DepartmentApplications {
+/** Показатель отдела за месяц + проценты, по которым делится зарплата отдела. */
+export interface DepartmentQuantities {
   department_id: number
   department_name: string | null
+  /** подпись показателя из карточки отдела: «Заявки» у HR, «АРМ» у ИТ */
+  metric_name: string | null
+  /** подписи частей; при has_parts=false показатель вводится одним числом */
+  part1_name: string | null
+  part2_name: string | null
+  has_parts: boolean
   year: number
   month: number
-  applications: ApplicationShare[]
-  total_in_progress: number
-  total_closed: number
-  total_applications: number
-  /** заявки за месяц не заведены → отдел временно идёт по обычному каскаду */
+  items: QuantityShare[]
+  total_part1: number
+  total_part2: number
+  total_count: number
+  /** показатель за месяц не заведён → отдел временно идёт по обычному каскаду */
   is_empty: boolean
 }
 
 /**
- * Распределение начисленного рабочего места по юрлицам — для блока
- * «Распределение» в табеле. Считает бэк теми же числами, что ведомость:
- * фронт не пересобирает «Итого начислено» из кусков расчёта.
+ * Распределение рабочего места по юрлицам — для блока «Распределение» в табеле.
+ * Считает бэк теми же числами, что ведомость: фронт не пересобирает базу из
+ * кусков расчёта. База — «К выплате» (task_it_arm_distribution ч.2).
  */
-export interface ApplicationsDistributionRow {
+export interface QuantityDistributionRow {
   employee_id: number
   position_id: number | null
   department_id: number | null
-  accrued_total: string
-  /** company_id → сумма; сумма значений ровно равна accrued_total */
+  base_amount: string
+  /** company_id → сумма; сумма значений ровно равна base_amount */
   amounts: Record<number, string>
 }
 
@@ -521,8 +528,13 @@ export interface Department {
   head_company_id: number | null
   /** месячный фонд ночных смен: из него считаются ставка и лимит числа смен */
   night_shift_fund: string | null
-  /** зарплата отдела делится по заявкам на подбор, а не по каскаду процентов */
-  uses_applications_distribution: boolean
+  /** зарплата отдела делится по количественному показателю, а не по каскаду */
+  uses_quantity_distribution: boolean
+  /** «Заявки» у HR, «АРМ» у ИТ; пусто — нейтральное «Количество» */
+  quantity_metric_name: string | null
+  /** подписи двух частей показателя; обе пусты — вводится одним числом */
+  quantity_part1_name: string | null
+  quantity_part2_name: string | null
   is_active: boolean
 }
 
@@ -560,8 +572,11 @@ export interface OrgDepartment {
   head_company_id: number | null
   /** фонд ночных смен на месяц: задаёт ставку смены и лимит их числа */
   night_shift_fund: string | null
-  /** зарплата отдела делится по заявкам на подбор (task_hr_applications) */
-  uses_applications_distribution: boolean
+  /** зарплата отдела делится по количественному показателю (заявки/АРМ) */
+  uses_quantity_distribution: boolean
+  quantity_metric_name: string | null
+  quantity_part1_name: string | null
+  quantity_part2_name: string | null
   managers: OrgEmployee[]
   /** Количество сотрудников — чтобы свёрнутый узел не рендерил список. */
   employee_count: number

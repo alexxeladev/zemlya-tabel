@@ -23,7 +23,7 @@ export const UI_KEYS = {
   /** табель: развёрнут ли блок «ПО КОМПАНИЯМ» в подвале */
   timesheetCompanySummary: 'timesheet.companySummary',
   /** табель: развёрнут ли блок «ЗАЯВКИ НА ПОДБОР» над таблицей */
-  timesheetApplications: 'timesheet.applications',
+  timesheetQuantities: 'timesheet.quantities',
   /** ведомость «Расчёт ЗП»: отдел, поиск, фильтр компании */
   payrollFilters: 'payroll.filters',
   /** «Задачи»: показывать ли закрытые периоды */

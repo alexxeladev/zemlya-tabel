@@ -1,4 +1,4 @@
-import type { Absence, AbsenceKind, Adjustment, AuditLogEntry, AutofillPreview, CompanyShare, DepartmentApplications, NightShift, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
+import type { Absence, AbsenceKind, Adjustment, AuditLogEntry, AutofillPreview, CompanyShare, DepartmentQuantities, NightShift, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
 export const timesheetApi = {
@@ -190,27 +190,27 @@ export const timesheetApi = {
     })
   },
 
-  // ── Заявки на подбор (task_hr_applications) ──
-  // Только для отделов с флагом «распределение по заявкам»: их зарплата делится
-  // по числу заявок вместо каскада процентов. Набор помесячный и заменяется
-  // целиком — что отправили, то и будет.
-  async getApplications(
+  // ── Количественный показатель отдела (заявки у HR, АРМ у ИТ) ──
+  // Только для отделов с флагом «распределение по количественному показателю»:
+  // их зарплата делится по нему вместо каскада процентов. Набор помесячный и
+  // заменяется целиком — что отправили, то и будет.
+  async getQuantities(
     year: number, month: number, departmentId?: number,
-  ): Promise<DepartmentApplications[]> {
+  ): Promise<DepartmentQuantities[]> {
     const params: Record<string, unknown> = {}
     if (departmentId !== undefined) params.department_id = departmentId
-    const { data } = await apiClient.get<DepartmentApplications[]>(
-      `/api/timesheet/${year}/${month}/applications`, { params },
+    const { data } = await apiClient.get<DepartmentQuantities[]>(
+      `/api/timesheet/${year}/${month}/quantities`, { params },
     )
     return data
   },
 
-  async setApplications(input: {
+  async setQuantities(input: {
     department_id: number; year: number; month: number
-    applications: Array<{ company_id: number; in_progress: number; closed: number }>
-  }): Promise<DepartmentApplications> {
-    const { data } = await apiClient.put<DepartmentApplications>(
-      '/api/timesheet/applications', input,
+    items: Array<{ company_id: number; part1: number; part2: number }>
+  }): Promise<DepartmentQuantities> {
+    const { data } = await apiClient.put<DepartmentQuantities>(
+      '/api/timesheet/quantities', input,
     )
     return data
   },
