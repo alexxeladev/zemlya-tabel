@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import ColumnElement
@@ -33,6 +34,53 @@ def in_department(department_id: int | None) -> ColumnElement[bool]:
     if department_id is None:
         return Employee.positions.any(EmployeePosition.department_id.is_(None))
     return Employee.positions.any(EmployeePosition.department_id == department_id)
+
+
+def department_employment_rows(db: Session) -> list[tuple[int | None, bool, date | None]]:
+    """Снимок занятости отделов: (отдел, активен ли сотрудник, дата увольнения).
+
+    По одной строке на АКТИВНОЕ рабочее место несистемного сотрудника, без
+    дублей. Из него для любого месяца получается набор занятых отделов
+    (`departments_with_employees`) — одним запросом на весь ответ, а не по
+    запросу на месяц: месяцев в дашборде столько, сколько строк в диапазоне и в
+    просрочке, а от месяца тут зависит только сравнение с датой увольнения.
+    """
+    rows = (
+        db.query(
+            EmployeePosition.department_id,
+            Employee.is_active,
+            Employee.dismissal_date,
+        )
+        .join(Employee, Employee.id == EmployeePosition.employee_id)
+        .filter(
+            EmployeePosition.is_active == True,  # noqa: E712
+            Employee.is_system_admin == False,  # noqa: E712
+        )
+        .distinct()
+        .all()
+    )
+    return [(dept_id, bool(active), dismissal) for dept_id, active, dismissal in rows]
+
+
+def departments_with_employees(
+    rows: list[tuple[int | None, bool, date | None]], year: int, month: int
+) -> set[int | None]:
+    """Отделы, в которых в ЭТОМ месяце есть сотрудники; `None` — «Без отдела».
+
+    Правило то же, что у видимости табеля (`visible_employees_for_actor`):
+    сотрудник активен либо уволен не раньше начала месяца. Отличие одно —
+    рабочее место должно быть активным: строку в табеле даёт `visible_positions`,
+    то есть отдел, где все позиции деактивированы, показывать нечем.
+
+    Отдела здесь нет — значит, закрывать в нём за этот месяц нечего, и в
+    workflow периодов он не участвует вовсе.
+    """
+    start = date(year, month, 1)
+    return {
+        dept_id
+        for dept_id, is_active, dismissal in rows
+        if is_active or (dismissal is not None and dismissal >= start)
+    }
 
 
 def department_ids_of(employee: Employee) -> list[int | None]:

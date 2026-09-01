@@ -60,6 +60,11 @@ class CompanyPayrollRead(BaseModel):
 
 
 class PeriodCountsRead(BaseModel):
+    # Всего отделов за выбранный период — только те, где ЕСТЬ сотрудники:
+    # пустой отдел в workflow не участвует вовсе (ни строкой, ни просрочкой).
+    # Считаются РАЗНЫЕ отделы: в диапазоне у отдела строка на каждый месяц, но
+    # отдел один; для одного месяца = closed + pending_review + draft.
+    departments: int = 0
     closed: int
     pending_review: int
     draft: int

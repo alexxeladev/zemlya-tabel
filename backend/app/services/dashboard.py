@@ -48,7 +48,12 @@ from app.services.org_access import (
 )
 from app.services.payroll import EmployeePayroll, calculate_position_payroll
 from app.services.payroll_statement import build_payroll_statement
-from app.services.positions import entries_by_position, in_department, visible_positions
+from app.services.positions import (
+    department_employment_rows,
+    departments_with_employees,
+    entries_by_position,
+    visible_positions,
+)
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 
 _ZERO = Decimal("0")
@@ -337,8 +342,25 @@ def _periods_block(
     одну строку на отдел значило бы потерять, какой именно месяц не закрыт.
     Просрочка считается от НАЧАЛА диапазона: незакрытый период более раннего
     месяца — просрочен, месяцы внутри диапазона показаны своими строками.
+
+    **Отдел без сотрудников в workflow не участвует ВООБЩЕ** — ни строкой, ни
+    просрочкой, ни в счётчиках: закрывать там нечего, а «Черновик · просрочен» у
+    пустого отдела — чистый шум. Раньше список строился из `departments` и
+    `timesheet_periods`, и есть ли в отделе люди, никто не спрашивал: отдел,
+    опустевший после увольнений или переводов, навсегда оставался просроченным,
+    а псевдо-отдел «Без отдела» проверялся только в строках текущего месяца и
+    всё равно вылезал в просрочке. Занятость своя у каждого месяца (увольнения),
+    поэтому считается по месяцам из одного снимка.
     """
     year, month = months[0]
+    employment = department_employment_rows(db)
+    staffed_cache: dict[tuple[int, int], set[int | None]] = {}
+
+    def staffed(y: int, m: int) -> set[int | None]:
+        if (y, m) not in staffed_cache:
+            staffed_cache[(y, m)] = departments_with_employees(employment, y, m)
+        return staffed_cache[(y, m)]
+
     # Отделы в зоне видимости actor-а
     if is_department_scoped(actor):
         # Все отделы, которыми руководит менеджер (task_org_structure ч.2) или
@@ -347,15 +369,11 @@ def _periods_block(
         depts = (
             db.query(Department).filter(Department.id.in_(managed)).all() if managed else []
         )
+        # Группа «Без отдела» менеджеру и табельщику недоступна никогда
         include_null_group = False
     else:
         depts = db.query(Department).filter(Department.is_active == True).all()  # noqa: E712
-        # Группа «Без отдела» — если есть активные несистемные сотрудники без отдела
-        include_null_group = db.query(Employee).filter(
-            in_department(None),
-            Employee.is_system_admin == False,  # noqa: E712
-            Employee.is_active == True,  # noqa: E712
-        ).first() is not None
+        include_null_group = True
 
     periods = db.query(TimesheetPeriod).filter(
         TimesheetPeriod.year.in_({y for y, _ in months}),
@@ -364,11 +382,14 @@ def _periods_block(
 
     rows: list[PeriodStatusRowRead] = []
     for y, m in months:
+        present = staffed(y, m)
         rows.extend(
             _period_row(by_key.get((y, m, d.id)), d.id, d.name, y, m)
             for d in sorted(depts, key=lambda d: d.name)
+            if d.id in present
         )
-        if include_null_group:
+        # Псевдо-отдел «Без отдела» — только когда в нём реально кто-то есть
+        if include_null_group and None in present:
             rows.append(_period_row(by_key.get((y, m, None)), None, "Без отдела", y, m))
 
     # Просроченные: незакрытые периоды месяцев раньше выбранного
@@ -393,9 +414,16 @@ def _periods_block(
             p.year, p.month, is_overdue=True,
         )
         for p in overdue_periods
+        # Период остался от отдела, где сотрудников уже (или ещё) нет —
+        # закрывать в нём нечего, просрочкой это не является
+        if p.department_id in staffed(p.year, p.month)
     ]
 
     counts = PeriodCountsRead(
+        # «Всего отделов» — РАЗНЫЕ отделы с сотрудниками за выбранный период
+        # (в диапазоне у отдела строка на каждый месяц, но отдел один). Для
+        # одного месяца это ровно closed + pending_review + draft.
+        departments=len({r.department_id for r in rows}),
         closed=sum(1 for r in rows if r.status == "closed"),
         pending_review=sum(1 for r in rows if r.status == "pending_review"),
         draft=sum(1 for r in rows if r.status == "draft"),

@@ -238,7 +238,9 @@ class TestDashboardAggregation:
 
 class TestDashboardPeriods:
     def test_status_counts(self, client, db_session, dash_admin, dash_accountant,
-                           dept1, dept2, calendar_2026):
+                           dept1, dept2, worker1, worker2, calendar_2026):
+        # worker1/worker2 обязательны: отдел без сотрудников в workflow периодов
+        # не участвует вовсе (см. test_dashboard_empty_departments.py).
         db_session.add(TimesheetPeriod(
             department_id=dept1.id, year=2026, month=5, status="closed",
             closed_by_id=dash_admin.id,
@@ -259,7 +261,9 @@ class TestDashboardPeriods:
         assert rows["Dash Dept Two"]["period_id"] is None  # lazy — ещё не создан
         assert "Без отдела" in rows
 
-    def test_overdue_detection(self, client, db_session, dash_admin, dept1, calendar_2026):
+    def test_overdue_detection(self, client, db_session, dash_admin, dept1, worker1,
+                               calendar_2026):
+        # worker1 — чтобы отдел был занят: у пустого просрочки не бывает
         db_session.add(TimesheetPeriod(
             department_id=dept1.id, year=2026, month=4, status="draft",
         ))
@@ -404,7 +408,7 @@ class TestDashboardRange:
         ]
 
     def test_range_periods_rows_per_month(self, client, db_session, dash_admin,
-                                          dept1, calendar_2026):
+                                          dept1, worker1, calendar_2026):
         """Строка статуса — (отдел, месяц): свернув диапазон, потеряли бы,
         какой именно месяц не закрыт."""
         db_session.add(TimesheetPeriod(department_id=dept1.id, year=2026, month=4,
