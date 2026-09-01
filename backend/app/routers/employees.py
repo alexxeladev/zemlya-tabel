@@ -65,6 +65,11 @@ from app.services.positions import (
     in_departments,
     set_primary,
 )
+from app.services.reference_audit import (
+    EMPLOYEE_SHARES_ENTITY,
+    format_share_rows,
+    record_change,
+)
 
 router = APIRouter()
 
@@ -711,6 +716,18 @@ def get_company_shares(
     return _shares_response(db, emp, emp.position_by_id(position_id))
 
 
+def _current_shares(db: Session, emp_id: int, position_id: int | None) -> list:
+    """Текущий набор процентов рабочего места — снимок «до» для журнала."""
+    rows = db.query(EmployeeCompanyShare).filter(
+        EmployeeCompanyShare.employee_id == emp_id,
+        or_(
+            EmployeeCompanyShare.position_id == position_id,
+            EmployeeCompanyShare.position_id.is_(None),
+        ),
+    ).all()
+    return [(r.company_id, r.percent) for r in rows]
+
+
 @router.put("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
 def set_company_shares(
     emp_id: int,
@@ -734,6 +751,12 @@ def set_company_shares(
     # основному, как было до совместительства.
     position = emp.position_by_id(payload.position_id)
     position_id = position.id if position else None
+
+    # Журнал изменений (task_audit_log): набор переписывается целиком Core-DELETE
+    # мимо ORM, поэтому события сессии его не видят — пишем ОДНОЙ записью
+    # «было → стало». Снимок «до» надо снять ДО удаления строк.
+    shares_before = format_share_rows(db, _current_shares(db, emp_id, position_id))
+
     db.query(EmployeeCompanyShare).filter(
         EmployeeCompanyShare.employee_id == emp_id,
         or_(
@@ -749,5 +772,17 @@ def set_company_shares(
     log_action(db, actor, "employee_company_shares", emp_id, "set",
                after={"position_id": position_id,
                       "shares": {s.company_id: str(s.percent) for s in positive}})
+    record_change(
+        db,
+        entity_type=EMPLOYEE_SHARES_ENTITY,
+        entity_id=position_id or emp.id,
+        entity_label=(
+            f"{emp.full_name} / {position.display_title}" if position else emp.full_name
+        ),
+        field="shares",
+        old_value=shares_before,
+        new_value=format_share_rows(db, [(s.company_id, s.percent) for s in positive]),
+        employee_id=emp.id,
+    )
     db.commit()
     return _shares_response(db, emp, position)
