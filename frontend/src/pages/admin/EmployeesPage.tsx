@@ -24,6 +24,7 @@ import { Badge } from '../../components/Badge'
 import { Modal } from '../../components/Modal'
 import { Confirm } from '../../components/Confirm'
 import { Button } from '../../components/Button'
+import { EmployeeHistoryModal } from './EmployeeHistoryModal'
 import { Select } from '../../components/Select'
 import { SharesEditor } from '../../components/SharesEditor'
 import { EmployeeImportModal } from './EmployeeImportModal'
@@ -137,6 +138,9 @@ export function EmployeesPage() {
   const { data: schedules } = useApi(listSchedules)
 
   const [editTarget, setEditTarget] = useState<Employee | null>(null)
+  // История изменений по сотруднику (task_audit_log): открывается из строки
+  // списка и из карточки. Только admin — журнал показывает оклады и доступы.
+  const [historyTarget, setHistoryTarget] = useState<Employee | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [showImport, setShowImport] = useState(false)
   const [dismissTarget, setDismissTarget] = useState<Employee | null>(null)
@@ -467,6 +471,9 @@ export function EmployeesPage() {
                 <Td>
                   <div className="flex gap-2">
                     <Button size="sm" variant="secondary" onClick={() => openEdit(e)}>{readOnly ? 'Просмотр' : 'Изменить'}</Button>
+                    {canAdmin() && (
+                      <Button size="sm" variant="ghost" onClick={() => setHistoryTarget(e)} title="Кто и когда менял карточку и рабочие места">История</Button>
+                    )}
                     {canAdmin() && !e.is_system_admin && e.is_active && (
                       <Button size="sm" variant="danger" onClick={() => { setDismissTarget(e); setDismissDate(new Date().toISOString().slice(0, 10)) }}>Уволить</Button>
                     )}
@@ -480,6 +487,14 @@ export function EmployeesPage() {
           ))}
         </tbody>
       </Table>
+
+      {/* История изменений по сотруднику и его рабочим местам (task_audit_log) */}
+      <EmployeeHistoryModal
+        employeeId={historyTarget?.id ?? null}
+        employeeName={historyTarget?.full_name ?? ''}
+        isOpen={!!historyTarget}
+        onClose={() => setHistoryTarget(null)}
+      />
 
       {/* Импорт из Excel (task_employee_import) */}
       <EmployeeImportModal
