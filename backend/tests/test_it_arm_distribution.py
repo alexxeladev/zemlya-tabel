@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
 from app.models.companies import Company
-from app.models.company_shares import EmployeeCompanyShare
+from app.models.company_shares import DepartmentCompanyShare
 from app.models.department_quantities import DepartmentQuantity
 from app.models.departments import Department
 from app.models.employee_adjustments import EmployeeAdjustment
@@ -305,10 +305,14 @@ class TestItStatement:
     def test_arm_replaces_cascade(
         self, client, db_session, admin, calendar, engineer, it_dept, companies
     ):
-        """Проценты в карточке заданы, но АРМ их заменяют целиком."""
+        """Дефолт отдела задан, но АРМ заменяют каскад целиком.
+
+        Единственное исключение — распределение в КАРТОЧКЕ позиции: оно АРМ
+        перебивает (task_card_priority, тесты в `test_card_priority.py`).
+        """
         _full_norm(db_session, engineer, companies["GHS"])
-        db_session.add(EmployeeCompanyShare(
-            employee_id=engineer.id, position_id=engineer.primary_position.id,
+        db_session.add(DepartmentCompanyShare(
+            department_id=it_dept.id,
             company_id=companies["SEC"].id, percent=Decimal("100")))
         db_session.commit()
         _set_arm(db_session, it_dept, companies, ARM)
