@@ -253,8 +253,15 @@ export interface StatementRow {
   norm_hours: string | null
   fact_hours: string
   overtime_coefficient: string
+  /**
+   * Переработка ведомости — сверхурочные ПЛЮС работа в выходные/праздники по
+   * графику (task_overtime_columns): в часах и в рублях это одни и те же
+   * категории, поэтому число и сумма в соседних колонках сходятся.
+   * Дельты «факт − норма» в ведомости нет: она в расчёте не участвует.
+   */
   overtime_hours: string
   overtime_amount: string
+  /** Начислено, оклад — только оплата обычных часов (без выходных/праздничных) */
   base_salary: string
   premium_amount: string
   kpi_amount: string

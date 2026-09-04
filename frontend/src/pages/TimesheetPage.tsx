@@ -1600,12 +1600,15 @@ export function TimesheetPage() {
   // строкам (см. счётчик «найдено N из M · итоги по всем»).
   const hourTotals = useMemo(() => {
     const acc = {
-      norm: 0, normDays: 0, overtime: 0, offSchedule: 0, holiday: 0,
+      norm: 0, normDays: 0, factDays: 0, overtime: 0, offSchedule: 0, holiday: 0,
       nightShifts: 0, vacationDays: 0, sickDays: 0,
     };
     for (const pe of data?.payroll?.employees ?? []) {
       acc.norm += num(pe.norm_hours);
       acc.normDays += pe.norm_days ?? 0;
+      // Факт дней — все дни выхода, включая выходные и праздники (так считает
+      // бэк). В подвале это человеко-дни: сумма по рабочим местам.
+      acc.factDays += pe.fact_days ?? 0;
       acc.overtime += num(pe.overtime_hours);
       acc.offSchedule += num(pe.off_schedule_hours);
       acc.holiday += num(pe.holiday_hours);
@@ -1756,14 +1759,19 @@ export function TimesheetPage() {
     // показывать, а пустые ячейки читаются как полоса через таблицу.
     const trailingSpan = hasNight(position) ? { rowSpan: 2 } : {};
     const pay = payrollFor(emp, position);
-    // Пока суммы ждут пересчёта, часы берём из ячеек: они уже перечитаны, а
+    // Пока суммы ждут пересчёта, факт берём из ячеек: они уже перечитаны, а
     // payroll.total_hours относится к состоянию до правки — иначе введённая
-    // цифра появлялась бы в дне, но «Итого Ч» секунду стояло на месте.
-    const hoursFromEntries = () =>
-      sumPositionHours(emp.id, positionId, data.entries, primaryPositionIdByEmp);
-    const rowTotal = payrollStale
-      ? hoursFromEntries()
-      : num(pay?.total_hours, 0) || hoursFromEntries();
+    // цифра появлялась бы в дне, но «Факт» секунду стоял бы на месте.
+    const payHours = payrollStale ? 0 : num(pay?.total_hours, 0);
+    const factFromEntries = payHours > 0
+      ? null
+      : positionFact(emp.id, positionId, data.entries, primaryPositionIdByEmp);
+    const rowTotal = factFromEntries ? factFromEntries.hours : payHours;
+    // Дни выхода — рядом с часами, мелким шрифтом: отдельной колонки табель не
+    // выдержит (task_overtime_columns). Пока суммы устарели, дни считаются по
+    // ячейкам вместе с часами — иначе в одной ячейке стояли бы свежие часы и
+    // вчерашние дни.
+    const rowDays = factFromEntries ? factFromEntries.days : (pay?.fact_days ?? 0);
     const periodEditable = periodForDept(position.department_id)?.can_edit ?? false;
     const schedule = position.schedule ?? null;
     const noSchedule = !schedule;
@@ -1874,9 +1882,18 @@ export function TimesheetPage() {
           />
         ))}
 
-        {/* ── Итого часов по этому рабочему месту ── */}
-        <td {...trailingSpan} className="border border-gray-200 px-3 py-2 text-center font-mono font-semibold bg-gray-50">
+        {/* ── Факт по этому рабочему месту: часов и дней выхода ── */}
+        <td
+          {...trailingSpan}
+          className="border border-gray-200 px-3 py-2 text-center font-mono font-semibold bg-gray-50"
+          title="Факт за месяц: отработано часов и дней выхода (включая выходные и праздники)"
+        >
           {fmtHours(rowTotal)}
+          {rowDays > 0 && (
+            <span className="block text-[10px] font-sans font-normal text-gray-400 leading-tight">
+              {rowDays} дн
+            </span>
+          )}
         </td>
 
         {/* ── Финансы ── */}
@@ -2516,8 +2533,9 @@ export function TimesheetPage() {
               <th
                 className="sticky top-0 bg-gray-50 border border-gray-200 px-3 py-2 text-center font-medium text-gray-600"
                 style={{ minWidth: 70, zIndex: 20 }}
+                title="Факт за месяц: отработано часов и дней выхода (включая выходные и праздники)"
               >
-                Итого ч
+                Факт ч / дн
               </th>
               {/* Табельщику — часы вместо рублей, порядок как в строке выше */}
               {!canSeeMoney && canSeeHourStats && (
@@ -2744,6 +2762,11 @@ export function TimesheetPage() {
                 ))}
                 <td className="border border-gray-300 px-3 py-2 text-center font-mono font-bold">
                   {fmtHours(dayTotals.reduce((a, b) => a + b, 0))}
+                  {hourTotals.factDays > 0 && (
+                    <span className="block text-[10px] font-sans font-normal text-gray-500 leading-tight">
+                      {hourTotals.factDays} дн
+                    </span>
+                  )}
                 </td>
                 {!canSeeMoney && canSeeHourStats && (
                   <>
@@ -3044,23 +3067,35 @@ function dayTypeLabel(t: DayType): string {
 }
 
 /**
- * Часы ОДНОГО рабочего места — запасной итог, если расчёт не пришёл.
+ * Факт ОДНОГО рабочего места по ячейкам — часы и ДНИ выхода. Запасной итог,
+ * если расчёт не пришёл или ещё пересчитывается после правки часа.
+ *
+ * Дни считаются так же, как `fact_days` на бэке: дата, в которой есть хотя бы
+ * один час, — ВСЕ дни выхода, включая выходные и праздники. Часы и дни берутся
+ * за ОДИН проход по ячейкам: второй проход стоил бы ещё столько же на каждой
+ * строке табеля.
+ *
  * Строки без position_id заведены до появления позиций и относятся к основной.
  */
-function sumPositionHours(
+function positionFact(
   empId: number,
   positionId: number | undefined,
   entries: TimesheetEntry[],
   primaryByEmp: Map<number, number>,
-): number {
-  let s = 0;
+): { hours: number; days: number } {
+  let hours = 0;
+  const dates = new Set<string>();
   for (const e of entries) {
     if (e.employee_id !== empId) continue;
     const pid = e.position_id ?? primaryByEmp.get(e.employee_id);
     // Синтетическая позиция (id не знаем) собирает все часы сотрудника.
-    if (positionId === undefined || pid === positionId) s += num(e.hours);
+    if (positionId === undefined || pid === positionId) {
+      const h = num(e.hours);
+      hours += h;
+      if (h > 0) dates.add(e.work_date);
+    }
   }
-  return s;
+  return { hours, days: dates.size };
 }
 
 /**

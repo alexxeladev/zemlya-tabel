@@ -481,9 +481,28 @@ export function PayrollPage() {
                 <th className="px-2 py-2 text-center font-medium">Норма</th>
                 <th className="px-2 py-2 text-center font-medium">Факт</th>
                 <th className="px-2 py-2 text-center font-medium" title="Коэффициент переработки">Коэф.</th>
-                <th className="px-2 py-2 text-center font-medium" title="Кол-во часов переработки">Пер. ч</th>
-                <th className="px-2 py-2 text-center font-medium">Сумма пер.</th>
-                <th className="px-2 py-2 text-center font-medium">Начисл. оклад</th>
+                <th
+                  className="px-2 py-2 text-center font-medium"
+                  title={
+                    'Часы переработки: сверхурочные (сверх дневной нормы смены) плюс ' +
+                    'работа в выходные и праздники по графику — всё, что оплачено по ' +
+                    'коэффициенту. Ровно из этих часов посчитана сумма рядом.'
+                  }
+                >
+                  Пер. ч
+                </th>
+                <th
+                  className="px-2 py-2 text-center font-medium"
+                  title="Оплата сверхурочных плюс оплата выходных и праздников по графику"
+                >
+                  Сумма пер.
+                </th>
+                <th
+                  className="px-2 py-2 text-center font-medium"
+                  title="Только оплата обычных часов; выходные и праздничные — в колонках переработки"
+                >
+                  Начисл. оклад
+                </th>
                 <th className="px-2 py-2 text-center font-medium" title="Дней отпуска / больничного">Отп./Больн. дн.</th>
                 <th className="px-2 py-2 text-center font-medium" title="Отпускные: оклад / норма × (дни × 8)">Отпускные</th>
                 <th className="px-2 py-2 text-center font-medium" title="Больничные: оклад / норма × (дни × 8)">Больничные</th>
