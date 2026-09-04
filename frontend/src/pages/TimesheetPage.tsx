@@ -33,6 +33,7 @@ import { companyColorByIndex } from '../utils/colors';
 import { companyLabel } from '../utils/companies';
 import { payoutRoundingHint } from '../utils/money';
 import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
+import { overtimeHours } from '../utils/overtime';
 import { useRowChecksStore } from '../store/rowChecks';
 import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
 import { usePeriodStore } from '../store/period';
@@ -166,7 +167,6 @@ export type EmployeePayroll = {
   /** плановых рабочих дней (смен) месяца по графику позиции */
   norm_days?: number | null;
   fact_days?: number;
-  delta_hours: string | null;
   /** Часы по категориям — их видит и табельщик, деньги ему бэк не отдаёт */
   overtime_hours?: string;
   /** выход в свой выходной по графику */
@@ -1600,10 +1600,14 @@ export function TimesheetPage() {
   // строкам (см. счётчик «найдено N из M · итоги по всем»).
   const hourTotals = useMemo(() => {
     const acc = {
-      norm: 0, normDays: 0, factDays: 0, overtime: 0, offSchedule: 0, holiday: 0,
+      norm: 0, normDays: 0, factDays: 0, overtimeTotal: 0,
+      overtime: 0, offSchedule: 0, holiday: 0,
       nightShifts: 0, vacationDays: 0, sickDays: 0,
     };
     for (const pe of data?.payroll?.employees ?? []) {
+      // Итог колонки «Перераб. ч» — через то же правило, что и строки
+      // (utils/overtime), а не своей суммой трёх полей на месте.
+      acc.overtimeTotal += overtimeHours(pe) ?? 0;
       acc.norm += num(pe.norm_hours);
       acc.normDays += pe.norm_days ?? 0;
       // Факт дней — все дни выхода, включая выходные и праздники (так считает
@@ -1905,7 +1909,7 @@ export function TimesheetPage() {
               <NormCell pay={pay} />
             </td>
             <td {...trailingSpan} className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
-              {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
+              <OvertimeCell pay={pay} />
             </td>
             <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-center font-mono text-xs text-gray-700"
@@ -1968,7 +1972,7 @@ export function TimesheetPage() {
               <NormCell pay={pay} />
             </td>
             <td {...trailingSpan} className="border border-gray-200 px-2 py-2 text-center font-mono text-xs">
-              {pay?.delta_hours ? <DeltaCell delta={num(pay.delta_hours)} /> : '—'}
+              <OvertimeCell pay={pay} />
             </td>
             <td {...trailingSpan}
               className="border border-gray-200 px-2 py-2 text-right font-mono text-xs"
@@ -2542,7 +2546,7 @@ export function TimesheetPage() {
                 <>
                   {[
                     ['Норма ч / дн', 72, 'Норма по графику за месяц: часов и рабочих дней (смен)'],
-                    ['Δ', 60, 'Отклонение факта от нормы'],
+                    ['Перераб. ч', 76, OVERTIME_HINT],
                     ['Сверхур. ч', 76, 'Переработка: часы сверх дневной нормы смены'],
                     ['Вне граф. ч', 82, 'Выход в свой выходной по графику'],
                     ['Празд. ч', 76, 'Работа в нерабочий праздничный день календаря'],
@@ -2579,9 +2583,10 @@ export function TimesheetPage() {
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-center font-medium text-gray-600"
-                    style={{ minWidth: 60, zIndex: 20 }}
+                    style={{ minWidth: 76, zIndex: 20 }}
+                    title={OVERTIME_HINT}
                   >
-                    Δ
+                    Перераб. ч
                   </th>
                   <th
                     className="sticky top-0 bg-gray-50 border border-gray-200 px-2 py-2 text-right font-medium text-gray-600"
@@ -2778,7 +2783,9 @@ export function TimesheetPage() {
                         </span>
                       )}
                     </td>
-                    <td className="border border-gray-300 px-2 py-2"></td>
+                    <td className="border border-gray-300 px-2 py-2 text-center font-mono">
+                      {hourTotals.overtimeTotal > 0 ? fmtHours(hourTotals.overtimeTotal) : ''}
+                    </td>
                     <td className="border border-gray-300 px-2 py-2 text-center font-mono">
                       {hourTotals.overtime > 0 ? fmtHours(hourTotals.overtime) : ''}
                     </td>
@@ -2803,7 +2810,9 @@ export function TimesheetPage() {
                   <>
                     <td className="border border-gray-300 px-2 py-2"></td>
                     <td className="border border-gray-300 px-2 py-2"></td>
-                    <td className="border border-gray-300 px-2 py-2"></td>
+                    <td className="border border-gray-300 px-2 py-2 text-center font-mono">
+                      {hourTotals.overtimeTotal > 0 ? fmtHours(hourTotals.overtimeTotal) : ''}
+                    </td>
                     <td className="border border-gray-300 px-2 py-2 text-right font-mono">
                       {fmtMoney(data.payroll.total_base_amount)}
                     </td>
@@ -3106,6 +3115,11 @@ function positionFact(
  * рабочие СМЕНЫ цикла (не календарные дни). Здесь только отображение — рядом с
  * часами, чтобы не добавлять колонку и не пересчитывать colspan-ы таблицы.
  */
+const OVERTIME_HINT =
+  'Часы сверху: сверхурочные (сверх дневной нормы смены) плюс работа в свой ' +
+  'выходной по графику и в праздники. Разбивка — в соседних колонках. ' +
+  'Это НЕ «факт − норма»: недобор нормы эту цифру не уменьшает.';
+
 export function NormCell({ pay }: { pay?: EmployeePayroll | null }) {
   const hours = pay?.norm_hours ? num(pay.norm_hours) : null;
   const days = pay?.norm_days ?? null;
@@ -3122,13 +3136,21 @@ export function NormCell({ pay }: { pay?: EmployeePayroll | null }) {
   );
 }
 
-export function DeltaCell({ delta }: { delta: number }) {
-  if (delta === 0) return <span className="text-gray-400">0</span>;
-  const cls = delta > 0 ? 'text-amber-600' : 'text-red-600';
+/**
+ * Часы переработки строки — сверхурочные плюс выходные и праздничные по графику
+ * (task_overtime_columns). Заменила колонку «Δ»: та показывала «факт − норма» и
+ * вычитала недобор нормы, из-за чего табель отвечал 69 там, где сверху
+ * отработано 73 часа и ровно за них начислена сумма в ведомости.
+ *
+ * Само правило — в `utils/overtime`, здесь только отрисовка: разбивка по
+ * категориям стоит в соседних колонках («Сверхур.», «Вне граф.», «Праздн.»).
+ */
+export function OvertimeCell({ pay }: { pay?: EmployeePayroll | null }) {
+  const hours = overtimeHours(pay);
+  if (!hours) return <span className="text-gray-400">—</span>;
   return (
-    <span className={cls + ' font-semibold'}>
-      {delta > 0 ? '+' : ''}
-      {fmtHours(delta)}
+    <span className="font-semibold text-amber-600" title={OVERTIME_HINT}>
+      {fmtHours(hours)}
     </span>
   );
 }
