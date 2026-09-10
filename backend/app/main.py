@@ -15,6 +15,7 @@ from app.routers.companies import router as companies_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.departments import router as departments_router
 from app.routers.employees import router as employees_router
+from app.routers.guard import router as guard_router
 from app.routers.org import router as org_router
 from app.routers.schedules import router as schedules_router
 from app.routers.timesheet import router as timesheet_router
@@ -58,6 +59,10 @@ app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(departments_router, prefix="/api/departments", tags=["departments"])
 app.include_router(companies_router, prefix="/api/companies", tags=["companies"])
 app.include_router(schedules_router, prefix="/api/schedules", tags=["schedules"])
+# Модуль «Вахта» (task_vahta): табель охраны на постах со своим справочником
+# экипажей и постов. Расчёт свой (без округления, проценты от поста), но
+# результат вливается в общую ведомость.
+app.include_router(guard_router, prefix="/api/vahta", tags=["vahta"])
 app.include_router(employees_router, prefix="/api/employees", tags=["employees"])
 app.include_router(calendar_router, prefix="/api/calendar", tags=["calendar"])
 app.include_router(timesheet_router, prefix="/api/timesheet", tags=["timesheet"])

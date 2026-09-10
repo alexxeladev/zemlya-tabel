@@ -561,6 +561,8 @@ export interface Department {
   night_shift_fund: string | null
   /** зарплата отдела делится по количественному показателю, а не по каскаду */
   uses_quantity_distribution: boolean
+  /** отдел ведётся модулем «Вахта» (task_vahta) */
+  is_guard_department: boolean
   /** «Заявки» у HR, «АРМ» у ИТ; пусто — нейтральное «Количество» */
   quantity_metric_name: string | null
   /** подписи двух частей показателя; обе пусты — вводится одним числом */
@@ -605,6 +607,8 @@ export interface OrgDepartment {
   night_shift_fund: string | null
   /** зарплата отдела делится по количественному показателю (заявки/АРМ) */
   uses_quantity_distribution: boolean
+  /** отдел ведётся модулем «Вахта» (task_vahta) */
+  is_guard_department: boolean
   quantity_metric_name: string | null
   quantity_part1_name: string | null
   quantity_part2_name: string | null
@@ -857,4 +861,205 @@ export interface EmployeeImportResult {
   created_count: number
   skipped_count: number
   rows: EmployeeImportRow[]
+}
+
+// ── Модуль «Вахта» (task_vahta) ──
+//
+// Охранник — обычная позиция сотрудника; отдельного справочника охранников нет.
+// Пост несёт ставку за смену и распределение по юрлицам в процентах, и именно
+// от ПОСТА берутся проценты (у ГБР расклад мультикомпанийный, у рядовых постов
+// обычно 100 % на одно юрлицо).
+//
+// Денежные поля необязательные: табельщику они приходят null — суммы
+// вычищаются на уровне API, а не прячутся в интерфейсе.
+
+/** Должность поста: охранник, ГБР и диспетчер посменно, начальник фикс-окладом. */
+export type VahtaKind = 'guard' | 'gbr' | 'dispatcher' | 'chief'
+
+export interface VahtaDepartment {
+  id: number
+  name: string
+  code: string
+}
+
+export interface VahtaShare {
+  company_id: number
+  percent: string
+  company_name: string | null
+  company_display_name: string | null
+}
+
+/** Зона обслуживания — верхний уровень: группа географически близких объектов. */
+export interface VahtaZone {
+  id: number
+  name: string
+  department_id: number
+  sort_order: number
+  is_active: boolean
+  site_count: number
+  crew_count: number
+}
+
+/**
+ * Пост — точка внутри объекта.
+ *
+ * Ни процентов, ни должности: проценты у объекта, должность у человека —
+ * точка не бывает «охранником».
+ */
+export interface VahtaPost {
+  id: number
+  site_id: number
+  site_name: string | null
+  name: string
+  department_id: number
+  /** Своя ставка поста; null — берётся ставка объекта. */
+  shift_rate: string | null
+  /** Ставка, которая реально применится: своя либо объекта. */
+  effective_rate: string | null
+  sort_order: number
+  is_active: boolean
+}
+
+/** Охраняемый объект внутри зоны: ставка по умолчанию и распределение. */
+export interface VahtaSite {
+  id: number
+  name: string
+  zone_id: number
+  zone_name: string | null
+  department_id: number
+  shift_rate: string | null
+  sort_order: number
+  is_active: boolean
+  /** Источник процентов для ВСЕХ постов объекта. */
+  shares: VahtaShare[]
+  posts: VahtaPost[]
+}
+
+/** Выездной экипаж ГБР зоны: своя ставка и своё распределение. */
+export interface VahtaCrew {
+  id: number
+  name: string
+  /** Зона экипажа: за её пределы он не выезжает, зоны разнесены географически. */
+  zone_id: number
+  zone_name: string | null
+  department_id: number
+  shift_rate: string | null
+  sort_order: number
+  is_active: boolean
+  shares: VahtaShare[]
+}
+
+/** Итог расчётной половины месяца (1–15 или 16–конец): выплата дважды. */
+export interface VahtaHalf {
+  half: number
+  first_day: number
+  last_day: number
+  shifts: number
+  salary: string | null
+  premium: string | null
+  penalty: string | null
+  official_payout: string | null
+  accrued: string | null
+  net_payout: string | null
+}
+
+export interface VahtaRow {
+  id: number
+  /** Место работы: пост объекта ЛИБО выездной экипаж — ровно одно из двух. */
+  post_id: number | null
+  crew_id: number | null
+  /** Как называется место работы (колонка «КП»). */
+  post_name: string
+  site_id: number | null
+  site_name: string | null
+  zone_id: number | null
+  zone_name: string | null
+  department_id: number
+  /** Должность ЭТОГО человека на месте, а не свойство места. */
+  kind: VahtaKind
+  kind_label: string
+  /** Пустой слот (незанятое место): человека нет, все его поля null. */
+  employee_id: number | null
+  position_id: number | null
+  employee_name: string | null
+  tab_number: string | null
+  rate: string | null
+  is_official: boolean
+  note: string | null
+  /** Числа месяца, в которые человек выходил. */
+  days: number[]
+  shifts: number
+  /** Смена равна суткам: факт часов = смены × 24. */
+  fact_hours: number
+  halves: VahtaHalf[]
+  salary: string | null
+  premium: string | null
+  penalty: string | null
+  official_payout: string | null
+  /** «Итого начислено» = зарплата + премия − штраф. База распределения. */
+  accrued: string | null
+  /** Остаток из кассы: начислено − официальная (банковская) выплата. */
+  net_payout: string | null
+  distribution: Record<number, string> | null
+}
+
+/**
+ * Карточка главного экрана — ОБЪЕКТ или ЭКИПАЖ ГБР.
+ *
+ * У объекта в `objects` перечислены его ПОСТЫ (что тут закрывают), у экипажа —
+ * ОБСЛУЖИВАЕМЫЕ ОБЪЕКТЫ (куда он выезжает).
+ */
+export interface VahtaCard {
+  kind: 'site' | 'crew'
+  id: number
+  name: string
+  department_id: number
+  objects: string[]
+  rows: VahtaRow[]
+  total_accrued: string | null
+}
+
+/** Зона на главном экране: внутри сначала экипажи ГБР, потом объекты. */
+export interface VahtaZoneCard {
+  zone_id: number
+  zone_name: string
+  department_id: number
+  cards: VahtaCard[]
+  total_accrued: string | null
+  total_shifts: number
+}
+
+export interface VahtaMonth {
+  year: number
+  month: number
+  days_in_month: number
+  /** Последний день первой половины — по нему рисуется черта в сетке. */
+  first_half_last_day: number
+  departments: number[]
+  /** Табель сгруппирован ПО ЗОНАМ обслуживания. */
+  zones: VahtaZoneCard[]
+  total_shifts: number
+  total_accrued: string | null
+  total_net_payout: string | null
+  halves: { half: number; shifts: number; accrued: string | null; net_payout: string | null }[]
+  company_totals: { company_id: number; amount: string }[]
+  can_edit: boolean
+  can_see_money: boolean
+}
+
+export interface VahtaSimilarEmployee {
+  id: number
+  full_name: string
+  tab_number: string | null
+  department_name: string | null
+  is_active: boolean
+}
+
+export interface VahtaCandidate {
+  employee_id: number
+  position_id: number | null
+  full_name: string
+  tab_number: string | null
+  /** Где человек уже стоит в этом месяце — или null, если нигде. */
+  where: string | null
 }

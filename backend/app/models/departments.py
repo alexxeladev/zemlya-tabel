@@ -86,6 +86,14 @@ class Department(Base):
             or (self.quantity_part2_name or "").strip()
         )
 
+    # Подразделение охраны (task_vahta): отдел ведётся модулем «Вахта» —
+    # экипажи, посты, смены. Флаг, а не имя отдела: отдел переименуют, и правило
+    # молча отвалится. Через него же решается, где быстрый найм заводит позицию
+    # и какие отделы вообще показывает раздел.
+    is_guard_department: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[str] = mapped_column(server_default=func.now())
     updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())

@@ -66,6 +66,7 @@ def build_org_tree(db: Session, include_inactive: bool = False) -> OrgTreeRead:
             quantity_metric_name=dept.quantity_metric_name,
             quantity_part1_name=dept.quantity_part1_name,
             quantity_part2_name=dept.quantity_part2_name,
+            is_guard_department=dept.is_guard_department,
             managers=[_employee_read(m) for m in _by_name(list(dept.managers))],
             employee_count=len(members),
             employees=[_employee_read(e) for e in members],

@@ -111,6 +111,9 @@ _PAYROLL_AMOUNT_FIELDS = (
     "net_payout",
     "net_payout_exact",
     "rounding_tail",
+    # Штраф вахты (task_vahta): деньги, как и остальные суммы строки. Признак
+    # `is_guard_row` при этом остаётся — он не денежный, а про способ расчёта.
+    "guard_penalty_amount",
 )
 
 # Ставки и коэффициенты строки расчёта (Optional → None)

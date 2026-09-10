@@ -85,6 +85,10 @@ export function AppLayout() {
             { to: '/dashboard', label: 'Дашборд' },
             ...((role === 'admin' || role === 'accountant') ? [{ to: '/tasks', label: 'Задачи' }] : []),
             { to: '/timesheet', label: 'Табель' },
+            // Вахта (task_vahta): раздел охраны. Сотруднику не виден — бэк ему
+            // отвечает 403; табельщику виден, но без денежных колонок (это тоже
+            // решает бэк, а не меню).
+            ...(role && role !== 'employee' ? [{ to: '/vahta', label: 'Вахта' }] : []),
             ...((role === 'admin' || role === 'accountant' || role === 'manager') ? [{ to: '/admin/payroll', label: 'Расчёт ЗП' }] : []),
           ]} />
 

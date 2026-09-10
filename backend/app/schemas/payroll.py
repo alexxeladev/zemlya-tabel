@@ -118,6 +118,17 @@ class EmployeePayrollRead(BaseModel):
     net_payout_exact: Decimal = Decimal("0")
     rounding_tail: Decimal = Decimal("0")
 
+    # ── Вахта (task_vahta) ───────────────────────────────────────────────────
+    # Строка посчитана модулем вахты, а не общим расчётом: смены × ставка поста,
+    # проценты распределения от ПОСТА, суммы НЕ округляются. У всех остальных
+    # строк флаг False, а штраф ноль — общая ведомость от этого не меняется.
+    is_guard_row: bool = False
+    # Штраф вахты. Простое удержание без обоснования, которое УМЕНЬШАЕТ «Итого
+    # начислено» (и базу распределения): «зарплата плюс премия минус штраф».
+    # Поэтому он здесь, а не в total_deductions — там удержания из уже
+    # начисленного, они базу не трогают.
+    guard_penalty_amount: Decimal = Decimal("0")
+
     breakdown_by_company: list[CompanyBreakdownRead]
     is_calculable: bool
     reason_if_not_calculable: str | None

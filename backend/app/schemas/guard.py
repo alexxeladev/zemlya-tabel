@@ -1,0 +1,386 @@
+"""Схемы модуля «Вахта» (task_vahta).
+
+Денежные поля строки табеля вычищаются табельщику на уровне API
+(`app.services.finance_masking`), поэтому все суммы здесь необязательные: у
+роли без доступа к финансам они приходят `null`, а не нулём — ноль читался бы
+как «начислено ничего».
+"""
+from __future__ import annotations
+
+from decimal import Decimal
+
+from pydantic import BaseModel, Field
+
+# ── Справочник: посты ─────────────────────────────────────────────────────────
+
+class GuardShareInput(BaseModel):
+    company_id: int
+    percent: Decimal = Field(ge=0)
+
+
+class GuardShareRead(GuardShareInput):
+    company_name: str | None = None
+    company_display_name: str | None = None
+
+
+class GuardPostCreate(BaseModel):
+    """Пост — точка внутри объекта.
+
+    Ни процентов, ни должности: проценты у объекта, должность у человека.
+    """
+
+    site_id: int
+    name: str = Field(min_length=1, max_length=255)
+    #: None — ставка берётся у объекта; заданная переопределяет её.
+    shift_rate: Decimal | None = Field(default=None, ge=0)
+    sort_order: int = 0
+
+
+class GuardPostUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    shift_rate: Decimal | None = Field(default=None, ge=0)
+    sort_order: int | None = None
+    is_active: bool | None = None
+
+
+class GuardPostRead(BaseModel):
+    id: int
+    site_id: int
+    site_name: str | None = None
+    name: str
+    department_id: int
+    #: Своя ставка поста (может быть не задана).
+    shift_rate: Decimal | None = None
+    #: Ставка, которая реально применится: своя либо объекта.
+    effective_rate: Decimal | None = None
+    sort_order: int
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
+# ── Справочник: зоны обслуживания ─────────────────────────────────────────────
+
+class GuardZoneCreate(BaseModel):
+    """Зона обслуживания — верхний уровень: группа географически близких объектов."""
+
+    name: str = Field(min_length=1, max_length=255)
+    department_id: int
+    sort_order: int = 0
+
+
+class GuardZoneUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    sort_order: int | None = None
+    is_active: bool | None = None
+
+
+class GuardZoneRead(BaseModel):
+    id: int
+    name: str
+    department_id: int
+    sort_order: int
+    is_active: bool
+    site_count: int = 0
+    crew_count: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+# ── Справочник: объекты ───────────────────────────────────────────────────────
+
+class GuardSiteCreate(BaseModel):
+    """Охраняемый объект внутри зоны: ставка по умолчанию и распределение."""
+
+    name: str = Field(min_length=1, max_length=255)
+    #: Зона обслуживания. Отдел охраны берётся у неё — своего у объекта нет.
+    zone_id: int
+    shift_rate: Decimal = Field(default=Decimal("0"), ge=0)
+    sort_order: int = 0
+    #: Распределение затрат объекта по юрлицам — источник % для всех его постов.
+    shares: list[GuardShareInput] | None = None
+
+
+class GuardSiteUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    #: Перенос объекта в другую зону — законная операция.
+    zone_id: int | None = None
+    shift_rate: Decimal | None = Field(default=None, ge=0)
+    sort_order: int | None = None
+    is_active: bool | None = None
+    shares: list[GuardShareInput] | None = None
+
+
+class GuardSiteRead(BaseModel):
+    id: int
+    name: str
+    zone_id: int
+    zone_name: str | None = None
+    department_id: int
+    shift_rate: Decimal | None = None
+    sort_order: int
+    is_active: bool
+    shares: list[GuardShareRead] = []
+    posts: list[GuardPostRead] = []
+
+    model_config = {"from_attributes": True}
+
+
+# ── Справочник: экипажи ───────────────────────────────────────────────────────
+
+class GuardCrewCreate(BaseModel):
+    """Выездной экипаж ГБР зоны: своя ставка и своё распределение."""
+
+    name: str = Field(min_length=1, max_length=255)
+    #: Зона экипажа. За её пределы он не выезжает; в зоне экипажей может быть
+    #: несколько.
+    zone_id: int
+    shift_rate: Decimal = Field(default=Decimal("0"), ge=0)
+    sort_order: int = 0
+    #: Своё распределение по юрлицам — у экипажей оно мультикомпанийное.
+    shares: list[GuardShareInput] | None = None
+
+
+class GuardCrewUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    shift_rate: Decimal | None = Field(default=None, ge=0)
+    sort_order: int | None = None
+    is_active: bool | None = None
+    shares: list[GuardShareInput] | None = None
+
+
+class GuardCrewRead(BaseModel):
+    id: int
+    name: str
+    zone_id: int
+    zone_name: str | None = None
+    department_id: int
+    shift_rate: Decimal | None = None
+    sort_order: int
+    is_active: bool
+    shares: list[GuardShareRead] = []
+
+    model_config = {"from_attributes": True}
+
+
+# ── Табель ────────────────────────────────────────────────────────────────────
+
+class GuardHalfRead(BaseModel):
+    """Итог расчётной половины месяца (1–15 или 16–конец)."""
+
+    half: int
+    first_day: int
+    last_day: int
+    shifts: int
+    salary: Decimal | None = None
+    premium: Decimal | None = None
+    penalty: Decimal | None = None
+    official_payout: Decimal | None = None
+    accrued: Decimal | None = None
+    net_payout: Decimal | None = None
+
+
+class GuardRowRead(BaseModel):
+    """Строка табеля: человек (или пустой слот) на месте работы в месяце.
+
+    Место одно из двух: пост объекта (`post_id`) либо выездной экипаж ГБР
+    (`crew_id`). `post_name` — как это место называется, для колонки «КП».
+    """
+
+    id: int
+    post_id: int | None = None
+    crew_id: int | None = None
+    post_name: str
+    site_id: int | None = None
+    site_name: str | None = None
+    zone_id: int | None = None
+    zone_name: str | None = None
+    department_id: int
+    kind: str
+    kind_label: str
+
+    # Пустой слот: пост есть, человека нет. Все поля сотрудника — None.
+    employee_id: int | None = None
+    position_id: int | None = None
+    employee_name: str | None = None
+    tab_number: str | None = None
+
+    rate: Decimal | None = None
+    is_official: bool = False
+    note: str | None = None
+
+    days: list[int] = []
+    shifts: int = 0
+    fact_hours: int = 0
+
+    halves: list[GuardHalfRead] = []
+    salary: Decimal | None = None
+    premium: Decimal | None = None
+    penalty: Decimal | None = None
+    official_payout: Decimal | None = None
+    accrued: Decimal | None = None
+    net_payout: Decimal | None = None
+    #: Разбивка «Итого начислено» по юрлицам согласно процентам ПОСТА.
+    distribution: dict[int, Decimal] | None = None
+
+
+class GuardCardRead(BaseModel):
+    """Карточка главного экрана — ОБЪЕКТ или ЭКИПАЖ ГБР.
+
+    Это разные вещи, поэтому у карточки есть `kind`: у объекта в `objects`
+    перечислены его ПОСТЫ (что тут закрывают), у экипажа — ОБСЛУЖИВАЕМЫЕ
+    ОБЪЕКТЫ (куда он выезжает).
+    """
+
+    #: "site" — охраняемый объект, "crew" — выездной экипаж ГБР.
+    kind: str
+    id: int
+    name: str
+    department_id: int
+    objects: list[str] = []
+    rows: list[GuardRowRead] = []
+    total_accrued: Decimal | None = None
+
+
+class GuardZoneCardRead(BaseModel):
+    """Зона обслуживания на главном экране — верхний уровень группировки.
+
+    Внутри сначала карточки её экипажей ГБР, потом карточки объектов: сперва
+    «кто на выезде», потом сами объекты.
+    """
+
+    zone_id: int
+    zone_name: str
+    department_id: int
+    cards: list[GuardCardRead] = []
+    total_accrued: Decimal | None = None
+    total_shifts: int = 0
+
+
+class GuardCompanyTotal(BaseModel):
+    company_id: int
+    amount: Decimal
+
+
+class GuardHalfTotal(BaseModel):
+    half: int
+    shifts: int
+    accrued: Decimal | None = None
+    net_payout: Decimal | None = None
+
+
+class GuardMonthRead(BaseModel):
+    """Табель вахты за месяц целиком."""
+
+    year: int
+    month: int
+    days_in_month: int
+    #: Последний день первой расчётной половины — по нему рисуется черта в сетке.
+    first_half_last_day: int
+    departments: list[int] = []
+    #: Табель сгруппирован ПО ЗОНАМ обслуживания.
+    zones: list[GuardZoneCardRead] = []
+    total_shifts: int = 0
+    total_accrued: Decimal | None = None
+    total_net_payout: Decimal | None = None
+    halves: list[GuardHalfTotal] = []
+    company_totals: list[GuardCompanyTotal] = []
+    can_edit: bool = False
+    can_see_money: bool = False
+
+
+# ── Мутации ───────────────────────────────────────────────────────────────────
+
+class GuardAssignmentCreate(BaseModel):
+    year: int
+    month: int
+    #: Место работы: пост объекта ЛИБО выездной экипаж ГБР — ровно одно из двух.
+    post_id: int | None = None
+    crew_id: int | None = None
+    #: Должность строки. Не задана — обычная для этого места: у экипажа ГБР,
+    #: у поста охранник.
+    kind: str | None = None
+    #: Кого ставим. None — пустой слот (незанятый пост).
+    position_id: int | None = None
+    #: Если у человека ещё нет рабочего места под этот пост — завести новое.
+    employee_id: int | None = None
+    #: Несколько человек на ОДИН пост сразу: на посту ГБР их и правда несколько
+    #: (в образце у 3-го экипажа четверо). Задан — `employee_id` игнорируется,
+    #: строки создаются одной транзакцией: половина поставленных людей хуже,
+    #: чем понятная ошибка.
+    employee_ids: list[int] | None = None
+    rate: Decimal | None = Field(default=None, ge=0)
+
+
+class GuardAssignmentUpdate(BaseModel):
+    #: Должность правится прямо в строке табеля.
+    kind: str | None = None
+    rate: Decimal | None = Field(default=None, ge=0)
+    is_official: bool | None = None
+    note: str | None = None
+    premium_h1: Decimal | None = Field(default=None, ge=0)
+    premium_h2: Decimal | None = Field(default=None, ge=0)
+    penalty_h1: Decimal | None = Field(default=None, ge=0)
+    penalty_h2: Decimal | None = Field(default=None, ge=0)
+    official_payout_h1: Decimal | None = Field(default=None, ge=0)
+    official_payout_h2: Decimal | None = Field(default=None, ge=0)
+
+
+class GuardDayInput(BaseModel):
+    assignment_id: int
+    day: int = Field(ge=1, le=31)
+    value: bool
+
+
+class GuardDaysInput(BaseModel):
+    """«Отметить все» / «снять все» — набор дней строки целиком."""
+
+    assignment_id: int
+    days: list[int]
+
+
+class GuardReplaceInput(BaseModel):
+    assignment_id: int
+    #: Кто сменяет. position_id — существующее рабочее место, employee_id —
+    #: человек, которому место под этот пост надо завести.
+    position_id: int | None = None
+    employee_id: int | None = None
+    from_day: int = Field(ge=1, le=31)
+    rate: Decimal | None = Field(default=None, ge=0)
+
+
+class GuardQuickHireInput(BaseModel):
+    """Быстрый найм: ФИО, место работы, ставка — три поля, как в ТЗ."""
+
+    full_name: str = Field(min_length=3, max_length=255)
+    #: Ровно одно из двух: пост объекта либо выездной экипаж ГБР.
+    post_id: int | None = None
+    crew_id: int | None = None
+    #: Должность нанимаемого; не задана — обычная для места.
+    kind: str | None = None
+    rate: Decimal | None = Field(default=None, ge=0)
+    year: int | None = None
+    month: int | None = None
+    #: Сразу поставить нанятого на пост в этом месяце.
+    assign: bool = True
+
+
+class GuardSimilarEmployee(BaseModel):
+    """Похожий сотрудник — предложение выбрать вместо создания дубля."""
+
+    id: int
+    full_name: str
+    tab_number: str | None = None
+    department_name: str | None = None
+    is_active: bool = True
+
+
+class GuardCandidateRead(BaseModel):
+    """Кандидат в окне «Кто сменит на посту»."""
+
+    employee_id: int
+    position_id: int | None = None
+    full_name: str
+    tab_number: str | None = None
+    #: Откуда человек: «3 экипаж, ГБР» или пусто, если сейчас нигде не стоит.
+    where: str | None = None

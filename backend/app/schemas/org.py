@@ -32,6 +32,8 @@ class OrgDepartmentRead(BaseModel):
     quantity_metric_name: str | None = None
     quantity_part1_name: str | None = None
     quantity_part2_name: str | None = None
+    # Отдел ведётся модулем «Вахта»: экипажи, посты, смены (task_vahta).
+    is_guard_department: bool = False
     # Менеджеры и табельщики отдела: чем руководят / что ведут, а не где числятся
     # (task_org_structure ч.2, task_timekeeper_role). Кто есть кто — по `role`.
     managers: list[OrgEmployeeRead]

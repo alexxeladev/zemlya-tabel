@@ -25,6 +25,8 @@ class DepartmentCreate(DepartmentBase):
     quantity_metric_name: Optional[str] = None
     quantity_part1_name: Optional[str] = None
     quantity_part2_name: Optional[str] = None
+    # Подразделение охраны: отдел ведётся модулем «Вахта» (task_vahta).
+    is_guard_department: Optional[bool] = None
 
 
 class DepartmentRead(DepartmentBase):
@@ -43,6 +45,9 @@ class DepartmentRead(DepartmentBase):
     quantity_metric_name: Optional[str] = None
     quantity_part1_name: Optional[str] = None
     quantity_part2_name: Optional[str] = None
+    # Отдел ведётся модулем «Вахта»: экипажи, посты, смены (task_vahta).
+    # Не деньги, а правило — видно всем, кто видит отдел.
+    is_guard_department: bool = False
 
 
 class DepartmentUpdate(BaseModel):
@@ -54,6 +59,7 @@ class DepartmentUpdate(BaseModel):
     quantity_metric_name: Optional[str] = None
     quantity_part1_name: Optional[str] = None
     quantity_part2_name: Optional[str] = None
+    is_guard_department: Optional[bool] = None
     is_active: Optional[bool] = None
 
 

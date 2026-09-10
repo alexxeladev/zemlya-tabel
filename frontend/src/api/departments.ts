@@ -22,6 +22,8 @@ export const createDepartment = (data: {
   night_shift_fund?: string | null
   /** делить зарплату отдела по заявкам на подбор вместо каскада процентов */
   uses_quantity_distribution?: boolean
+  /** отдел ведётся модулем «Вахта» (task_vahta) */
+  is_guard_department?: boolean
   quantity_metric_name?: string | null
   quantity_part1_name?: string | null
   quantity_part2_name?: string | null
@@ -35,6 +37,7 @@ export const updateDepartment = (
     head_company_id: number | null
     night_shift_fund: string
     uses_quantity_distribution: boolean
+    is_guard_department: boolean
     quantity_metric_name: string | null
     quantity_part1_name: string | null
     quantity_part2_name: string | null

@@ -10,6 +10,8 @@ import { CalendarPage } from '../pages/admin/CalendarPage'
 import { EmployeesPage } from '../pages/admin/EmployeesPage'
 import { PayrollPage } from '../pages/admin/PayrollPage'
 import { TimesheetPage } from '../pages/TimesheetPage'
+import { VahtaPage } from '../pages/VahtaPage'
+import { VahtaSettingsPage } from '../pages/admin/VahtaSettingsPage'
 import { TasksPage } from '../pages/TasksPage'
 import { PrivateRoute } from './PrivateRoute'
 import { useAuthStore } from '../store/auth'
@@ -45,6 +47,26 @@ export function AppRouter() {
               }
             />
             <Route path="/change-password" element={<ChangePasswordPage />} />
+
+            {/* Модуль «Вахта» (task_vahta): табель охраны на постах.
+                Сотруднику раздел не виден — бэк тем же ролям отвечает 403.
+                Настройки (экипажи и посты) — админ и менеджер охраны. */}
+            <Route
+              path="/vahta"
+              element={
+                <RoleRoute allow={['admin', 'accountant', 'manager', 'timekeeper']}>
+                  <VahtaPage />
+                </RoleRoute>
+              }
+            />
+            <Route
+              path="/vahta/posts"
+              element={
+                <RoleRoute allow={['admin', 'manager']}>
+                  <VahtaSettingsPage />
+                </RoleRoute>
+              }
+            />
 
             {/* Единый экран оргструктуры вместо отдельных «Компании» и «Отделы»
                 (task_org_structure ч.3). Структуру и права меняет только admin. */}

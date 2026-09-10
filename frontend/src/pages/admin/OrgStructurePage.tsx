@@ -76,6 +76,8 @@ type DepartmentForm = {
   /** подписи двух частей показателя; обе пусты — вводится одним числом */
   quantity_part1_name: string
   quantity_part2_name: string
+  /** отдел ведётся модулем «Вахта»: экипажи, посты, смены (task_vahta) */
+  is_guard_department: boolean
 }
 
 /** Ставка ночной смены = фонд ÷ календарные дни месяца, лимит смен = число дней
@@ -169,6 +171,14 @@ function DepartmentNode({
               title="Зарплата отдела распределяется по количественному показателю за месяц, а не по каскаду процентов"
             >
               📋 по «{dept.quantity_metric_name || 'Количество'}»
+            </span>
+          )}
+          {dept.is_guard_department && (
+            <span
+              className="text-xs text-sky-600"
+              title="Отдел ведётся в разделе «Вахта»: экипажи, посты и смены охраны"
+            >
+              🛡 вахта
             </span>
           )}
         </button>
@@ -404,6 +414,7 @@ export function OrgStructurePage() {
       head_company_id: deptForm.head_company_id,
       night_shift_fund: String(Number(deptForm.night_shift_fund.replace(',', '.')) || 0),
       uses_quantity_distribution: deptForm.uses_quantity_distribution,
+      is_guard_department: deptForm.is_guard_department,
       quantity_metric_name: deptForm.quantity_metric_name.trim(),
       quantity_part1_name: deptForm.quantity_part1_name.trim(),
       quantity_part2_name: deptForm.quantity_part2_name.trim(),
@@ -489,6 +500,7 @@ export function OrgStructurePage() {
         head_company_id: d.head_company_id,
         night_shift_fund: d.night_shift_fund ?? '100000',
         uses_quantity_distribution: d.uses_quantity_distribution,
+        is_guard_department: d.is_guard_department,
         quantity_metric_name: d.quantity_metric_name ?? '',
         quantity_part1_name: d.quantity_part1_name ?? '',
         quantity_part2_name: d.quantity_part2_name ?? '',
@@ -539,6 +551,7 @@ export function OrgStructurePage() {
               openDeptForm({
                 name: '', code: '', head_company_id: companyId,
                 night_shift_fund: '100000', uses_quantity_distribution: false,
+                is_guard_department: false,
                 quantity_metric_name: '', quantity_part1_name: '', quantity_part2_name: '',
               })
             }
@@ -724,6 +737,28 @@ export function OrgStructurePage() {
                 )}
               </p>
             </Field>
+
+            {/* Подразделение охраны (task_vahta): отдел ведётся отдельным
+                разделом со своим справочником экипажей и постов. Флаг, а не имя
+                отдела: отдел переименуют, и правило молча отвалится. */}
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 rounded border-gray-300"
+                checked={deptForm.is_guard_department}
+                onChange={(e) =>
+                  setDeptForm({ ...deptForm, is_guard_department: e.target.checked })
+                }
+              />
+              <span className="text-sm text-gray-700">
+                Подразделение охраны (раздел «Вахта»)
+                <span className="mt-0.5 block text-[11px] text-gray-400">
+                  Табель такого отдела ведётся в разделе «Вахта»: экипажи, посты со
+                  ставкой за смену и своим распределением по юрлицам. Расчёт
+                  попадает в общую ведомость обычными строками.
+                </span>
+              </span>
+            </label>
 
             {/* Распределение по количественному показателю отдела
                 (task_hr_applications → обобщено в task_it_arm_distribution).

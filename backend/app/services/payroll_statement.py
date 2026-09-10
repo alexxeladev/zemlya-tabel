@@ -63,6 +63,12 @@ from app.services.company_shares import (
     load_month_overrides,
 )
 from app.services.distribution import distribute, distribute_largest_remainder
+from app.services.guard_payroll import distribute_guard_amount
+from app.services.guard_statement import (
+    SOURCE_GUARD_POST,
+    guard_payroll_read,
+    load_guard_rows,
+)
 from app.services.night_shifts import load_night_context
 from app.services.payout import (
     compute_payout,
@@ -180,8 +186,25 @@ def build_payroll_summary(
     # расчёта — см. `services.night_shifts`.
     night = load_night_context(db, employees, year, month)
 
+    # Вахта (task_vahta): позиция, у которой в этом месяце есть назначение на
+    # пост охраны, считается МОДУЛЕМ ВАХТЫ, а не общим расчётом — часов в табеле
+    # у охранника нет, вся его работа это отметки смен. Строки остальных
+    # подразделений эта ветка не касается: словарь для них пуст.
+    guard_rows = load_guard_rows(
+        db,
+        [pos.id for emp in employees for pos in emp.positions],
+        year, month,
+    )
+
     payroll_items: list[EmployeePayrollRead] = []
     for emp, position in _payroll_rows(employees, actor, department_id):
+        guard_row = guard_rows.get(position.id) if position is not None else None
+        if guard_row is not None:
+            payroll_items.append(
+                guard_payroll_read(emp, position, guard_row, year, month)
+            )
+            continue
+
         # Часы позиции: строки без position_id — доположенческие, они принадлежат
         # основной позиции (иначе миграция потеряла бы часы).
         by_position = entries_by_position(emp, entries_by_employee.get(emp.id, []))
@@ -370,11 +393,16 @@ def accrued_total(p: EmployeePayrollRead) -> Decimal:
     обе повышенные категории (вне графика и праздничные) считаются здесь
     независимо от того, показаны они в «оклад» или в «переработку»
     (task_overtime_columns переложил их во вторую).
+
+    Штраф вахты (`guard_penalty_amount`) вычитается: в вахте «Итого начислено»
+    это «зарплата плюс премия МИНУС штраф» (task_vahta). У всех остальных строк
+    он ноль, поэтому на обычную ведомость правило не влияет.
     """
     return (
         p.base_amount + p.off_schedule_amount + p.holiday_amount
         + p.overtime_amount + p.vacation_amount + p.sick_amount
         + p.night_amount + p.premium_amount + p.kpi_amount
+        - p.guard_penalty_amount
     )
 
 
@@ -829,6 +857,10 @@ def build_payroll_statement(
     )
     company_names = {c.id: company_display_name(c) for c in companies}
 
+    # Вахта: проценты берутся от ПОСТА, а не от каскада. Загружаем те же строки,
+    # которыми посчитан summary, — нужны их доли по юрлицам.
+    guard_rows = load_guard_rows(db, list(position_by_id), year, month)
+
     rows: list[StatementRow] = []
     distribution_totals: dict[int, Decimal] = {c.id: _ZERO for c in companies}
 
@@ -884,7 +916,18 @@ def build_payroll_statement(
             company_names,
         )
 
-        if qty_counts:
+        guard_row = guard_rows.get(p.position_id) if p.is_guard_row else None
+        if guard_row is not None:
+            # ВАХТА. Каскад (месяц → карточка → отдел → часы) и количественный
+            # показатель к этим строкам не применяются вовсе: платит объект, и
+            # проценты у него свои. Суммы НЕ округляются до тысячи — считаются до
+            # копейки, поэтому нераспределённого остатка у строки вахты нет.
+            is_overridden = False
+            is_auto = False
+            shares = dict(guard_row.shares)
+            weights = shares
+            source = SOURCE_GUARD_POST
+        elif qty_counts:
             is_overridden = False
             is_auto = False
             # Карточка ПОЗИЦИИ перебивает показатель целиком (task_card_priority);
@@ -928,7 +971,13 @@ def build_payroll_statement(
         # Каскад делит базу без целевых, целевые ложатся на свои юрлица, и весь
         # набор округляется ВНИЗ до ТЫСЯЧИ (ч.3): Σ долей на 0…999 ₽ меньше
         # начисленного, разница — нераспределённый остаток строки.
-        dist_amounts = finalize_distribution(base, weights, targeted, company_order)
+        if guard_row is not None:
+            # Единственное место, где распределение идёт НЕ через
+            # finalize_distribution: там floor до тысячи, а в вахте округления
+            # нет. 75 230 по 35/60/5 обязано дать 26 330,50 / 45 138 / 3 761,50.
+            dist_amounts = distribute_guard_amount(base, weights)
+        else:
+            dist_amounts = finalize_distribution(base, weights, targeted, company_order)
         row_unallocated = unallocated_remainder(base, dist_amounts)
         # Пометка о целевых суммах живёт в СВОЁМ поле (`targeted_note`):
         # `distribution_note` — про предупреждения каскада, и подпись

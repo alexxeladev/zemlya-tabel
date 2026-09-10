@@ -70,3 +70,7 @@ docs/TZ_1C_integration.md
 docs/TZ_1C_integration.docx
 docs/design/
 scripts/
+
+# Выгрузки заказчика: настоящие ФИО, оклады и штрафы. В репозиторий не едут —
+# на их основе сделан модуль «Вахта», см. «Проверено на реальных данных» в CLAUDE.md.
+docs/*.xlsx

@@ -59,6 +59,7 @@ def _to_dict(obj: Department) -> dict:
         "quantity_metric_name": obj.quantity_metric_name,
         "quantity_part1_name": obj.quantity_part1_name,
         "quantity_part2_name": obj.quantity_part2_name,
+        "is_guard_department": obj.is_guard_department,
         "is_active": obj.is_active,
     }
 
@@ -131,6 +132,8 @@ def create_department(
         dept.night_shift_fund = payload.night_shift_fund
     if payload.uses_quantity_distribution is not None:
         dept.uses_quantity_distribution = payload.uses_quantity_distribution
+    if payload.is_guard_department is not None:
+        dept.is_guard_department = payload.is_guard_department
     for field in ("quantity_metric_name", "quantity_part1_name", "quantity_part2_name"):
         value = getattr(payload, field, None)
         if value is not None:
@@ -177,6 +180,10 @@ def update_department(
         # это 0. Пришедший null трактуем как «не менять».
         if changes["night_shift_fund"] is None:
             changes.pop("night_shift_fund")
+    if changes.get("is_guard_department") is None:
+        # Флаг «подразделение охраны» (task_vahta) — обязательная колонка:
+        # пришедший null означает «не менять», как у фонда и показателя.
+        changes.pop("is_guard_department", None)
     if changes.get("uses_quantity_distribution") is None:
         # Флаг «по количественному показателю» — обязательная колонка: пришедший
         # null означает «не менять», как и у фонда.
