@@ -716,6 +716,11 @@ export interface EmployeePosition {
   /** можно ли отмечать этому рабочему месту выходы в ночь; ставка не задаётся —
    *  она вычисляется из фонда отдела (task_night_shifts_rework) */
   has_night_shifts: boolean
+  /** период работы НА ЭТОЙ должности (task_employment_period): границы
+   *  заполнения табеля, включительно. Пустая дата — границы нет; считаются
+   *  в пересечении с датами человека, см. utils/employment */
+  hire_date: string | null
+  dismissal_date: string | null
   department: Department | null
   schedule: Schedule | null
   company: Company | null
@@ -730,6 +735,7 @@ export type EmployeePositionInput = Partial<
     | 'weekend_pay_type' | 'weekend_coefficient' | 'weekend_fixed_rate'
     | 'holiday_pay_type' | 'holiday_coefficient' | 'holiday_fixed_rate'
     | 'overtime_coefficient' | 'has_night_shifts'
+    | 'hire_date' | 'dismissal_date'
     | 'is_active' | 'sort_order'
   >
 > & { is_primary?: boolean }

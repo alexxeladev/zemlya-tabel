@@ -30,6 +30,7 @@ import { SharesEditor } from '../../components/SharesEditor'
 import { EmployeeImportModal } from './EmployeeImportModal'
 import { PositionsEditor } from './PositionsEditor'
 import { ApiError } from '../../api/client'
+import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
 import { copyText } from '../../utils/clipboard'
 
 const ROLE_LABELS: Record<string, string> = {
@@ -279,7 +280,15 @@ export function EmployeesPage() {
       }
 
       if (editTarget) {
-        await updateEmployee(editTarget.id, payload)
+        // Сдвиг даты приёма может выкинуть уже проставленные часы за границу
+        // периода работы — бэк вернёт 409 с числами, спрашиваем и повторяем.
+        // «Нет» — отмена, а не ошибка: форма остаётся открытой, ничего не сохранено.
+        const saved = await withClearingConfirm((confirm) =>
+          updateEmployee(editTarget.id, payload, confirm))
+        if (saved === CLEARING_CANCELLED) {
+          toast.info('Сохранение отменено — ничего не изменилось')
+          return
+        }
 
         // Handle access changes for edit
         if (data.has_access && !editTarget.has_access && data.email && data.role) {
@@ -308,7 +317,15 @@ export function EmployeesPage() {
   const onDismiss = async () => {
     if (!dismissTarget || !dismissDate) return
     try {
-      await dismissEmployee(dismissTarget.id, dismissDate)
+      // Увольнение задним числом удаляет часы после даты — только с
+      // подтверждением и с показом чисел (task_employment_period).
+      // «Нет» — отмена: окно увольнения остаётся открытым, можно поправить дату.
+      const done = await withClearingConfirm((confirm) =>
+        dismissEmployee(dismissTarget.id, dismissDate, confirm))
+      if (done === CLEARING_CANCELLED) {
+        toast.info('Увольнение отменено — ничего не изменилось')
+        return
+      }
       toast.success('Сотрудник уволен')
       setDismissTarget(null)
       setDismissDate('')
@@ -635,16 +652,35 @@ export function EmployeesPage() {
                   <input {...form.register('rate')} placeholder="50000" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
               )}
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-gray-700">Дата приёма</label>
-                <input type="date" {...form.register('hire_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
-              {editTarget && !editTarget.is_active && (
-                <div className="flex flex-col gap-1">
-                  <label className="text-sm font-medium text-gray-700">Дата увольнения</label>
-                  <input readOnly value={editTarget.dismissal_date ?? ''} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500" />
+              {/* Работа в компании — даты ЧЕЛОВЕКА. Для табеля они внешняя
+                  граница: пересекаются с датами каждого рабочего места
+                  («Период на этой должности» в разделе должностей), поэтому
+                  увольнение закрывает все работы разом (task_employment_period).
+                  Дата увольнения по-прежнему проставляется кнопкой «Уволить» —
+                  она делает больше, чем ставит дату (блокирует вход, пишет свой
+                  audit log). */}
+              <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-3">
+                <div className="mb-2 text-xs font-semibold text-gray-700">
+                  Работа в компании
                 </div>
-              )}
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-sm font-medium text-gray-700">Дата приёма</label>
+                    <input type="date" {...form.register('hire_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  </div>
+                  {editTarget && !editTarget.is_active && (
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm font-medium text-gray-700">Дата увольнения</label>
+                      <input readOnly value={editTarget.dismissal_date ?? ''} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500" />
+                    </div>
+                  )}
+                  <p className="text-[11px] leading-tight text-gray-500">
+                    Табель заполняется только внутри этого периода, включая обе
+                    даты. Пустое поле — без ограничения. Отдельные должности
+                    могут заканчиваться раньше — это задаётся в самой должности.
+                  </p>
+                </div>
+              </div>
               {!isMgr && editTarget && !editTarget.is_system_admin && editTarget.is_active && (
                 <div className="pt-1">
                   <Button
@@ -900,7 +936,7 @@ export function EmployeesPage() {
               />
             </div>
             <p className="mb-4 text-sm text-amber-700 bg-amber-50 rounded-lg p-3">
-              Часы сотрудника останутся в системе. Доступ в систему будет заблокирован. Сотрудник перестанет отображаться в табеле в новых периодах.
+              Часы по дату увольнения включительно останутся в системе. Если после неё уже проставлены часы, перед их удалением появится подтверждение с числами. Доступ в систему будет заблокирован. Сотрудник перестанет отображаться в табеле в новых периодах.
             </p>
             <div className="flex justify-end gap-2">
               <button

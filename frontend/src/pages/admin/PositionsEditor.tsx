@@ -15,6 +15,7 @@ import {
   createPosition, deletePosition, listPositions, makePositionPrimary, updatePosition,
 } from '../../api/employees'
 import { ApiError } from '../../api/client'
+import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
 import { toast } from '../../store/toasts'
 import type {
   Company, Department, EmployeePosition, EmployeePositionInput, PayType, Schedule, WeekendPayType,
@@ -53,6 +54,9 @@ type Draft = {
   holiday_fixed_rate: string
   overtime_coefficient: string
   has_night_shifts: boolean
+  // Период работы на этой должности (task_employment_period)
+  hire_date: string
+  dismissal_date: string
 }
 
 const EMPTY_DRAFT: Draft = {
@@ -61,6 +65,7 @@ const EMPTY_DRAFT: Draft = {
   weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
   holiday_pay_type: 'coefficient', holiday_coefficient: '1.5', holiday_fixed_rate: '',
   overtime_coefficient: '1.5', has_night_shifts: false,
+  hire_date: '', dismissal_date: '',
 }
 
 function toDraft(p: EmployeePosition): Draft {
@@ -81,6 +86,8 @@ function toDraft(p: EmployeePosition): Draft {
     holiday_fixed_rate: p.holiday_fixed_rate ?? '',
     overtime_coefficient: p.overtime_coefficient ?? '1.5',
     has_night_shifts: p.has_night_shifts,
+    hire_date: p.hire_date ?? '',
+    dismissal_date: p.dismissal_date ?? '',
   }
 }
 
@@ -106,6 +113,10 @@ function toPayload(d: Draft): EmployeePositionInput {
     holiday_fixed_rate: d.holiday_pay_type === 'fixed_rate' ? strOrNull(d.holiday_fixed_rate) : null,
     overtime_coefficient: strOrNull(d.overtime_coefficient),
     has_night_shifts: d.has_night_shifts,
+    // Пустое поле — это СНЯТИЕ границы, поэтому шлём null, а не пропускаем:
+    // бэк читает payload с exclude_unset, и пропуск означал бы «не менять».
+    hire_date: strOrNull(d.hire_date),
+    dismissal_date: strOrNull(d.dismissal_date),
   }
 }
 
@@ -180,7 +191,17 @@ export function PositionsEditor({
         await createPosition(employeeId, toPayload(draft))
         toast.success('Должность добавлена')
       } else if (typeof editing === 'number') {
-        await updatePosition(employeeId, editing, toPayload(draft))
+        // Сдвиг дат периода работы может выкинуть уже проставленные часы за
+        // границу. Бэк не удаляет их молча: отвечает 409 с числами, а
+        // сохранение откатывает. Спрашиваем и повторяем с подтверждением.
+        // «Нет» — отмена, а не ошибка: форма должности остаётся открытой.
+        const positionId = editing
+        const saved = await withClearingConfirm((confirm) =>
+          updatePosition(employeeId, positionId, toPayload(draft), confirm))
+        if (saved === CLEARING_CANCELLED) {
+          toast.info('Сохранение отменено — ничего не изменилось')
+          return
+        }
         toast.success('Должность сохранена')
       }
       setEditing(null)
@@ -524,6 +545,44 @@ function PositionForm({
             </p>
           )}
         </div>
+      </div>
+
+      {/* Период работы на этой должности (task_employment_period).
+          Даты берутся с ПОЗИЦИИ: у совместителя одна работа может быть закрыта,
+          а вторая продолжаться. Границы включительные, пустое поле — границы
+          нет. Действуют в пересечении с датами человека («Работа в компании» в
+          карточке): увольнение кадровиком закрывает все рабочие места разом.
+          На is_active это не влияет — строка в табеле остаётся, дни после даты
+          просто заблокированы. */}
+      <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-3">
+        <div className="mb-2 text-xs font-semibold text-gray-700">
+          Период на этой должности
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-gray-700">Принят</span>
+            <input
+              type="date"
+              value={draft.hire_date}
+              onChange={(e) => set('hire_date', e.target.value)}
+              className={inputCls}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-gray-700">Уволен</span>
+            <input
+              type="date"
+              value={draft.dismissal_date}
+              onChange={(e) => set('dismissal_date', e.target.value)}
+              className={inputCls}
+            />
+          </label>
+        </div>
+        <p className="mt-2 text-[11px] leading-tight text-gray-500">
+          Табель заполняется только внутри периода, включая обе даты. Пустое
+          поле — без ограничения. Если после сдвига даты за границей останутся
+          проставленные часы, их удаление придётся подтвердить.
+        </p>
       </div>
 
       <div className="flex justify-end gap-2">

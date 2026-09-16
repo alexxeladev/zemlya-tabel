@@ -68,7 +68,10 @@ export const updateEmployee = (id: number, data: Partial<{
   hire_date: string | null
   dismissal_date: string | null
   is_system_admin: boolean
-}>) => apiClient.patch<Employee>(`/api/employees/${id}`, data).then((r) => r.data)
+}>, confirm = false) =>
+  apiClient
+    .patch<Employee>(`/api/employees/${id}`, data, { params: confirm ? { confirm: true } : {} })
+    .then((r) => r.data)
 
 export const deleteEmployee = (id: number) =>
   apiClient.delete(`/api/employees/${id}`)
@@ -85,8 +88,11 @@ export const resetPassword = (id: number) =>
 export const revokeAccess = (id: number) =>
   apiClient.delete(`/api/employees/${id}/access`)
 
-export const dismissEmployee = (id: number, dismissal_date: string) =>
-  apiClient.post<Employee>(`/api/employees/${id}/dismiss`, { dismissal_date }).then((r) => r.data)
+export const dismissEmployee = (id: number, dismissal_date: string, confirm = false) =>
+  apiClient
+    .post<Employee>(`/api/employees/${id}/dismiss`, { dismissal_date },
+      { params: confirm ? { confirm: true } : {} })
+    .then((r) => r.data)
 
 export const rehireEmployee = (id: number) =>
   apiClient.post<Employee>(`/api/employees/${id}/rehire`).then((r) => r.data)
@@ -120,9 +126,11 @@ export const createPosition = (employeeId: number, data: EmployeePositionInput) 
 
 export const updatePosition = (
   employeeId: number, positionId: number, data: EmployeePositionInput,
+  confirm = false,
 ) =>
   apiClient
-    .patch<EmployeePosition>(`/api/employees/${employeeId}/positions/${positionId}`, data)
+    .patch<EmployeePosition>(`/api/employees/${employeeId}/positions/${positionId}`, data,
+      { params: confirm ? { confirm: true } : {} })
     .then((r) => r.data)
 
 /** Переназначить основную позицию — возвращает весь список в новом порядке. */

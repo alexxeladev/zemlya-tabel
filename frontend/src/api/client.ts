@@ -4,10 +4,16 @@ export const TOKEN_KEY = 'auth_token'
 
 export class ApiError extends Error {
   readonly status?: number
-  constructor(message: string, status?: number) {
+  /** Сырой `detail` ответа. Нужен там, где бэк отвечает не строкой, а разбором:
+   *  например 409 на смену дат периода работы несёт числа «сколько дней и на
+   *  какую сумму очистится» (task_employment_period). Без него эти числа
+   *  доходили бы до экрана только склеенным JSON-ом. */
+  readonly detail?: unknown
+  constructor(message: string, status?: number, detail?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.detail = detail
   }
 }
 
@@ -45,6 +51,6 @@ apiClient.interceptors.response.use(
             ? error.message
             : 'Ошибка сервера'
 
-    return Promise.reject(new ApiError(message, status))
+    return Promise.reject(new ApiError(message, status, detail))
   },
 )
