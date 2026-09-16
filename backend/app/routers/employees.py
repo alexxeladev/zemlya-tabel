@@ -48,6 +48,11 @@ from app.services.employee_import import (
     parse_import_file,
 )
 from app.services.employees import build_employee
+from app.services.employment_period import (
+    bounds_snapshot,
+    clear_entries_outside,
+    clearing_report,
+)
 from app.services.finance_masking import mask_employee, mask_employees, mask_position
 from app.services.org_access import (
     accessible_department_ids,
@@ -79,6 +84,51 @@ _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 
 # Тип оплаты → поле, в котором лежит его база (см. app.models.positions).
 _PAY_TYPE_BASE_FIELD = PAY_TYPE_BASE_FIELD
+
+
+# ── Смена дат периода работы: очистка часов за новой границей ─────────────────
+# Границы сдвигают три места — правка карточки (дата приёма), увольнение и
+# правка дат рабочего места. Очистка у них одна на всех: посчитать, что уедет за
+# границу, показать числа и удалить только после подтверждения.
+
+
+def _apply_employment_change(
+    db: Session,
+    actor: Employee,
+    emp: Employee,
+    confirm: bool,
+    before_bounds: dict | None = None,
+) -> int:
+    """Убрать часы, оказавшиеся вне новых границ. Возвращает число ячеек.
+
+    Вызывать ПОСЛЕ присвоения новых дат и до коммита: отчёт читает границы из
+    ORM-объектов. Без `confirm` ничего не удаляет, а откатывает правку и отдаёт
+    409 с числами — «сколько дней и на какую сумму». Очистка необратима, поэтому
+    подтверждение обязательно (task_employment_period).
+
+    Часы в периодах, закрытых для правки, не трогаются ни при каком
+    подтверждении — о них сообщается отдельно.
+    """
+    # Границы не поехали — часы трогать нечем, и читать их незачем.
+    if before_bounds is not None and before_bounds == bounds_snapshot(emp):
+        return 0
+    report = clearing_report(db, emp)
+    if not report.has_changes:
+        return 0
+    if not confirm:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "employment_period_clearing_required",
+                "message": (
+                    "Изменение дат удалит часы за пределами периода работы. "
+                    "Подтвердите сохранение."
+                ),
+                **report.as_dict(),
+            },
+        )
+    return clear_entries_outside(db, actor, emp, report)
 
 
 def _to_dict(emp: Employee) -> dict:
@@ -228,6 +278,10 @@ def create_employee(
 def update_employee(
     emp_id: int,
     payload: EmployeeUpdate,
+    confirm: bool = Query(
+        False,
+        description="Подтвердить удаление часов, выпавших из периода работы",
+    ),
     db: Session = Depends(get_db),
     actor: Employee = Depends(_admin_only),
 ):
@@ -236,7 +290,7 @@ def update_employee(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     data = payload.model_dump(exclude_unset=True)
-
+    before_bounds = bounds_snapshot(emp)
     before = _to_dict(emp)
     for field, value in data.items():
         setattr(emp, field, value)
@@ -247,6 +301,9 @@ def update_employee(
         if emp.pay_type != pay_type:
             setattr(emp, base_field, None)
     db.flush()
+    # Сдвинулась дата приёма/увольнения — часы за новой границей уходят
+    # (task_employment_period), но только с подтверждения.
+    _apply_employment_change(db, actor, emp, confirm, before_bounds)
     log_action(db, actor, "employee", emp.id, "update", before=before, after=_to_dict(emp))
     db.commit()
     db.refresh(emp)
@@ -279,6 +336,10 @@ def delete_employee(
 def dismiss_employee(
     emp_id: int,
     payload: DismissalRequest,
+    confirm: bool = Query(
+        False,
+        description="Подтвердить удаление часов после даты увольнения",
+    ),
     db: Session = Depends(get_db),
     actor: Employee = Depends(_admin_only),
 ):
@@ -290,10 +351,13 @@ def dismiss_employee(
     if not emp.is_active:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Сотрудник уже уволен")
 
+    before_bounds = bounds_snapshot(emp)
     before = _to_dict(emp)
     emp.is_active = False
     emp.dismissal_date = payload.dismissal_date
     db.flush()
+    # Уволен пятнадцатого — часы после пятнадцатого очищаются с подтверждения.
+    _apply_employment_change(db, actor, emp, confirm, before_bounds)
     log_action(db, actor, "employee", emp.id, "employee_dismissed",
                before=before, after={"dismissal_date": str(payload.dismissal_date)})
     db.commit()
@@ -535,11 +599,16 @@ def update_position(
     emp_id: int,
     position_id: int,
     payload: EmployeePositionUpdate,
+    confirm: bool = Query(
+        False,
+        description="Подтвердить удаление часов, выпавших из периода работы",
+    ),
     db: Session = Depends(get_db),
     actor: Employee = Depends(_admin_only),
 ):
     emp = _employee_for_write(db, emp_id)
     position = _position_or_404(emp, position_id)
+    before_bounds = bounds_snapshot(emp)
     before = _position_dict(position)
     data = payload.model_dump(exclude_unset=True)
     # Деактивировать основную нельзя — иначе сотрудник останется без рабочего
@@ -551,6 +620,9 @@ def update_position(
         )
     apply_position_fields(position, data)
     db.flush()
+    # Период работы на этой должности сдвинулся — часы за границей уходят
+    # (task_employment_period), только с подтверждения.
+    _apply_employment_change(db, actor, emp, confirm, before_bounds)
     log_action(db, actor, "employee_position", position.id, "update",
                before=before, after=_position_dict(position))
     db.commit()

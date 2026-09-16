@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import datetime
 from decimal import Decimal
 from typing import Literal, Optional
 
@@ -43,6 +44,11 @@ class EmployeePositionBase(BaseModel):
     # Ставка ночной смены на позиции НЕ задаётся: она вычисляется из фонда
     # отдела (task_night_shifts_rework), здесь остался только флаг.
     has_night_shifts: bool = False
+    # Период работы НА ЭТОЙ должности (task_employment_period): границы
+    # заполнения табеля, включительно. Пустая дата — границы нет. Действуют в
+    # пересечении с датами человека.
+    hire_date: Optional[datetime.date] = None
+    dismissal_date: Optional[datetime.date] = None
     is_active: bool = True
     sort_order: int = 0
 
@@ -70,6 +76,8 @@ class EmployeePositionUpdate(BaseModel):
     holiday_fixed_rate: Optional[Decimal] = None
     overtime_coefficient: Optional[Decimal] = None
     has_night_shifts: Optional[bool] = None
+    hire_date: Optional[datetime.date] = None
+    dismissal_date: Optional[datetime.date] = None
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
 

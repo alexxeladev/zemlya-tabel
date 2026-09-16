@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -170,6 +171,20 @@ class EmployeePosition(Base):
     overtime_coefficient: Mapped[Decimal | None] = mapped_column(
         Numeric(4, 2), default=Decimal("1.5"), server_default="1.5", nullable=True
     )
+
+    # ── Период работы НА ЭТОЙ должности (task_employment_period) ──────────────
+    # Границы заполнения табеля, включительно с обеих сторон. Пустая дата —
+    # границы нет. Действуют В ПЕРЕСЕЧЕНИИ с датами человека
+    # (`Employee.hire_date` / `.dismissal_date`): даты человека — всегда внешняя
+    # граница, поэтому увольнение кадровиком закрывает все рабочие места разом и
+    # разъехаться уровням нечему. Единственное место, где это считается, —
+    # `app.services.employment_period`.
+    #
+    # Дата увольнения позиции НЕ трогает `is_active`: тот про снятие рабочего
+    # места с учёта, и `visible_positions` по нему убирает строку из табеля
+    # целиком — вместе с днями, которые человек до увольнения отработал.
+    hire_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
+    dismissal_date: Mapped[datetime.date | None] = mapped_column(Date, nullable=True)
 
     # ── Ночные смены ──────────────────────────────────────────────────────────
     # Только ФЛАГ: можно ли отмечать этому рабочему месту выходы в ночь.

@@ -97,6 +97,11 @@ AUDITED_FIELDS: dict[type, tuple[str, ...]] = {
     ),
     EmployeePosition: (
         "title",
+        # Период работы на этой должности (task_employment_period): им
+        # ограничивается заполнение табеля, и очистка часов за новой границей
+        # необратима — «кто и когда сдвинул дату» должно быть видно.
+        "hire_date",
+        "dismissal_date",
         "pay_type",
         "rate",
         "shift_rate",
