@@ -23,6 +23,11 @@ import type {
 import { Button } from '../../components/Button'
 import { Confirm } from '../../components/Confirm'
 
+// Подтверждение очистки часов показывает браузер; модуль правила к window не
+// обращается сам — он собирается и в Node-конфиге тестов (tsconfig.node.json).
+const confirmInBrowser = (message: string) => window.confirm(message)
+
+
 const PAY_TYPE_LABELS: Record<PayType, string> = {
   salary: 'Окладная',
   per_shift: 'Посменная',
@@ -197,7 +202,7 @@ export function PositionsEditor({
         // «Нет» — отмена, а не ошибка: форма должности остаётся открытой.
         const positionId = editing
         const saved = await withClearingConfirm((confirm) =>
-          updatePosition(employeeId, positionId, toPayload(draft), confirm))
+          updatePosition(employeeId, positionId, toPayload(draft), confirm), confirmInBrowser)
         if (saved === CLEARING_CANCELLED) {
           toast.info('Сохранение отменено — ничего не изменилось')
           return

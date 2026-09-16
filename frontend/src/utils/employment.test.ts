@@ -247,3 +247,9 @@ test('экраны не зовут window.confirm сами и не пробра�
     assert.ok(/CLEARING_CANCELLED/.test(src), `${f}: отмена обрабатывается явно`)
   }
 })
+
+test('модуль правила не обращается к window — иначе падает tsc -b (tsconfig.node.json без DOM)', () => {
+  // Комментарии вырезаем: упоминание window в документации сборке не мешает.
+  const src = read('./employment.ts').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+  assert.ok(!/\bwindow\./.test(src), 'window в utils/employment.ts ломает продакшен-сборку')
+})

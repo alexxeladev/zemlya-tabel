@@ -173,10 +173,13 @@ export const CLEARING_CANCELLED = Symbol('clearing-cancelled')
  * Любая другая ошибка пробрасывается как есть. Ошибка распознаётся по полю
  * `detail` (его несёт `ApiError`), без импорта клиента API: модуль остаётся
  * чистым и тестируется без axios и окружения Vite.
+ *
+ * `ask` передаёт вызывающий экран (`window.confirm`): модуль собирается и в
+ * Node-конфиге тестов, где DOM нет, поэтому к `window` он не обращается сам.
  */
 export async function withClearingConfirm<T>(
   run: (confirm: boolean) => Promise<T>,
-  ask: (message: string) => boolean = (m) => window.confirm(m),
+  ask: (message: string) => boolean,
 ): Promise<T | typeof CLEARING_CANCELLED> {
   try {
     return await run(false)

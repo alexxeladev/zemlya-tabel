@@ -33,6 +33,11 @@ import { ApiError } from '../../api/client'
 import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
 import { copyText } from '../../utils/clipboard'
 
+// Подтверждение очистки часов показывает браузер; модуль правила к window не
+// обращается сам — он собирается и в Node-конфиге тестов (tsconfig.node.json).
+const confirmInBrowser = (message: string) => window.confirm(message)
+
+
 const ROLE_LABELS: Record<string, string> = {
   admin: 'Администратор',
   manager: 'Руководитель',
@@ -284,7 +289,7 @@ export function EmployeesPage() {
         // периода работы — бэк вернёт 409 с числами, спрашиваем и повторяем.
         // «Нет» — отмена, а не ошибка: форма остаётся открытой, ничего не сохранено.
         const saved = await withClearingConfirm((confirm) =>
-          updateEmployee(editTarget.id, payload, confirm))
+          updateEmployee(editTarget.id, payload, confirm), confirmInBrowser)
         if (saved === CLEARING_CANCELLED) {
           toast.info('Сохранение отменено — ничего не изменилось')
           return
@@ -321,7 +326,7 @@ export function EmployeesPage() {
       // подтверждением и с показом чисел (task_employment_period).
       // «Нет» — отмена: окно увольнения остаётся открытым, можно поправить дату.
       const done = await withClearingConfirm((confirm) =>
-        dismissEmployee(dismissTarget.id, dismissDate, confirm))
+        dismissEmployee(dismissTarget.id, dismissDate, confirm), confirmInBrowser)
       if (done === CLEARING_CANCELLED) {
         toast.info('Увольнение отменено — ничего не изменилось')
         return
