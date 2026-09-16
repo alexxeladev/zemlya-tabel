@@ -446,3 +446,77 @@ def test_login_null_role_fails(client: TestClient, db_session):
     emp = _emp(db_session, "Без роли", email="norole@example.com")
     resp = client.post("/api/auth/login", json={"email": "norole@example.com", "password": "anything"})
     assert resp.status_code == 401
+
+
+# ── Табельный номер: дубль — 409 с понятным текстом, а не 500 ─────────────────
+
+def test_create_employee_duplicate_tab_number(client: TestClient, admin_user: Employee, db_session):
+    _emp(db_session, "Иванов Иван Иванович", tab="T-0042")
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.post(
+        "/api/employees",
+        json={"full_name": "Петров П.П.", "tab_number": "T-0042"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Табельный номер T-0042 уже занят: Иванов Иван Иванович"
+    assert db_session.query(Employee).filter(Employee.full_name == "Петров П.П.").count() == 0
+
+
+def test_update_employee_to_taken_tab_number(client: TestClient, admin_user: Employee, db_session):
+    _emp(db_session, "Иванов Иван Иванович", tab="T-0042")
+    other = _emp(db_session, "Петров П.П.", tab="T-0043")
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.patch(
+        f"/api/employees/{other.id}",
+        json={"tab_number": "T-0042"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Табельный номер T-0042 уже занят: Иванов Иван Иванович"
+    db_session.expire_all()
+    assert db_session.get(Employee, other.id).tab_number == "T-0043"
+
+
+def test_duplicate_tab_number_of_dismissed_employee(
+    client: TestClient, admin_user: Employee, db_session,
+):
+    _emp(db_session, "Сидоров С.С.", tab="T-0050", active=False)
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.post(
+        "/api/employees",
+        json={"full_name": "Новый Н.Н.", "tab_number": "T-0050"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Табельный номер T-0050 уже занят: Сидоров С.С. (уволен)"
+
+
+def test_update_employee_keeps_own_tab_number(client: TestClient, admin_user: Employee, db_session):
+    emp = _emp(db_session, "Иванов Иван Иванович", tab="T-0042")
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = client.patch(
+        f"/api/employees/{emp.id}",
+        json={"tab_number": "T-0042", "full_name": "Иванов И.И."},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["tab_number"] == "T-0042"
+    assert resp.json()["full_name"] == "Иванов И.И."
+
+
+def test_empty_tab_number_is_not_duplicate(client: TestClient, admin_user: Employee, db_session):
+    token = get_token(client, "admin@example.com", "admin123")
+    headers = {"Authorization": f"Bearer {token}"}
+    cases = (("Первый П.П.", None), ("Второй В.В.", None), ("Третий Т.Т.", ""), ("Четвёртый Ч.Ч.", "  "))
+    for name, tab in cases:
+        resp = client.post(
+            "/api/employees", json={"full_name": name, "tab_number": tab}, headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["tab_number"] is None
+
+    other = _emp(db_session, "Пятый П.П.", tab="T-0060")
+    resp = client.patch(f"/api/employees/{other.id}", json={"tab_number": ""}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tab_number"] is None

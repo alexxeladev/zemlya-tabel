@@ -86,6 +86,42 @@ _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 _PAY_TYPE_BASE_FIELD = PAY_TYPE_BASE_FIELD
 
 
+# ── Табельный номер: уникальность ─────────────────────────────────────────────
+# `employees.tab_number` уникален в БД. Без проверки заранее занятый номер
+# доходил до Postgres, IntegrityError не ловился и пользователь получал 500.
+
+
+def _normalize_tab_number(value: str | None) -> str | None:
+    """Пустой номер — это «номера нет» (NULL), а не значение.
+
+    Пустая строка уникальна так же, как любая другая: два сотрудника с «» упёрлись
+    бы в unique, хотя номера нет ни у одного.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _ensure_tab_number_free(
+    db: Session, tab_number: str | None, exclude_id: int | None = None,
+) -> None:
+    """409, если табельный номер уже занят другим сотрудником (включая уволенных)."""
+    if tab_number is None:
+        return
+    query = db.query(Employee).filter(Employee.tab_number == tab_number)
+    if exclude_id is not None:
+        query = query.filter(Employee.id != exclude_id)
+    holder = query.first()
+    if holder is None:
+        return
+    suffix = "" if holder.is_active else " (уволен)"
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"Табельный номер {tab_number} уже занят: {holder.full_name}{suffix}",
+    )
+
+
 # ── Смена дат периода работы: очистка часов за новой границей ─────────────────
 # Границы сдвигают три места — правка карточки (дата приёма), увольнение и
 # правка дат рабочего места. Очистка у них одна на всех: посчитать, что уедет за
@@ -250,6 +286,8 @@ def create_employee(
     db: Session = Depends(get_db),
     actor: Employee = Depends(_admin_only),
 ):
+    payload.tab_number = _normalize_tab_number(payload.tab_number)
+    _ensure_tab_number_free(db, payload.tab_number)
     emp = build_employee(payload)
 
     if payload.access:
@@ -290,6 +328,10 @@ def update_employee(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     data = payload.model_dump(exclude_unset=True)
+    if "tab_number" in data:
+        data["tab_number"] = _normalize_tab_number(data["tab_number"])
+        _ensure_tab_number_free(db, data["tab_number"], exclude_id=emp.id)
+
     before_bounds = bounds_snapshot(emp)
     before = _to_dict(emp)
     for field, value in data.items():
