@@ -33,7 +33,8 @@ import { companyColorByIndex } from '../utils/colors';
 import { companyLabel } from '../utils/companies';
 import { payoutRoundingHint } from '../utils/money';
 import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
-import { overtimeHours } from '../utils/overtime';
+import { overtimeHours } from '../utils/overtime'
+import { employmentHint, isoDay } from '../utils/employment';
 import { useRowChecksStore } from '../store/rowChecks';
 import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
 import { usePeriodStore } from '../store/period';
@@ -58,6 +59,8 @@ export type Employee = {
   default_company_id: number | null;
   is_active: boolean;
   is_system_admin?: boolean;
+  /** период работы В КОМПАНИИ — внешняя граница для всех рабочих мест */
+  hire_date?: string | null;
   dismissal_date?: string | null;
   loan_amount?: string | null;
   loan_term_months?: number | null;
@@ -84,6 +87,11 @@ export type Position = {
   /** можно ли отмечать этому месту выходы в ночь: только тогда под строкой
    *  появляется строка «Ночные» (task_night_shifts_rework) */
   has_night_shifts?: boolean;
+  /** период работы НА ЭТОЙ должности (task_employment_period); пустая дата —
+   *  границы нет. Считаются в пересечении с датами человека — см.
+   *  utils/employment. */
+  hire_date?: string | null;
+  dismissal_date?: string | null;
 };
 
 /** Строка табеля = сотрудник × его позиция; ФИО объединяется через rowspan. */
@@ -1874,6 +1882,7 @@ export function TimesheetPage() {
             absence={absenceByEmpDay.get(`${emp.id}:${d}`)}
             isFirst={isFirst}
             editable={periodEditable}
+            outsideHint={employmentHint(emp, position, isoDay(year, month, d))}
             companies={data.companies}
             employeeId={emp.id}
             positionId={positionId}
@@ -3385,6 +3394,9 @@ type DayCellProps = {
   absence?: Absence;
   isFirst: boolean;
   editable: boolean;
+  // Подсказка «день вне периода работы» или null. Строка — значение стабильное,
+  // memo от неё не ломается (task_employment_period).
+  outsideHint: string | null;
   companies: Company[];
   employeeId: number;
   positionId: number | undefined;
@@ -3409,14 +3421,22 @@ function sameSlots(a: TimesheetEntry[], b: TimesheetEntry[]): boolean {
 
 const DayCell = memo(function DayCell(props: DayCellProps) {
   const {
-    day, dayType, slots, absence, isFirst, editable, companies,
+    day, dayType, slots, absence, isFirst, editable, outsideHint, companies,
     employeeId, positionId,
     onSaveSlot, onChangeCompany, onAddSlot, onSetAbsence,
     onOpenCompanyPicker, onOpenAbsencePicker,
   } = props;
   const isOff = dayType === 'weekend' || dayType === 'holiday';
-  const bgClass =
-    dayType === 'holiday'
+  // Вне периода работы день НЕ редактируется — ни часов, ни кода отсутствия.
+  // Это удобство, а не защита: источник правды серверный, прямой запрос
+  // отклоняется независимо от того, что нарисовано (task_employment_period).
+  const outside = outsideHint !== null;
+  const canEdit = editable && !outside;
+  const bgClass = outside
+    // Штриховка, а не просто серый: «нельзя» должно отличаться и от рабочего
+    // дня, и от выходного — иначе читается как «можно, но не заполнено».
+    ? 'bg-gray-100 bg-[repeating-linear-gradient(45deg,transparent,transparent_4px,rgba(0,0,0,0.05)_4px,rgba(0,0,0,0.05)_8px)] text-gray-400'
+    : dayType === 'holiday'
       ? 'bg-red-50/40'
       : dayType === 'short'
       ? 'bg-yellow-50/40'
@@ -3430,6 +3450,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
       // Ширина под чип целиком (код + часы + крестик) — иначе колонки
       // дней разъезжаются по содержимому и «квадратики» выходят разными.
       style={{ minWidth: 84 }}
+      title={outsideHint ?? undefined}
     >
       <div className="flex flex-col gap-1">
         {/* День с кодом отсутствия: часов в нём нет по определению.
@@ -3439,7 +3460,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
           isFirst ? (
             <AbsenceChip
               absence={absence}
-              disabled={!editable}
+              disabled={!canEdit}
               onClear={() => onSetAbsence(employeeId, day, null)}
             />
           ) : null
@@ -3450,7 +3471,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
                 key={`${slot.employee_id}-${slot.work_date}-${slot.company_id}`}
                 slot={slot}
                 companies={companies}
-                disabled={!editable}
+                disabled={!canEdit}
                 onHoursChange={(h) => onSaveSlot(employeeId, day, slot.company_id, h, positionId)}
                 onCompanyChange={(newCompId) =>
                   onChangeCompany(
@@ -3461,7 +3482,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
                 onOpenPicker={onOpenCompanyPicker}
               />
             ))}
-            {editable && (
+            {canEdit && (
               // Та же высота, что у чипов, и та же колонка справа —
               // кнопка кода встаёт ровно под крестиками.
               <div className="flex items-center gap-1 h-[22px]">
