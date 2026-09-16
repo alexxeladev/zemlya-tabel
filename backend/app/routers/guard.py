@@ -752,7 +752,10 @@ def put_day(
     """Отметить или снять один день выхода."""
     _require_vahta(actor)
     assignment = _assignment_or_404(db, actor, payload.assignment_id)
-    toggle_day(db, assignment, payload.day, payload.value)
+    try:
+        toggle_day(db, assignment, payload.day, payload.value)
+    except GuardError as exc:
+        raise _guard_error(exc)
     log_action(
         db, actor, "guard_assignment", assignment.id, "shift",
         after={"day": payload.day, "value": payload.value},

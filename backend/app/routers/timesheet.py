@@ -20,10 +20,6 @@ from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
 from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.absence import AbsenceInput, AbsenceRead
-from app.schemas.quantity import (
-    DepartmentQuantitiesRead,
-    DepartmentQuantitiesUpdate,
-)
 from app.schemas.night_shift import NightFundRead, NightShiftInput, NightShiftRead
 from app.schemas.payout import (
     AdjustmentCreate,
@@ -36,6 +32,10 @@ from app.schemas.payroll import (
 from app.schemas.payroll_statement import (
     DistributionOverrideInput,
     PayrollStatementRead,
+)
+from app.schemas.quantity import (
+    DepartmentQuantitiesRead,
+    DepartmentQuantitiesUpdate,
 )
 from app.schemas.timesheet import (
     AutofillPreview,
@@ -61,15 +61,12 @@ from app.services.absences import (
     schedules_by_employee,
     set_absence,
 )
-from app.services.quantity_distribution import (
-    department_quantities_state,
-    set_department_quantities,
-)
 from app.services.company_order import (
     company_display_name,
     company_order_by,
     order_index,
 )
+from app.services.employment_period import OutsideEmploymentPeriod
 from app.services.finance_masking import (
     mask_employees,
     mask_payroll_summary,
@@ -89,11 +86,15 @@ from app.services.org_access import (
     managed_department_ids,
 )
 from app.services.payroll_statement import (
-    build_quantity_distribution,
     build_payroll_statement,
     build_payroll_summary,
+    build_quantity_distribution,
 )
 from app.services.positions import department_ids_of, visible_positions
+from app.services.quantity_distribution import (
+    department_quantities_state,
+    set_department_quantities,
+)
 from app.services.row_checks import checked_position_ids, set_row_check
 from app.services.timesheet import (
     apply_autofill,
@@ -778,6 +779,11 @@ def save_cell(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Период закрыт для редактирования, статус: {exc.status}",
         )
+    except OutsideEmploymentPeriod as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"День вне периода работы: {exc}",
+        )
     return result
 
 
@@ -801,6 +807,11 @@ def save_cells_batch(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Период закрыт для редактирования, статус: {exc.status}",
+        )
+    except OutsideEmploymentPeriod as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"День вне периода работы: {exc}",
         )
     return TimesheetBatchResponse(entries=results)
 
@@ -828,6 +839,11 @@ def save_absence(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Период закрыт для редактирования, статус: {exc.status}",
+        )
+    except OutsideEmploymentPeriod as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"День вне периода работы: {exc}",
         )
     except ValueError as exc:
         raise HTTPException(
@@ -912,6 +928,11 @@ def save_night_shift(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Период закрыт для редактирования, статус: {exc.status}",
+        )
+    except OutsideEmploymentPeriod as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"День вне периода работы: {exc}",
         )
     except ValueError as exc:
         raise HTTPException(
@@ -1029,6 +1050,11 @@ def autofill_apply(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Период закрыт для редактирования, статус: {exc.status}",
+        )
+    except OutsideEmploymentPeriod as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"День вне периода работы: {exc}",
         )
 
     log_action(

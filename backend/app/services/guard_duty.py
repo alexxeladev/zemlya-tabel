@@ -507,11 +507,43 @@ def _next_sort_order(db: Session, year: int, month: int, place) -> int:
     return (query.scalar() or 0) + 1
 
 
+def employment_allows(assignment: GuardAssignment, day: int) -> bool:
+    """Входит ли день в период работы человека этой строки (task_employment_period).
+
+    Пустой слот (`position_id IS NULL`) — место без человека, ограничивать
+    нечем. Даты берутся с ПОЗИЦИИ строки и пересекаются с датами человека тем же
+    `services.employment_period`, что и в обычном табеле: второй копии правила
+    быть не должно, иначе вахта и табель разойдутся.
+    """
+    from app.services.employment_period import is_within_employment
+
+    position = assignment.position
+    if position is None:
+        return True
+    work_date = datetime.date(assignment.year, assignment.month, day)
+    return is_within_employment(position.employee, position, work_date)
+
+
 def set_days(db: Session, assignment: GuardAssignment, days: set[int]) -> None:
-    """Задать набор отмеченных дней строки целиком (снятые дни удаляются)."""
+    """Задать набор отмеченных дней строки целиком (снятые дни удаляются).
+
+    Дни вне периода работы человека НЕ проставляются (task_employment_period).
+    Здесь они отбрасываются молча — как автозаполнение в обычном табеле: сюда
+    приходят и «отметить все дни месяца» при постановке на пост, и копирование
+    состава прошлого периода, и замена на посту. Уронить их целиком из-за того,
+    что охранник принят пятнадцатого, нельзя.
+
+    Уже отмеченные дни за границей сохраняются, если их просят оставить, и
+    снимаются, если просят снять: запрет касается ЗАПОЛНЕНИЯ, иначе смену,
+    оставшуюся за новой границей, было бы нечем убрать.
+
+    Явный клик по запрещённому дню — другое дело: он должен получить внятный
+    отказ, а не тихо ничего не сделать, поэтому его ловит `toggle_day`.
+    """
     last_day = monthrange(assignment.year, assignment.month)[1]
     wanted = {d for d in days if 1 <= d <= last_day}
     current = {s.work_date.day: s for s in assignment.shifts}
+    wanted = {d for d in wanted if d in current or employment_allows(assignment, d)}
 
     for day, shift in current.items():
         if day not in wanted:
@@ -528,7 +560,23 @@ def set_days(db: Session, assignment: GuardAssignment, days: set[int]) -> None:
 
 
 def toggle_day(db: Session, assignment: GuardAssignment, day: int, value: bool) -> None:
-    """Поставить или снять один день. Идемпотентно: двойной клик не ломает."""
+    """Поставить или снять один день. Идемпотентно: двойной клик не ломает.
+
+    День вне периода работы охранника отмечать нельзя — отказ внятный, чтобы
+    клик не выглядел «не сработавшим» (task_employment_period). Снятие
+    разрешено всегда.
+    """
+    if value and not employment_allows(assignment, day):
+        from app.services.employment_period import employment_reason
+
+        position = assignment.position
+        reason = employment_reason(
+            position.employee if position else None,
+            position,
+            datetime.date(assignment.year, assignment.month, day),
+        )
+        raise GuardError(f"День вне периода работы: {reason}")
+
     days = marked_days(assignment)
     if value:
         days.add(day)

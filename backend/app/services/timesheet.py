@@ -10,6 +10,11 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_action
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
+from app.services.employment_period import (
+    check_employment_period,
+    employment_bounds,
+    is_within_employment,
+)
 from app.services.org_access import accessible_department_ids, is_department_scoped
 from app.services.positions import in_department, in_departments, visible_positions
 
@@ -244,6 +249,11 @@ def upsert_cell(
     position_id: int | None = None,
 ) -> TimesheetEntry | None:
     _check_period_lock(db, employee_id, work_date, position_id)
+    # Вне периода работы позиции день заполнять нельзя (task_employment_period).
+    # hours=0 — это УДАЛЕНИЕ ячейки, его не блокируем никогда: иначе часы,
+    # оставшиеся за новой границей, было бы нечем убрать.
+    if hours != Decimal("0"):
+        check_employment_period(db, employee_id, work_date, position_id)
     result = _upsert_cell_no_commit(
         db, actor, employee_id, work_date, company_id, hours, position_id
     )
@@ -265,7 +275,10 @@ def upsert_cells_batch(
     """
     # Check period lock for all cells first
     for cell in cells:
-        _check_period_lock(db, cell[0], cell[1], cell[4] if len(cell) > 4 else None)
+        position_id = cell[4] if len(cell) > 4 else None
+        _check_period_lock(db, cell[0], cell[1], position_id)
+        if cell[3] != Decimal("0"):
+            check_employment_period(db, cell[0], cell[1], position_id)
 
     results = []
     for cell in cells:
@@ -384,12 +397,30 @@ def build_autofill_preview(
                 ))
                 continue
 
+            # Рабочее место, закрытое на весь месяц, даёт ноль ячеек — без
+            # причины это выглядит как молчаливый сбой автозаполнения.
+            emp_start, emp_end = employment_bounds(emp, position)
+            if (emp_end is not None and emp_end < period_start) or (
+                emp_start is not None and emp_start > period_end
+            ):
+                employees_skipped.append(AutofillSkippedEmployee(
+                    employee_id=emp.id,
+                    employee_name=_position_label(emp, position),
+                    reason="Месяц вне периода работы на этой должности",
+                ))
+                continue
+
             employees_processed += 1
 
             # Плановые дни графика (task_shift_schedules): weekday — рабочие дни
             # недели графика по производственному календарю, cyclic — смены по
             # циклу от стартовой даты (календарь на цикл не влияет).
             for work_date in planned_work_dates(schedule, year, month, calendar_data):
+                # Вне периода работы рабочего места не заполняем: уволенному
+                # пятнадцатого смены до конца месяца не ставим, принятому
+                # пятнадцатого — дни до выхода (task_employment_period).
+                if not is_within_employment(emp, position, work_date):
+                    continue
                 hours = int(shift_hours_for_date(schedule, work_date, calendar_data))
                 key = (emp.id, position.id, work_date, position.company_id)
                 if key in existing_keys:

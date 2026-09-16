@@ -269,9 +269,17 @@ def set_absence(
 
     Период должен быть в статусе draft — как и для часов.
     """
+    from app.services.employment_period import check_any_employment_period
     from app.services.timesheet import _check_period_lock
 
     _check_period_lock(db, employee_id, work_date)
+
+    # Вне периода работы код не поставить (task_employment_period). Отсутствие
+    # отмечается на человеке целиком, поэтому и граница общая: день годится,
+    # пока открыто хотя бы одно рабочее место. СНЯТИЕ (kind=None) не блокируем —
+    # иначе код, оставшийся за новой границей, было бы нечем убрать.
+    if kind is not None:
+        check_any_employment_period(db, employee_id, work_date)
 
     if kind is None:
         deleted = delete_absence_for_day(db, actor, employee_id, work_date)

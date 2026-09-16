@@ -268,6 +268,7 @@ def set_night_shift(
 
     Период должен быть в draft — как для часов и отсутствий.
     """
+    from app.services.employment_period import check_employment_period
     from app.services.timesheet import _check_period_lock
 
     employee = db.get(Employee, employee_id)
@@ -289,6 +290,12 @@ def set_night_shift(
         )
 
     _check_period_lock(db, employee_id, work_date, position.id)
+
+    # Вне периода работы рабочего места в ночь не выйти
+    # (task_employment_period). Проверяем только ПОСТАНОВКУ: снятие отметки
+    # должно оставаться возможным за любой границей.
+    if value:
+        check_employment_period(db, employee_id, work_date, position.id)
 
     existing = (
         db.query(NightShift)
