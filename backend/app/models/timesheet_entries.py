@@ -27,12 +27,22 @@ class TimesheetEntry(Base):
     work_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
     hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Версия ячейки (task_stage1 п.1.5): растёт с каждой правкой. Клиент присылает
+    # версию, которую видел, и устаревшая правка получает 409 вместо молчаливой
+    # перезаписи чужих часов. `version_id_col` ниже добавляет её и в WHERE самого
+    # UPDATE/DELETE — двое, прошедших проверку одновременно, не затрут друг друга.
+    # server_default — для вставок мимо ORM (демо-генератор пишет bulk-ом).
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
 
     created_at: Mapped[str] = mapped_column(server_default=func.now())
     updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())
 
     employee: Mapped[Employee] = relationship("Employee", back_populates="timesheet_entries")
     company: Mapped[Company] = relationship("Company")
+
+    __mapper_args__ = {"version_id_col": version}
 
     __table_args__ = (
         # Ячейка = (позиция, день, юрлицо): у совместителя один и тот же день и

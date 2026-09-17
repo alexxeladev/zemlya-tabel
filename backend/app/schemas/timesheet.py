@@ -28,6 +28,8 @@ class TimesheetEntryRead(BaseModel):
     work_date: date
     company_id: int
     hours: int
+    # Версия ячейки — клиент возвращает её в `expected_version` следующей правки.
+    version: int = 1
 
 
 class TimesheetCellInput(BaseModel):
@@ -38,6 +40,10 @@ class TimesheetCellInput(BaseModel):
     work_date: date
     company_id: int
     hours: int = Field(ge=0, le=24)
+    # Версия ячейки, которую видел клиент (0 — «ячейки нет»). Разошлась с базой —
+    # 409: ячейку успел изменить другой редактор. Не задана — без проверки, как
+    # раньше (батч, автозаполнение, старый клиент).
+    expected_version: int | None = Field(default=None, ge=0)
 
 
 class TimesheetCellCompanyChange(BaseModel):
@@ -49,6 +55,8 @@ class TimesheetCellCompanyChange(BaseModel):
     work_date: date
     old_company_id: int
     new_company_id: int
+    # Версия ПЕРЕНОСИМОЙ ячейки, которую видел клиент; см. TimesheetCellInput.
+    expected_version: int | None = Field(default=None, ge=0)
 
 
 class TimesheetMonthQuery(BaseModel):

@@ -384,6 +384,8 @@ export interface TimesheetEntry {
   work_date: string  // YYYY-MM-DD
   company_id: number
   hours: number  // decimal as number
+  /** версия ячейки: уходит обратно как `expected_version` следующей правки */
+  version?: number
 }
 
 // ── Отсутствия: коды ОТ / ДО / Б / Н ──
@@ -459,6 +461,9 @@ export interface TimesheetCellInput {
   work_date: string  // YYYY-MM-DD
   company_id: number
   hours: number
+  /** версия ячейки, которую видел экран (0 — ячейки не было). Разошлась с базой —
+   *  бэк отвечает 409: ячейку успел изменить другой редактор. */
+  expected_version?: number
 }
 
 export type PeriodStatus = 'draft' | 'pending_review' | 'closed'

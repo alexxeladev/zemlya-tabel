@@ -102,6 +102,7 @@ from app.services.timesheet import (
     build_autofill_preview,
     compute_extra_companies_by_employee,
     get_month_entries,
+    CellConflict,
     CellNotFound,
     move_cell_company,
     upsert_cell,
@@ -763,6 +764,17 @@ def get_month(
 
 # ── Cell mutations ────────────────────────────────────────────────────────────
 
+def _cell_conflict(exc: CellConflict) -> HTTPException:
+    """Ячейку успел изменить другой редактор — 409 с текущим значением."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            f"Ячейку уже изменил другой пользователь: {exc}. "
+            "Часы на экране обновлены — проверьте и введите заново"
+        ),
+    )
+
+
 @router.put("/cell", response_model=Optional[TimesheetEntryRead])
 def save_cell(
     payload: TimesheetCellInput,
@@ -775,8 +787,10 @@ def save_cell(
         result = upsert_cell(
             db, actor,
             payload.employee_id, payload.work_date, payload.company_id, payload.hours,
-            payload.position_id,
+            payload.position_id, payload.expected_version,
         )
+    except CellConflict as exc:
+        raise _cell_conflict(exc)
     except PeriodLockedException as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -813,7 +827,10 @@ def change_cell_company(
             db, actor,
             payload.employee_id, payload.work_date,
             payload.old_company_id, payload.new_company_id, payload.position_id,
+            payload.expected_version,
         )
+    except CellConflict as exc:
+        raise _cell_conflict(exc)
     except CellNotFound:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

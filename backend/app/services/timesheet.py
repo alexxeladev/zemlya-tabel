@@ -5,7 +5,9 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import and_, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.audit import log_action
 from app.models.employees import Employee
@@ -139,6 +141,58 @@ def _resolve_position_id(
     return position.id if position is not None else None
 
 
+class CellConflict(Exception):
+    """Ячейку успел изменить другой редактор (task_stage1 п.1.5).
+
+    `current_hours` — что лежит в базе сейчас (None — ячейки нет): отказ обязан
+    назвать текущее значение, иначе пользователь не поймёт, что именно не так.
+    """
+
+    def __init__(self, current_hours: int | None) -> None:
+        self.current_hours = current_hours
+        super().__init__(
+            "ячейка удалена" if current_hours is None else f"сейчас в ней {current_hours} ч"
+        )
+
+
+def _check_expected_version(
+    existing: TimesheetEntry | None, expected_version: int | None
+) -> None:
+    """Версия, которую видел клиент, против базы. 0 — «ячейки нет»; None —
+    клиент версию не прислал, проверки нет (батч, автозаполнение)."""
+    if expected_version is None:
+        return
+    current = existing.version if existing is not None else 0
+    if current != expected_version:
+        raise CellConflict(int(existing.hours) if existing is not None else None)
+
+
+_CELL_UNIQUE = "uq_timesheet_employee_date_company"
+
+
+def _commit_cell_write(db: Session, lookup) -> None:
+    """Коммит правки ячейки; гонку двух редакторов превращает в `CellConflict`.
+
+    Проверка версии выше ловит устаревший экран. Двоих, прошедших её
+    ОДНОВРЕМЕННО, ловит сама база: `version_id_col` ставит версию в WHERE
+    UPDATE/DELETE (опоздавший получает `StaleDataError`), а двойную вставку —
+    unique-ключ ячейки. `lookup` перечитывает ячейку уже после отката — чтобы
+    назвать в отказе актуальные часы.
+    """
+    try:
+        db.commit()
+    except StaleDataError:
+        db.rollback()
+        current = lookup()
+        raise CellConflict(int(current.hours) if current is not None else None)
+    except IntegrityError as exc:
+        db.rollback()
+        if _CELL_UNIQUE not in str(exc.orig) and "UNIQUE constraint failed: timesheet_entries" not in str(exc.orig):
+            raise
+        current = lookup()
+        raise CellConflict(int(current.hours) if current is not None else None)
+
+
 def _find_cell(
     db: Session, employee_id: int, work_date: date, company_id: int,
     position_id: int | None,
@@ -171,10 +225,14 @@ def _upsert_cell_no_commit(
     company_id: int,
     hours: Decimal,
     position_id: int | None = None,
+    expected_version: int | None = None,
 ) -> TimesheetEntry | None:
     """Core upsert logic — flush only, no commit. Caller owns the transaction."""
     position_id = _resolve_position_id(db, employee_id, position_id)
     existing = _find_cell(db, employee_id, work_date, company_id, position_id)
+    # До любых записей: конфликт не должен ни снять код отсутствия, ни оставить
+    # след в audit log.
+    _check_expected_version(existing, expected_version)
 
     # Взаимоисключение часы/код отсутствия: часы в дне снимают код (день стал
     # рабочим). Обратное направление — в services.absences.set_absence.
@@ -235,6 +293,7 @@ def _check_period_lock(
         PeriodLockedException,
         can_edit_cells,
         get_or_create_period,
+        lock_period,
     )
 
     emp = db.get(Employee, employee_id)
@@ -243,6 +302,11 @@ def _check_period_lock(
     position = emp.position_by_id(position_id)
     department_id = position.department_id if position is not None else None
     period = get_or_create_period(db, department_id, work_date.year, work_date.month)
+    # Строка периода — под разделяемой блокировкой ДО проверки статуса и до конца
+    # транзакции вызывающего: переход периода (submit/close) дождётся этой записи,
+    # а запись, пришедшая во время перехода, дождётся его и получит отказ
+    # (task_stage1 п.1.5). Вызывающий обязан писать в ТОЙ ЖЕ транзакции.
+    period = lock_period(db, period, exclusive=False)
     if not can_edit_cells(period):
         raise PeriodLockedException(period.status)
 
@@ -255,6 +319,7 @@ def upsert_cell(
     company_id: int,
     hours: Decimal,
     position_id: int | None = None,
+    expected_version: int | None = None,
 ) -> TimesheetEntry | None:
     _check_period_lock(db, employee_id, work_date, position_id)
     # Вне периода работы позиции день заполнять нельзя (task_employment_period).
@@ -262,10 +327,24 @@ def upsert_cell(
     # оставшиеся за новой границей, было бы нечем убрать.
     if hours != Decimal("0"):
         check_employment_period(db, employee_id, work_date, position_id)
-    result = _upsert_cell_no_commit(
-        db, actor, employee_id, work_date, company_id, hours, position_id
-    )
-    db.commit()
+    def current_cell():
+        return _find_cell(
+            db, employee_id, work_date, company_id,
+            _resolve_position_id(db, employee_id, position_id),
+        )
+
+    try:
+        result = _upsert_cell_no_commit(
+            db, actor, employee_id, work_date, company_id, hours, position_id,
+            expected_version,
+        )
+    except (StaleDataError, CellConflict):
+        # Версия проверяется в WHERE самого UPDATE/DELETE, то есть конфликт может
+        # всплыть уже на flush — после снятия кода отсутствия. Откат обязателен.
+        db.rollback()
+        current = current_cell()
+        raise CellConflict(int(current.hours) if current is not None else None)
+    _commit_cell_write(db, current_cell)
     if result is not None:
         db.refresh(result)
     return result
@@ -283,6 +362,7 @@ def move_cell_company(
     old_company_id: int,
     new_company_id: int,
     position_id: int | None = None,
+    expected_version: int | None = None,
 ) -> TimesheetEntry:
     """Смена юрлица ячейки ОДНОЙ транзакцией (task_stage1 п.1.1).
 
@@ -303,7 +383,12 @@ def move_cell_company(
         _resolve_position_id(db, employee_id, position_id),
     )
     if source is None:
+        # Клиент видел ячейку, а её уже нет — это конфликт редакторов, а не
+        # «переносить нечего».
+        if expected_version:
+            raise CellConflict(None)
         raise CellNotFound()
+    _check_expected_version(source, expected_version)
     hours = source.hours
     try:
         _upsert_cell_no_commit(
@@ -313,6 +398,13 @@ def move_cell_company(
             db, actor, employee_id, work_date, new_company_id, hours, position_id
         )
         db.commit()
+    except StaleDataError:
+        db.rollback()
+        current = _find_cell(
+            db, employee_id, work_date, old_company_id,
+            _resolve_position_id(db, employee_id, position_id),
+        )
+        raise CellConflict(int(current.hours) if current is not None else None)
     except Exception:
         db.rollback()
         raise

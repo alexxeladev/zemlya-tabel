@@ -37,6 +37,7 @@ export const timesheetApi = {
   async changeCellCompany(input: {
     employee_id: number; position_id?: number | null; work_date: string
     old_company_id: number; new_company_id: number
+    expected_version?: number
   }): Promise<TimesheetEntry> {
     const { data } = await apiClient.put<TimesheetEntry>('/api/timesheet/cell/company', input)
     return data

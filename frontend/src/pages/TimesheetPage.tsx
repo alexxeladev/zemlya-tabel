@@ -144,6 +144,8 @@ export type TimesheetEntry = {
   work_date: string; // 'YYYY-MM-DD'
   company_id: number;
   hours: number | string; // decimal на бэке -> может прилететь строкой
+  /** версия ячейки: уходит обратно как `expected_version` следующей правки */
+  version?: number;
 };
 
 export type DayType = 'work' | 'short' | 'holiday' | 'weekend';
@@ -1308,27 +1310,69 @@ export function TimesheetPage() {
   // Часы всегда пишутся на КОНКРЕТНОЕ рабочее место: у совместителя это
   // разные графики, нормы и юрлица (task_positions ч.B). positionId не задан
   // — бэк отнесёт часы к основной позиции, как было до части B.
+  // ── Версия ячейки и очередь правок (task_stage1 п.1.5) ──
+  // Бэк отклоняет правку, если ячейку успел изменить другой редактор: экран
+  // присылает версию, которую видел. Версия берётся из `dataRef` В МОМЕНТ
+  // отправки, а правки одной ячейки идут строго по очереди — иначе быстрый
+  // второй ввод ушёл бы со старой версией и конфликтовал сам с собой.
+  const cellQueue = useRef(new Map<string, Promise<void>>());
+  const inCellOrder = useCallback((key: string, job: () => Promise<void>) => {
+    const queue = cellQueue.current;
+    const next = (queue.get(key) ?? Promise.resolve()).then(job, job);
+    queue.set(key, next);
+    void next.finally(() => { if (queue.get(key) === next) queue.delete(key); });
+    return next;
+  }, []);
+
+  const cellVersion = useCallback(
+    (employeeId: number, positionId: number | undefined, workDate: string, companyId: number) => {
+      const snap = dataRef.current;
+      if (!snap) return undefined;
+      const target = effectivePositionId(positionId ?? null, employeeId, snap.positions_by_employee);
+      const entry = snap.entries.find((e) =>
+        e.employee_id === employeeId && e.work_date === workDate && e.company_id === companyId &&
+        effectivePositionId(e.position_id, employeeId, snap.positions_by_employee) === target);
+      // Ячейки нет — версия 0: «создаю, и её не должно быть». Бэк без поля
+      // `version` (старый) — проверку не просим вовсе.
+      return entry ? entry.version : 0;
+    },
+    []
+  );
+
+  // Отказ при правке ячейки. 409 — ячейку изменил другой редактор либо период
+  // успели закрыть: в обоих случаях экран устарел, часы перечитываются.
+  const onCellError = useCallback(
+    (err: any, fallback: string) => {
+      toast.error((err?.status === 409 ? '' : fallback) + (err?.message ?? err));
+      if (err?.status === 409) void fetchMonth(false);
+    },
+    [fetchMonth]
+  );
+
   const saveSlot = useCallback(
-    async (
+    (
       employeeId: number, day: number, companyId: number, hours: number,
       positionId?: number,
     ) => {
       const workDate = dateStr(year, month, day);
-      try {
-        const saved = await timesheetApi.saveCell({
-          employee_id: employeeId,
-          position_id: positionId ?? null,
-          work_date: workDate,
-          company_id: companyId,
-          hours,
-        });
-        patchEntry(employeeId, positionId ?? null, workDate, companyId, saved);
-        afterEdit();
-      } catch (err: any) {
-        toast.error('Не удалось сохранить: ' + (err?.message ?? err));
-      }
+      return inCellOrder(`${employeeId}:${positionId ?? 0}:${workDate}:${companyId}`, async () => {
+        try {
+          const saved = await timesheetApi.saveCell({
+            employee_id: employeeId,
+            position_id: positionId ?? null,
+            work_date: workDate,
+            company_id: companyId,
+            hours,
+            expected_version: cellVersion(employeeId, positionId, workDate, companyId),
+          });
+          patchEntry(employeeId, positionId ?? null, workDate, companyId, saved);
+          afterEdit();
+        } catch (err: any) {
+          onCellError(err, 'Не удалось сохранить: ');
+        }
+      });
     },
-    [year, month, afterEdit, patchEntry]
+    [year, month, afterEdit, patchEntry, inCellOrder, cellVersion, onCellError]
   );
 
   // Поставить/снять код отсутствия. Бэк сам удалит часы этого дня —
@@ -1366,23 +1410,28 @@ export function TimesheetPage() {
       positionId?: number,
     ) => {
       if (oldCompanyId === newCompanyId) return;
-      try {
-        const workDate = dateStr(year, month, day);
-        const moved = await timesheetApi.changeCellCompany({
-          employee_id: employeeId,
-          position_id: positionId ?? null,
-          work_date: workDate,
-          old_company_id: oldCompanyId,
-          new_company_id: newCompanyId,
-        });
-        patchEntry(employeeId, positionId ?? null, workDate, oldCompanyId, null);
-        patchEntry(employeeId, positionId ?? null, workDate, newCompanyId, moved);
-        afterEdit();
-      } catch (err: any) {
-        toast.error('Не удалось сменить компанию: ' + (err?.message ?? err));
-      }
+      const workDate = dateStr(year, month, day);
+      // В очереди ПЕРЕНОСИМОЙ ячейки: правка её часов, ещё летящая на сервер,
+      // должна лечь до переноса.
+      await inCellOrder(`${employeeId}:${positionId ?? 0}:${workDate}:${oldCompanyId}`, async () => {
+        try {
+          const moved = await timesheetApi.changeCellCompany({
+            employee_id: employeeId,
+            position_id: positionId ?? null,
+            work_date: workDate,
+            old_company_id: oldCompanyId,
+            new_company_id: newCompanyId,
+            expected_version: cellVersion(employeeId, positionId, workDate, oldCompanyId),
+          });
+          patchEntry(employeeId, positionId ?? null, workDate, oldCompanyId, null);
+          patchEntry(employeeId, positionId ?? null, workDate, newCompanyId, moved);
+          afterEdit();
+        } catch (err: any) {
+          onCellError(err, 'Не удалось сменить компанию: ');
+        }
+      });
     },
-    [year, month, afterEdit, patchEntry]
+    [year, month, afterEdit, patchEntry, inCellOrder, cellVersion, onCellError]
   );
 
   // Добавить слот. Принимает ИДЕНТИФИКАТОРЫ, а не объекты, и читает данные из

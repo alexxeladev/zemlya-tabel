@@ -272,6 +272,9 @@ def _editable_periods(
                     TimesheetPeriod.month,
                 ).in_(with_dept)
             )
+            # Очистка часов — запись в месяц: строки периодов под разделяемой
+            # блокировкой, как у любой записи (см. `lock_period`, п.1.5).
+            .with_for_update(read=True, of=TimesheetPeriod)
             .all()
         )
     no_dept = [k for k in keys if k[0] is None]
@@ -284,6 +287,7 @@ def _editable_periods(
                     [(y, m) for _, y, m in no_dept]
                 ),
             )
+            .with_for_update(read=True, of=TimesheetPeriod)
             .all()
         )
 

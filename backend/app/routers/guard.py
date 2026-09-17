@@ -153,7 +153,8 @@ def _require_open_month(
     правка назначения — человек, дни, ставка, премия — пересчитала бы ведомость,
     которую бухгалтерия уже видела. Нужно поправить — период переоткрывает admin.
     """
-    if is_month_closed(db, department_id, year, month):
+    # for_write: строка периода под блокировкой до коммита правки (п.1.5).
+    if is_month_closed(db, department_id, year, month, for_write=True):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(

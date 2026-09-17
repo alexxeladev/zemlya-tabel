@@ -25,25 +25,68 @@ class PeriodLockedException(Exception):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def lock_period(
+    db: Session, period: TimesheetPeriod, *, exclusive: bool
+) -> TimesheetPeriod:
+    """Заблокировать СТРОКУ периода до конца транзакции и перечитать её статус.
+
+    Единый протокол записи в месяц и переходов workflow (task_stage1 п.1.5):
+
+    * **переход** (submit / return / close / reopen) берёт строку ИСКЛЮЧИТЕЛЬНО
+      (`FOR UPDATE`) — ждёт все незавершённые записи в этот месяц и не пускает
+      новые, пока не закоммитится;
+    * **запись** (часы, отсутствия, ночные, перенос юрлица, автозаполнение,
+      назначения вахты) берёт её РАЗДЕЛЯЕМО (`FOR SHARE`) — два табельщика одного
+      отдела друг друга не ждут, но переход дождётся обоих.
+
+    Статус проверяется ПОСЛЕ блокировки и по перечитанной строке
+    (`populate_existing`): раньше проверка и запись шли без блокировки, и между
+    ними период успевали отправить на проверку или закрыть — правка ложилась в
+    уже заблокированный месяц.
+
+    Взаимной блокировки нет: запись берёт только разделяемые блокировки (они
+    между собой совместимы), переход — ровно одну строку.
+
+    На SQLite `FOR UPDATE` диалектом опускается — там одно соединение и гонки нет
+    по построению. Проверяется это только на PostgreSQL (`pytest -m postgres`).
+    """
+    return (
+        db.query(TimesheetPeriod)
+        .filter(TimesheetPeriod.id == period.id)
+        .with_for_update(read=not exclusive, of=TimesheetPeriod)
+        .populate_existing()
+        .one()
+    )
+
+
 def is_month_closed(
-    db: Session, department_id: int | None, year: int, month: int
+    db: Session, department_id: int | None, year: int, month: int,
+    *, for_write: bool = False,
 ) -> bool:
     """Закрыт ли месяц отдела. Период НЕ создаётся: нет строки — не закрыт.
 
     Нужен там, где правка не является ячейкой табеля, но меняет цифры месяца —
     назначения вахты (task_stage1 п.1.4). В отличие от `can_edit_cells`
     блокирует только `closed`: `pending_review` — ещё не «бухгалтерия видела».
+
+    `for_write=True` — проверка ПЕРЕД записью: строка периода берётся под
+    разделяемую блокировку (см. `lock_period`), чтобы закрытие не проскочило
+    между проверкой и коммитом. Для чтения (экран вахты) блокировка не нужна.
     """
-    query = db.query(TimesheetPeriod.id).filter(
+    query = db.query(TimesheetPeriod).filter(
         TimesheetPeriod.year == year,
         TimesheetPeriod.month == month,
-        TimesheetPeriod.status == "closed",
     )
     if department_id is None:
         query = query.filter(TimesheetPeriod.department_id.is_(None))
     else:
         query = query.filter(TimesheetPeriod.department_id == department_id)
-    return query.first() is not None
+    period = query.first()
+    if period is None:
+        return False
+    if for_write:
+        period = lock_period(db, period, exclusive=False)
+    return period.status == "closed"
 
 
 def _can_edit(period: TimesheetPeriod) -> bool:
@@ -254,6 +297,7 @@ def submit_for_review(
     period: TimesheetPeriod,
     actor: Employee,
 ) -> TimesheetPeriod:
+    period = lock_period(db, period, exclusive=True)
     if period.department_id is None:
         raise ValueError("Период без отдела нельзя отправить на проверку")
     if period.status != "draft":
@@ -285,6 +329,7 @@ def return_to_draft(
     actor: Employee,
     reason: str,
 ) -> TimesheetPeriod:
+    period = lock_period(db, period, exclusive=True)
     if not reason or len(reason.strip()) < 3:
         raise ValueError("Причина возврата обязательна (минимум 3 символа)")
     if period.status != "pending_review":
@@ -313,6 +358,7 @@ def close_period(
     period: TimesheetPeriod,
     actor: Employee,
 ) -> TimesheetPeriod:
+    period = lock_period(db, period, exclusive=True)
     if actor.role not in ("accountant", "admin"):
         raise PermissionError("Только accountant или admin может закрыть период")
     # NULL-department can close from draft directly
@@ -344,6 +390,7 @@ def reopen_period(
     actor: Employee,
     reason: str,
 ) -> TimesheetPeriod:
+    period = lock_period(db, period, exclusive=True)
     if not reason or len(reason.strip()) < 3:
         raise ValueError("Причина переоткрытия обязательна (минимум 3 символа)")
     if period.status != "closed":
