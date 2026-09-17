@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Optional
 
@@ -40,6 +41,12 @@ from app.services.company_order import (
     company_order_by,
     order_index,
 )
+from app.services.guard_payroll import distribute_guard_amount
+from app.services.guard_statement import (
+    GuardStatementRow,
+    guard_payroll_read,
+    load_guard_rows,
+)
 from app.services.night_shifts import load_night_context
 from app.services.org_access import (
     can_see_finances,
@@ -67,10 +74,70 @@ TREND_MONTHS = 6
 # год — разумный максимум, который и просили (квартал/год/произвольно).
 MAX_RANGE_MONTHS = 12
 
+
+
+@dataclass(frozen=True)
+class _GuardCompanyTotal:
+    company_id: int
+    total: Decimal
+
+
+@dataclass(frozen=True)
+class _GuardMonthPayroll:
+    """Строка ВАХТЫ в агрегатах дашборда: деньги — да, часы — нет.
+
+    Позиция с назначением вахты считается модулем вахты, а не общим расчётом
+    (см. `guard_statement`): общий расчёт дал бы «нет графика» и 0 ₽. До
+    task_stage1 п.1.2 дашборд про это не знал и терял весь ФОТ охраны.
+
+    Два решения заказчика, которые держит эта строка:
+
+    * ЧАСЫ вахты в блок «Часы» не входят — они круглосуточные (норма 744 ч,
+      факт = смены × 24) и задавили бы часы всей остальной компании;
+    * в разрезе юрлиц зарплата вахты делится по процентам МЕСТА РАБОТЫ (объекта
+      или экипажа), без округления — тем же `distribute_guard_amount`, что и в
+      ведомости.
+    """
+
+    total_amount: Decimal
+    base_amount: Decimal
+    overtime_amount: Decimal
+    off_schedule_amount: Decimal
+    holiday_amount: Decimal
+    breakdown_by_company: tuple[_GuardCompanyTotal, ...]
+    total_hours: Decimal = Decimal("0")
+    overtime_hours: Decimal = Decimal("0")
+    norm_hours: Decimal | None = None
+    is_calculable: bool = True
+
+
+def _guard_month_payroll(
+    emp: Employee, position: EmployeePosition, row: GuardStatementRow,
+    year: int, month: int,
+) -> _GuardMonthPayroll:
+    # Раскладку сумм по колонкам берём у ведомости (`guard_payroll_read`), а не
+    # собираем заново: иначе ФОТ дашборда разойдётся с `/payroll`.
+    read = guard_payroll_read(emp, position, row, year, month)
+    shares = distribute_guard_amount(read.total_amount, row.shares)
+    return _GuardMonthPayroll(
+        total_amount=read.total_amount,
+        base_amount=read.base_amount,
+        overtime_amount=read.overtime_amount,
+        off_schedule_amount=read.off_schedule_amount,
+        holiday_amount=read.holiday_amount,
+        breakdown_by_company=tuple(
+            _GuardCompanyTotal(company_id=cid, total=amount)
+            for cid, amount in shares.items()
+        ),
+    )
+
+
 # (employee, payroll-результат) за один месяц
 # Строка результата — (сотрудник, ПОЗИЦИЯ, расчёт): у совместителя человек
 # встречается столько раз, сколько у него рабочих мест (task_positions ч.A).
-_MonthResults = list[tuple[Employee, Optional[EmployeePosition], EmployeePayroll]]
+_MonthResults = list[
+    tuple[Employee, Optional[EmployeePosition], EmployeePayroll | _GuardMonthPayroll]
+]
 
 
 # ── Помесячный расчёт (reuse payroll) ─────────────────────────────────────────
@@ -141,6 +208,11 @@ def _month_payrolls(
     # Ночные — часть ФОТ (надбавка входит в total_amount), иначе дашборд
     # разошёлся бы с /payroll у отделов, где ночные отмечены.
     night = load_night_context(db, employees, year, month)
+    # Вахта: позиция с назначением на пост считается модулем вахты — так же, как
+    # в `build_payroll_summary`. Без этой ветки ФОТ охраны терялся целиком.
+    guard_rows = load_guard_rows(
+        db, [pos.id for emp in employees for pos in emp.positions], year, month,
+    )
 
     # По одной строке на ПОЗИЦИЮ (task_positions ч.A) — так же, как считает
     # /payroll: иначе у совместителя ФОТ дашборда разошёлся бы с табелем.
@@ -148,6 +220,13 @@ def _month_payrolls(
     for emp in employees:
         by_position = entries_by_position(emp, by_emp.get(emp.id, []))
         for position in visible_positions(emp, actor) or [emp.primary_position]:
+            guard_row = guard_rows.get(position.id) if position is not None else None
+            if guard_row is not None:
+                results.append((
+                    emp, position,
+                    _guard_month_payroll(emp, position, guard_row, year, month),
+                ))
+                continue
             results.append((
                 emp,
                 position,
