@@ -90,6 +90,19 @@ PER_SHIFT_GUARD_KINDS: tuple[str, ...] = (
     GUARD_KIND_GUARD, GUARD_KIND_GBR, GUARD_KIND_DISPATCHER,
 )
 
+
+def pay_type_for_kind(kind: str | None) -> str:
+    """Тип оплаты РАБОЧЕГО МЕСТА охранника — от должности (task_guard_ownership).
+
+    Начальник охраны — оклад за месяц, остальные — ставка за смену. Отдельным
+    полем в форме найма тип оплаты не вводится: иначе можно было бы завести
+    посменного начальника. Неизвестная или пустая должность — охранник.
+    """
+    # Импорт здесь: модели позиций и вахты друг от друга не зависят.
+    from app.models.positions import PAY_TYPE_PER_SHIFT, PAY_TYPE_SALARY
+
+    return PAY_TYPE_SALARY if kind == GUARD_KIND_CHIEF else PAY_TYPE_PER_SHIFT
+
 _ZERO = Decimal("0")
 
 
