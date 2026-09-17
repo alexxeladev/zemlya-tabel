@@ -13,11 +13,13 @@ import {
   deleteVahtaSite,
   deleteVahtaZone,
   getVahtaDepartments,
+  getVahtaSettings,
   listVahtaCrews,
   listVahtaSites,
   listVahtaZones,
   updateVahtaCrew,
   updateVahtaPost,
+  updateVahtaSettings,
   updateVahtaSite,
   updateVahtaZone,
 } from '../../api/vahta'
@@ -161,6 +163,92 @@ function RateCell({
     >
       {formatMoney(value, { showZero: true })}
     </button>
+  )
+}
+
+/**
+ * Ставка налога на официальную часть выплаты (task_vahta_taxes).
+ *
+ * Одна на все месяцы: правка пересчитывает разнесение и прошлых месяцев —
+ * об этом сказано прямо у поля, чтобы её не меняли «на новый месяц».
+ */
+function TaxRateSetting({ editable }: { editable: boolean }) {
+  const [percent, setPercent] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    getVahtaSettings()
+      .then((data) => {
+        setPercent(data.employer_tax_percent)
+        setDraft(String(parseFloat(data.employer_tax_percent)))
+      })
+      .catch(() => setPercent(null))
+  }, [])
+
+  if (percent === null) return null
+  const current = String(parseFloat(percent))
+  const dirty = draft.trim() !== '' && draft.replace(',', '.') !== current
+
+  const save = async () => {
+    const value = draft.trim().replace(',', '.')
+    const n = Number(value)
+    if (!Number.isFinite(n) || n < 0 || n > 100) {
+      toast.error('Ставка — число от 0 до 100 %')
+      return
+    }
+    if (
+      !window.confirm(
+        `Сменить ставку налога с ${current} % на ${n} %? Разнесение по юрлицам ` +
+          'пересчитается во всех месяцах, включая прошлые.',
+      )
+    )
+      return
+    setSaving(true)
+    try {
+      const data = await updateVahtaSettings({ employer_tax_percent: value })
+      setPercent(data.employer_tax_percent)
+      setDraft(String(parseFloat(data.employer_tax_percent)))
+      toast.success('Ставка налога сохранена')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не удалось сохранить ставку')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="mb-4 flex max-w-4xl flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm">
+      <span className="font-medium text-slate-800">Налог на официальную выплату</span>
+      {editable ? (
+        <span className="inline-flex items-center gap-1">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && dirty) void save()
+            }}
+            inputMode="decimal"
+            aria-label="Ставка налога, %"
+            className="w-[64px] rounded border border-slate-300 px-1.5 py-0.5 text-right tabular-nums"
+          />
+          <span className="text-slate-600">%</span>
+          {dirty && (
+            <Button size="sm" onClick={() => void save()} loading={saving}>
+              Сохранить
+            </Button>
+          )}
+        </span>
+      ) : (
+        <b className="tabular-nums">{current} %</b>
+      )}
+      <span className="basis-full text-xs text-slate-500">
+        Налог = официальная выплата × ставка. Он добавляется к «итого начислено» в
+        базе разнесения по юрлицам: сумма разнесения больше начисленного ровно на
+        налог. Неофициальная часть налогом не облагается. Ставка одна на все
+        месяцы — её правка пересчитывает и прошлые.
+      </span>
+    </div>
   )
 }
 
@@ -333,7 +421,8 @@ export function VahtaSettingsPage() {
         <div>
           <h1 className="text-xl font-bold text-slate-800">Настройки вахты</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Зоны обслуживания, объекты с постами и выездные экипажи ГБР
+            Зоны обслуживания, объекты с постами, выездные экипажи ГБР и налог на
+            официальную выплату
           </p>
         </div>
         <Link
@@ -343,6 +432,8 @@ export function VahtaSettingsPage() {
           ← К табелю
         </Link>
       </div>
+
+      <TaxRateSetting editable={canManage} />
 
       <div className="mb-4 flex gap-1 border-b border-gray-200">
         {(

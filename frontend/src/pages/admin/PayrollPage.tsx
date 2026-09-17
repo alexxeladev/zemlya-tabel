@@ -50,6 +50,7 @@ const SOURCE_LABEL: Record<DistributionSource, string> = {
   department: 'дефолт отдела',
   hours: 'авто по часам',
   quantity: 'по показателю отдела',
+  guard_post: 'по месту работы (вахта)',
 }
 const SOURCE_STYLE: Record<DistributionSource, string> = {
   month: 'text-indigo-500',
@@ -57,6 +58,7 @@ const SOURCE_STYLE: Record<DistributionSource, string> = {
   department: 'text-teal-600',
   hours: 'italic text-gray-400',
   quantity: 'font-medium text-emerald-600',
+  guard_post: 'text-gray-500',
 }
 
 /**
@@ -77,6 +79,15 @@ function isQuantityRow(row: StatementRow): boolean {
  */
 function isQuantityDeptRow(row: StatementRow): boolean {
   return !!row.quantity_metric_name
+}
+
+/**
+ * Строка вахты (task_vahta): распределена по процентам места работы, суммы до
+ * копейки, без округления до тысячи — живой пересчёт здесь не применяется,
+ * суммы берутся с сервера как есть.
+ */
+function isGuardRow(row: StatementRow): boolean {
+  return row.distribution_source === 'guard_post'
 }
 
 /** Процент компании из показателя — плейсхолдер, править нельзя. */
@@ -105,9 +116,12 @@ function targetedAmounts(row: StatementRow): Record<number, number> {
  * возникают при начислении: удержания (займ, аванс) их не уменьшают, округление
  * «К выплате» на них не влияет. Зеркало `distribution_base` из
  * services/payroll_statement.py.
+ *
+ * У строки вахты к затратам добавляется налог на официальную часть выплаты
+ * (`guard_tax_amount`, task_vahta_taxes); у прочих строк он "0".
  */
 function distributionBase(row: StatementRow): number {
-  return num(row.accrued_total)
+  return num(row.accrued_total) + num(row.guard_tax_amount)
 }
 
 /** Сколько из базы вообще можно разнести круглыми тысячами (округление ВНИЗ). */
@@ -256,7 +270,7 @@ export function PayrollPage() {
   ;(data?.companies ?? []).forEach((c, i) => { companyOrder[c.id] = i })
 
   const rowAmounts = (row: StatementRow): Record<number, number> => {
-    if (isAutoRow(row) || isQuantityDeptRow(row)) {
+    if (isAutoRow(row) || isQuantityDeptRow(row) || isGuardRow(row)) {
       const m: Record<number, number> = {}
       for (const d of row.distribution) m[d.company_id] = num(d.amount)
       return m
@@ -756,8 +770,21 @@ export function PayrollPage() {
                         не приписывается юрлицам, иначе их затраты оказались бы
                         больше начисленного. Показываем его прямо под суммой,
                         иначе расхождение с «Итого начислено» выглядит ошибкой. */}
-                    <td className={`px-2 py-1.5 text-center font-medium ${liveDistTotal === distributable(distBase) ? 'text-gray-600' : 'text-amber-600'}`}>
+                    <td className={`px-2 py-1.5 text-center font-medium ${isGuardRow(row) || liveDistTotal === distributable(distBase) ? 'text-gray-600' : 'text-amber-600'}`}>
                       {formatMoney(String(liveDistTotal))}
+                      {/* Вахта: разнесение больше «Итого начислено» на налог с
+                          официальной выплаты — объясняем прямо под суммой. */}
+                      {num(row.guard_tax_amount) > 0 && (
+                        <div
+                          className="text-[10px] text-gray-500"
+                          title={
+                            'Вахта: к «Итого начислено» добавлен налог на официальную ' +
+                            'часть выплаты — это затрата компании, поэтому разнесение больше начисленного.'
+                          }
+                        >
+                          вкл. налоги {formatMoney(row.guard_tax_amount)}
+                        </div>
+                      )}
                       {distBase - liveDistTotal > 0 && (
                         <div
                           className="text-[10px] text-gray-400"
