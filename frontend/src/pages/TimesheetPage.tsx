@@ -1355,29 +1355,28 @@ export function TimesheetPage() {
     [year, month, afterEdit, fetchMonth]
   );
 
+  // Смена юрлица — ОДИН запрос и одна транзакция на бэке (task_stage1 п.1.1).
+  // Раньше здесь шли два `saveCell` подряд («обнулить старую», «записать
+  // новую»), и сбой второго оставлял день без часов. Часы в запросе не
+  // передаются: бэк переносит то, что лежит в базе. Состояние правится только
+  // ПОСЛЕ успешного ответа — при отказе экран остаётся как был.
   const changeSlotCompany = useCallback(
     async (
       employeeId: number, day: number, oldCompanyId: number, newCompanyId: number,
-      hours: number, positionId?: number,
+      positionId?: number,
     ) => {
+      if (oldCompanyId === newCompanyId) return;
       try {
         const workDate = dateStr(year, month, day);
-        const removed = await timesheetApi.saveCell({
+        const moved = await timesheetApi.changeCellCompany({
           employee_id: employeeId,
           position_id: positionId ?? null,
           work_date: workDate,
-          company_id: oldCompanyId,
-          hours: 0,
+          old_company_id: oldCompanyId,
+          new_company_id: newCompanyId,
         });
-        patchEntry(employeeId, positionId ?? null, workDate, oldCompanyId, removed);
-        const saved = await timesheetApi.saveCell({
-          employee_id: employeeId,
-          position_id: positionId ?? null,
-          work_date: workDate,
-          company_id: newCompanyId,
-          hours,
-        });
-        patchEntry(employeeId, positionId ?? null, workDate, newCompanyId, saved);
+        patchEntry(employeeId, positionId ?? null, workDate, oldCompanyId, null);
+        patchEntry(employeeId, positionId ?? null, workDate, newCompanyId, moved);
         afterEdit();
       } catch (err: any) {
         toast.error('Не удалось сменить компанию: ' + (err?.message ?? err));
@@ -3401,7 +3400,7 @@ type DayCellProps = {
   employeeId: number;
   positionId: number | undefined;
   onSaveSlot: (empId: number, day: number, companyId: number, hours: number, positionId?: number) => void;
-  onChangeCompany: (empId: number, day: number, oldCompanyId: number, newCompanyId: number, hours: number, positionId?: number) => void;
+  onChangeCompany: (empId: number, day: number, oldCompanyId: number, newCompanyId: number, positionId?: number) => void;
   onAddSlot: (empId: number, positionId: number | undefined, day: number) => void;
   onSetAbsence: (empId: number, day: number, kind: AbsenceKind | null) => void;
   onOpenCompanyPicker: (anchor: HTMLElement, current: number, onPick: (companyId: number) => void) => void;
@@ -3474,9 +3473,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
                 disabled={!canEdit}
                 onHoursChange={(h) => onSaveSlot(employeeId, day, slot.company_id, h, positionId)}
                 onCompanyChange={(newCompId) =>
-                  onChangeCompany(
-                    employeeId, day, slot.company_id, newCompId, num(slot.hours), positionId,
-                  )
+                  onChangeCompany(employeeId, day, slot.company_id, newCompId, positionId)
                 }
                 onDelete={() => onSaveSlot(employeeId, day, slot.company_id, 0, positionId)}
                 onOpenPicker={onOpenCompanyPicker}

@@ -44,6 +44,7 @@ from app.schemas.timesheet import (
     RowCheckRead,
     TimesheetBatchInput,
     TimesheetBatchResponse,
+    TimesheetCellCompanyChange,
     TimesheetCellInput,
     TimesheetEntryRead,
     TimesheetMonthResponse,
@@ -101,6 +102,8 @@ from app.services.timesheet import (
     build_autofill_preview,
     compute_extra_companies_by_employee,
     get_month_entries,
+    CellNotFound,
+    move_cell_company,
     upsert_cell,
     upsert_cells_batch,
     visible_employees_for_actor,
@@ -785,6 +788,47 @@ def save_cell(
             detail=f"День вне периода работы: {exc}",
         )
     return result
+
+
+@router.put("/cell/company", response_model=TimesheetEntryRead)
+def change_cell_company(
+    payload: TimesheetCellCompanyChange,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Перенести часы ячейки на другое юрлицо ОДНОЙ транзакцией.
+
+    Два отдельных `PUT /cell` (обнулить старую, записать новую) теряли часы при
+    сбое второго. Здесь либо перенос выполнен целиком, либо не изменилось ничего.
+    """
+    _check_cell_access(actor, payload.employee_id, db, payload.position_id)
+    if payload.old_company_id == payload.new_company_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Часы уже стоят на этом юрлице",
+        )
+    _check_company_exists(db, payload.new_company_id)
+    try:
+        return move_cell_company(
+            db, actor,
+            payload.employee_id, payload.work_date,
+            payload.old_company_id, payload.new_company_id, payload.position_id,
+        )
+    except CellNotFound:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="В этой ячейке нет часов — переносить нечего",
+        )
+    except PeriodLockedException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Период закрыт для редактирования, статус: {exc.status}",
+        )
+    except OutsideEmploymentPeriod as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"День вне периода работы: {exc}",
+        )
 
 
 @router.post("/cells/batch", response_model=TimesheetBatchResponse)

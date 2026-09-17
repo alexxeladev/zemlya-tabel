@@ -31,6 +31,17 @@ export const timesheetApi = {
     return data
   },
 
+  // Смена юрлица ячейки одной транзакцией: либо часы перенесены целиком, либо
+  // не изменилось ничего. Двумя `saveCell` это делать НЕЛЬЗЯ — сбой второго
+  // теряет часы (task_stage1 п.1.1).
+  async changeCellCompany(input: {
+    employee_id: number; position_id?: number | null; work_date: string
+    old_company_id: number; new_company_id: number
+  }): Promise<TimesheetEntry> {
+    const { data } = await apiClient.put<TimesheetEntry>('/api/timesheet/cell/company', input)
+    return data
+  },
+
   async saveCellsBatch(entries: TimesheetCellInput[]): Promise<(TimesheetEntry | null)[]> {
     const { data } = await apiClient.post<{ entries: (TimesheetEntry | null)[] }>('/api/timesheet/cells/batch', { entries })
     return data.entries

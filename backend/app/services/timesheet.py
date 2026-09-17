@@ -139,18 +139,12 @@ def _resolve_position_id(
     return position.id if position is not None else None
 
 
-def _upsert_cell_no_commit(
-    db: Session,
-    actor: Employee,
-    employee_id: int,
-    work_date: date,
-    company_id: int,
-    hours: Decimal,
-    position_id: int | None = None,
+def _find_cell(
+    db: Session, employee_id: int, work_date: date, company_id: int,
+    position_id: int | None,
 ) -> TimesheetEntry | None:
-    """Core upsert logic — flush only, no commit. Caller owns the transaction."""
-    position_id = _resolve_position_id(db, employee_id, position_id)
-    existing = (
+    """Ячейка (рабочее место, день, юрлицо). `position_id` — уже разрешённый."""
+    return (
         db.query(TimesheetEntry)
         .filter(
             and_(
@@ -167,6 +161,20 @@ def _upsert_cell_no_commit(
         )
         .first()
     )
+
+
+def _upsert_cell_no_commit(
+    db: Session,
+    actor: Employee,
+    employee_id: int,
+    work_date: date,
+    company_id: int,
+    hours: Decimal,
+    position_id: int | None = None,
+) -> TimesheetEntry | None:
+    """Core upsert logic — flush only, no commit. Caller owns the transaction."""
+    position_id = _resolve_position_id(db, employee_id, position_id)
+    existing = _find_cell(db, employee_id, work_date, company_id, position_id)
 
     # Взаимоисключение часы/код отсутствия: часы в дне снимают код (день стал
     # рабочим). Обратное направление — в services.absences.set_absence.
@@ -261,6 +269,55 @@ def upsert_cell(
     if result is not None:
         db.refresh(result)
     return result
+
+
+class CellNotFound(Exception):
+    """У переносимой ячейки нет часов — переносить нечего."""
+
+
+def move_cell_company(
+    db: Session,
+    actor: Employee,
+    employee_id: int,
+    work_date: date,
+    old_company_id: int,
+    new_company_id: int,
+    position_id: int | None = None,
+) -> TimesheetEntry:
+    """Смена юрлица ячейки ОДНОЙ транзакцией (task_stage1 п.1.1).
+
+    Раньше фронт слал два сохранения — «обнулить старую» и «записать новую», —
+    и каждое коммитилось само: сбой второго оставлял день без часов. Здесь все
+    проверки идут ДО первой записи, обе записи — одним коммитом, а любой сбой
+    откатывает транзакцию целиком.
+
+    Часы берутся из САМОЙ ячейки, а не из запроса: переносится то, что лежит в
+    базе, и устаревший экран их не подменит. Если у новой компании в этот день
+    уже есть часы, они ЗАМЕНЯЮТСЯ переносимыми (решение заказчика — не
+    складывать и не отказывать).
+    """
+    _check_period_lock(db, employee_id, work_date, position_id)
+    check_employment_period(db, employee_id, work_date, position_id)
+    source = _find_cell(
+        db, employee_id, work_date, old_company_id,
+        _resolve_position_id(db, employee_id, position_id),
+    )
+    if source is None:
+        raise CellNotFound()
+    hours = source.hours
+    try:
+        _upsert_cell_no_commit(
+            db, actor, employee_id, work_date, old_company_id, Decimal("0"), position_id
+        )
+        moved = _upsert_cell_no_commit(
+            db, actor, employee_id, work_date, new_company_id, hours, position_id
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(moved)
+    return moved
 
 
 def upsert_cells_batch(

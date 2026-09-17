@@ -40,6 +40,17 @@ class TimesheetCellInput(BaseModel):
     hours: int = Field(ge=0, le=24)
 
 
+class TimesheetCellCompanyChange(BaseModel):
+    """Перенос часов ячейки на другое юрлицо. Часы в запросе не передаются:
+    переносится то, что лежит в базе."""
+
+    employee_id: int
+    position_id: int | None = None
+    work_date: date
+    old_company_id: int
+    new_company_id: int
+
+
 class TimesheetMonthQuery(BaseModel):
     year: int = Field(ge=2000, le=2100)
     month: int = Field(ge=1, le=12)
