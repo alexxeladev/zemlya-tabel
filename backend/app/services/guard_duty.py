@@ -476,7 +476,9 @@ def default_rate(place) -> Decimal:
     return Decimal(str(place.shift_rate)) if place is not None else _ZERO
 
 
-def ensure_guard_position(db: Session, position: EmployeePosition | None) -> None:
+def ensure_guard_position(
+    db: Session, position: EmployeePosition | None, place=None
+) -> None:
     """На место работы охраны встаёт ТОЛЬКО рабочее место охранного подразделения
     (task_stage1 п.1.4). Пустой слот (`None`) законен.
 
@@ -499,6 +501,16 @@ def ensure_guard_position(db: Session, position: EmployeePosition | None) -> Non
             "На пост можно поставить только рабочее место охранного подразделения. "
             "Сотруднику другого отдела заведите рабочее место в охране — "
             "выберите его по ФИО, а не по существующей должности"
+        )
+    # Рабочее место обязано быть в ТОМ ЖЕ подразделении, что и место работы.
+    # `position_id` приходит из запроса, а доступ проверяется только к отделу
+    # поста: без этого менеджер охраны A поставил бы на свой пост позицию охраны
+    # B, и её посчитали бы по ставке и процентам чужого объекта (нашло ревью).
+    # Путь через `employee_id` так и работает — ищет или заводит место в отделе поста.
+    if place is not None and position.department_id != place.department_id:
+        raise GuardError(
+            "Рабочее место относится к другому охранному подразделению — "
+            "на этот пост его поставить нельзя"
         )
 
 
@@ -523,7 +535,7 @@ def create_assignment(
     задана — берётся та, что для этого места обычна: у экипажа ГБР, у поста
     охранник.
     """
-    ensure_guard_position(db, position)
+    ensure_guard_position(db, position, place)
     is_post = isinstance(place, GuardPost)
     assignment = GuardAssignment(
         year=year,
@@ -671,7 +683,7 @@ def replace_on_post(
         raise GuardError("Число замены вне месяца")
     # Замена с первого числа меняет человека в САМОЙ строке, мимо
     # create_assignment — поэтому проверка здесь, на обе ветки сразу.
-    ensure_guard_position(db, position)
+    ensure_guard_position(db, position, assignment.place)
 
     days = marked_days(assignment)
     kept = {d for d in days if d < from_day}

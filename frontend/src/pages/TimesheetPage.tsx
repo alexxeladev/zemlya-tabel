@@ -727,6 +727,14 @@ export function TimesheetPage() {
   // рушится React.memo на ячейках дней (task_timesheet_perf2).
   const dataRef = useRef<MonthResponse | null>(null);
   dataRef.current = data;
+  // Версии, полученные ОТВЕТОМ сервера и ещё не доехавшие до `dataRef`.
+  // `dataRef.current` обновляется только на рендере, а следующая правка из
+  // очереди стартует микротаской сразу за предыдущей — ДО рендера. Без этого
+  // кэша она ушла бы со старой версией и получила 409 «изменил другой
+  // пользователь» от собственной предыдущей правки (нашло ревью). Кэш пишется
+  // синхронно по ответу и сбрасывается, когда месяц перечитан целиком.
+  const savedVersions = useRef(new Map<string, number>());
+
 
   // ── Загрузка данных ──
   // Часы и деньги грузятся раздельно: расчёт ЗП — самая дорогая часть ответа, а
@@ -752,6 +760,8 @@ export function TimesheetPage() {
             .then(r => r.data)
             .catch(() => ({ days: [] } as CalendarSummary)),
         ]);
+        // Месяц перечитан целиком — версии ячеек теперь в самих данных.
+        savedVersions.current.clear();
         // Без расчёта бэк присылает payroll=null — оставляем прежние суммы, иначе
         // денежные колонки мигали бы пустотой на каждую введённую цифру. Что они
         // пока не пересчитаны, показывает индикатор payrollStale.
@@ -1326,7 +1336,9 @@ export function TimesheetPage() {
   }, []);
 
   const cellVersion = useCallback(
-    (employeeId: number, positionId: number | undefined, workDate: string, companyId: number) => {
+    (key: string, employeeId: number, positionId: number | undefined, workDate: string, companyId: number) => {
+      const fresh = savedVersions.current.get(key);
+      if (fresh !== undefined) return fresh;
       const snap = dataRef.current;
       if (!snap) return undefined;
       const target = effectivePositionId(positionId ?? null, employeeId, snap.positions_by_employee);
@@ -1356,7 +1368,8 @@ export function TimesheetPage() {
       positionId?: number,
     ) => {
       const workDate = dateStr(year, month, day);
-      return inCellOrder(`${employeeId}:${positionId ?? 0}:${workDate}:${companyId}`, async () => {
+      const key = `${employeeId}:${positionId ?? 0}:${workDate}:${companyId}`;
+      return inCellOrder(key, async () => {
         try {
           const saved = await timesheetApi.saveCell({
             employee_id: employeeId,
@@ -1364,8 +1377,11 @@ export function TimesheetPage() {
             work_date: workDate,
             company_id: companyId,
             hours,
-            expected_version: cellVersion(employeeId, positionId, workDate, companyId),
+            expected_version: cellVersion(key, employeeId, positionId, workDate, companyId),
           });
+          if (saved?.version !== undefined || saved === null) {
+            savedVersions.current.set(key, saved?.version ?? 0);
+          }
           patchEntry(employeeId, positionId ?? null, workDate, companyId, saved);
           afterEdit();
         } catch (err: any) {
@@ -1414,7 +1430,9 @@ export function TimesheetPage() {
       const workDate = dateStr(year, month, day);
       // В очереди ПЕРЕНОСИМОЙ ячейки: правка её часов, ещё летящая на сервер,
       // должна лечь до переноса.
-      await inCellOrder(`${employeeId}:${positionId ?? 0}:${workDate}:${oldCompanyId}`, async () => {
+      const oldKey = `${employeeId}:${positionId ?? 0}:${workDate}:${oldCompanyId}`;
+      const newKey = `${employeeId}:${positionId ?? 0}:${workDate}:${newCompanyId}`;
+      await inCellOrder(oldKey, async () => {
         try {
           const moved = await timesheetApi.changeCellCompany({
             employee_id: employeeId,
@@ -1422,8 +1440,10 @@ export function TimesheetPage() {
             work_date: workDate,
             old_company_id: oldCompanyId,
             new_company_id: newCompanyId,
-            expected_version: cellVersion(employeeId, positionId, workDate, oldCompanyId),
+            expected_version: cellVersion(oldKey, employeeId, positionId, workDate, oldCompanyId),
           });
+          savedVersions.current.set(oldKey, 0);
+          if (moved.version !== undefined) savedVersions.current.set(newKey, moved.version);
           patchEntry(employeeId, positionId ?? null, workDate, oldCompanyId, null);
           patchEntry(employeeId, positionId ?? null, workDate, newCompanyId, moved);
           afterEdit();

@@ -1000,10 +1000,13 @@ def post_quick_hire(
 
     assignment_id = None
     if payload.assign and payload.year and payload.month:
-        assignment = create_assignment(
-            db, year=payload.year, month=payload.month, place=place,
-            position=position, rate=payload.rate, kind=payload.kind,
-        )
+        try:
+            assignment = create_assignment(
+                db, year=payload.year, month=payload.month, place=place,
+                position=position, rate=payload.rate, kind=payload.kind,
+            )
+        except GuardError as exc:
+            raise _guard_error(exc)
         assignment_id = assignment.id
     log_action(
         db, actor, "employee", employee.id, "create",

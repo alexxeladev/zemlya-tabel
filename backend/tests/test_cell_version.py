@@ -144,3 +144,43 @@ def test_version_column_has_a_server_default(db_session, worker, company_a):
     }])
     db_session.commit()
     assert db_session.query(TimesheetEntry).one().version == 1
+
+
+def test_stale_batch_is_refused_as_a_whole(client, headers, db_session, worker, company_a):
+    """Батч тоже принимает `expected_version`; устаревшая ячейка отклоняет весь пакет."""
+    client.put(URL, json=_cell(worker, company_a, 8), headers=headers)
+    client.put(URL, json=_cell(worker, company_a, 6), headers=headers)
+
+    resp = client.post("/api/timesheet/cells/batch", headers=headers, json={"entries": [
+        {**_cell(worker, company_a, 4), "work_date": "2026-05-06"},
+        _cell(worker, company_a, 7, expected_version=1),
+    ]})
+
+    assert resp.status_code == 409
+    assert _day(db_session, worker) == {company_a.id: 6}
+
+
+def test_batch_locks_the_period_once_not_per_cell(client, headers, db_session, worker, company_a):
+    """Ревью: батч брал блокировку периода на КАЖДУЮ ячейку — автозаполнение
+    отдела давало ~1500 лишних запросов. Число обращений к периодам не должно
+    расти с числом ячеек."""
+    from sqlalchemy import event
+
+    from tests.conftest import engine
+
+    def period_queries(days: list[int]) -> int:
+        seen = []
+        listener = lambda conn, cur, stmt, *a: seen.append(stmt) if "timesheet_periods" in stmt else None  # noqa: E731
+        event.listen(engine, "before_cursor_execute", listener)
+        try:
+            resp = client.post("/api/timesheet/cells/batch", headers=headers, json={"entries": [
+                {**_cell(worker, company_a, 8), "work_date": f"2026-05-{d:02d}"} for d in days
+            ]})
+        finally:
+            event.remove(engine, "before_cursor_execute", listener)
+        assert resp.status_code == 200, resp.text
+        return len(seen)
+
+    few = period_queries([12, 13])
+    many = period_queries(list(range(14, 30)))
+    assert many <= few, f"запросов к периодам: {few} на 2 ячейки, {many} на 16"

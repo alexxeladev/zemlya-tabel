@@ -70,8 +70,8 @@ def month_lock_status(
     бухгалтеру, не должен меняться под проверяющим, иначе проверка бессмысленна.
 
     Нужен там, где правка не является ячейкой табеля, но меняет цифры месяца —
-    назначения вахты (task_stage1 п.1.4). Период НЕ создаётся: нет строки — месяц
-    ещё никто не открывал, это черновик.
+    назначения вахты (task_stage1 п.1.4). При ЧТЕНИИ период не создаётся: нет
+    строки — месяц ещё никто не открывал, это черновик.
 
     `for_write=True` — проверка ПЕРЕД записью: строка периода берётся под
     разделяемую блокировку (см. `lock_period`), чтобы переход не проскочил между
@@ -87,7 +87,13 @@ def month_lock_status(
         query = query.filter(TimesheetPeriod.department_id == department_id)
     period = query.first()
     if period is None:
-        return None
+        if not for_write:
+            return None
+        # Строки ещё нет, а блокировать что-то надо: иначе месяц могли бы завести
+        # и отправить на проверку между этой проверкой и коммитом правки. Делаем
+        # как запись ячейки — создаём черновик и блокируем его (коммитит
+        # вызывающий вместе со своей правкой).
+        period = get_or_create_period(db, department_id, year, month)
     if for_write:
         period = lock_period(db, period, exclusive=False)
     return None if can_edit_cells(period) else period.status
@@ -362,9 +368,11 @@ def close_period(
     period: TimesheetPeriod,
     actor: Employee,
 ) -> TimesheetPeriod:
-    period = lock_period(db, period, exclusive=True)
+    # Роль — ДО блокировки: тот, кому закрывать нельзя, не должен даже на миг
+    # останавливать записи в месяц исключительной блокировкой.
     if actor.role not in ("accountant", "admin"):
         raise PermissionError("Только accountant или admin может закрыть период")
+    period = lock_period(db, period, exclusive=True)
     # NULL-department can close from draft directly
     if period.department_id is None:
         if period.status not in ("draft", "pending_review"):

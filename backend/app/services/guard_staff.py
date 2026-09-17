@@ -207,7 +207,10 @@ def ensure_loan_change_allowed(db: Session, employee: Employee, changes: dict) -
     touched = {f: v for f, v in changes.items() if f in LOAN_FIELDS}
     if not any(_differs(getattr(employee, f), v) for f, v in touched.items()):
         return
-    if all(v is None for v in touched.values()) and set(touched) == set(LOAN_FIELDS):
+    # Снятие определяется по ИТОГОВОМУ состоянию (поля запроса поверх карточки), а
+    # не по числу пришедших null: запрос шлёт только изменённое, и один
+    # `loan_amount: null` — это тоже снятие. Заём без суммы расчёт не удерживает.
+    if {**{f: getattr(employee, f) for f in LOAN_FIELDS}, **touched}["loan_amount"] is None:
         return
     ensure_no_guard_accrual(db, loan_position(employee), "Заём", "заводится")
 

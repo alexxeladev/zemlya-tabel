@@ -834,8 +834,13 @@ export function EmployeesPage() {
               здесь не заводится и не меняется (бэк отвечает 403): выплаты охраны
               ведёт вахта. Заведённый до запрета остаётся виден и его можно снять. */}
           {(() => {
-            const primary = (editTarget?.positions ?? []).find((p) => p.is_primary)
-            const loanLocked = Boolean(primary && isGuardPosition(primary))
+            // То же место, что у бэка (`guard_staff.loan_position`): позиция займа,
+            // а если она не задана — основная.
+            const positions = editTarget?.positions ?? []
+            const loanPosition =
+              positions.find((p) => p.id === editTarget?.loan_position_id) ??
+              positions.find((p) => p.is_primary)
+            const loanLocked = Boolean(loanPosition && isGuardPosition(loanPosition))
             const hasLoan = Boolean(form.watch('loan_amount'))
             const inputClass =
               'rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 read-only:bg-gray-100 read-only:text-gray-500'

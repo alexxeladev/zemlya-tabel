@@ -289,3 +289,86 @@ def test_two_simultaneous_editors_of_one_cell(pg_client, pg_sessions, headers, w
     assert second_response.status_code == 409, second_response.text
     assert _state(pg_sessions, world, "dept")[1] == [6], "часы первого редактора затёрты"
     assert second_waited, "второй редактор не ждал первого — конфликт пойман не блокировкой строки"
+
+
+def _pause_first_upsert(monkeypatch):
+    """Первый вызов записи ячейки останавливается ПОСЛЕ flush, до коммита."""
+    from app.services import timesheet as timesheet_service
+
+    pause = _Pause()
+    real = timesheet_service._upsert_cell_no_commit
+    calls = []
+
+    def first_call_pauses(*args, **kwargs):
+        calls.append(1)
+        result = real(*args, **kwargs)
+        if len(calls) == 1:
+            pause._hold()
+        return result
+
+    monkeypatch.setattr(timesheet_service, "_upsert_cell_no_commit", first_call_pauses)
+    return pause
+
+
+def test_two_simultaneous_creators_of_one_cell(pg_client, pg_sessions, headers, world, monkeypatch):
+    """Оба видели ПУСТОЙ день и одновременно создают ячейку. Второй INSERT ждёт
+    на unique-ключе и падает на flush — это обязан быть 409, а не 500 (ревью)."""
+    pause = _pause_first_upsert(monkeypatch)
+
+    def creator(hours):
+        return lambda: pg_client.put("/api/timesheet/cell", headers=headers, json={
+            "employee_id": world["dept"]["employee_id"], "work_date": WORK_DATE,
+            "company_id": world["company_id"], "hours": hours, "expected_version": 0,
+        })
+
+    first = _Call(creator(6))
+    first.start()
+    assert pause.reached.wait(GIVE_UP)
+    second = _Call(creator(7))
+    second.start()
+    second.join(BLOCKED_FOR)
+    pause.release.set()
+
+    assert first.finish().status_code == 200
+    second_response = second.finish()
+    assert second_response.status_code == 409, second_response.text
+    assert "6" in second_response.json()["detail"]
+    assert _state(pg_sessions, world, "dept")[1] == [6]
+
+
+def test_batch_racing_with_a_single_edit_is_409(pg_client, pg_sessions, headers, world, monkeypatch):
+    pause = _pause_first_upsert(monkeypatch)
+    first = _Call(_edit(pg_client, headers, world, "dept", hours=6))
+    first.start()
+    assert pause.reached.wait(GIVE_UP)
+    batch = _Call(lambda: pg_client.post("/api/timesheet/cells/batch", headers=headers, json={
+        "entries": [{"employee_id": world["dept"]["employee_id"], "work_date": WORK_DATE,
+                     "company_id": world["company_id"], "hours": 7}]}))
+    batch.start()
+    batch.join(BLOCKED_FOR)
+    pause.release.set()
+
+    assert first.finish().status_code == 200
+    assert batch.finish().status_code == 409
+    assert _state(pg_sessions, world, "dept")[1] == [6]
+
+
+def test_absence_racing_with_an_hours_edit_is_409_not_500(
+    pg_client, pg_sessions, headers, world, monkeypatch,
+):
+    """Код отсутствия удаляет часы дня через ORM, а версия ячейки теперь стоит в
+    WHERE этого DELETE: пока правка часов не закоммичена, удаление опаздывает."""
+    assert _edit(pg_client, headers, world, "dept", hours=8)().status_code == 200
+    pause = _pause_first_upsert(monkeypatch)
+    edit = _Call(_edit(pg_client, headers, world, "dept", hours=6))
+    edit.start()
+    assert pause.reached.wait(GIVE_UP)
+    absence = _Call(lambda: pg_client.put("/api/timesheet/absence", headers=headers, json={
+        "employee_id": world["dept"]["employee_id"], "work_date": WORK_DATE, "kind": "sick"}))
+    absence.start()
+    absence.join(BLOCKED_FOR)
+    pause.release.set()
+
+    assert edit.finish().status_code == 200
+    assert absence.finish().status_code == 409
+    assert _state(pg_sessions, world, "dept")[1] == [6]

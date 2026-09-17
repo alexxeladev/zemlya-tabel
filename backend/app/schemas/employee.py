@@ -94,6 +94,11 @@ class EmployeeRead(EmployeeBase):
     # где он числится. Фронт по этому полю строит селектор отделов менеджера.
     managed_department_ids: list[int] = []
 
+    # С какого рабочего места удерживается заём; None — с основного (так читают
+    # расчёт и `guard_staff.loan_position`). Экрану нужно, чтобы блокировать заём
+    # по ТОМУ ЖЕ месту, что и бэк, а не всегда по основному.
+    loan_position_id: Optional[int] = None
+
     @model_validator(mode="after")
     def _compute_fields(self) -> "EmployeeRead":
         self.has_access = self.email is not None

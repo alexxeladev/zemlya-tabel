@@ -273,3 +273,31 @@ class TestLoan:
         db_session.commit()
         resp = client.patch(f"/api/employees/{emp.id}", headers=admin, json=LOAN)
         assert resp.status_code == 200, resp.text
+
+
+class TestReviewFindings:
+    """Правки по итогам ревью."""
+
+    def test_partial_clear_of_legacy_loan_is_allowed(self, client, admin, db_session, rodionov):
+        """Запрос шлёт только изменённое: один `loan_amount: null` — тоже снятие."""
+        _give_loan(db_session, rodionov)
+        resp = client.patch(f"/api/employees/{rodionov.id}", headers=admin, json={"loan_amount": None})
+        assert resp.status_code == 200, resp.text
+
+    def test_changing_only_the_term_of_a_legacy_loan_is_refused(
+        self, client, admin, db_session, rodionov,
+    ):
+        _give_loan(db_session, rodionov)
+        resp = client.patch(f"/api/employees/{rodionov.id}", headers=admin,
+                            json={"loan_term_months": 12})
+        _assert_refused(resp)
+
+    def test_card_reports_the_loan_position(self, client, admin, db_session, moonlighter):
+        """Экран блокирует заём по тому же месту, что и бэк."""
+        moonlighter.loan_position_id = _office_position(moonlighter).id
+        db_session.commit()
+        card = client.get(f"/api/employees/{moonlighter.id}", headers=admin).json()
+        assert card["loan_position_id"] == _office_position(moonlighter).id
+        # Заём на ОБЫЧНОМ месте совместителя-охранника заводится.
+        resp = client.patch(f"/api/employees/{moonlighter.id}", headers=admin, json=LOAN)
+        assert resp.status_code == 200, resp.text

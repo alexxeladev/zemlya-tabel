@@ -874,11 +874,13 @@ def save_cells_batch(
         _check_company_exists(db, cell.company_id)
 
     cells = [
-        (c.employee_id, c.work_date, c.company_id, c.hours, c.position_id)
+        (c.employee_id, c.work_date, c.company_id, c.hours, c.position_id, c.expected_version)
         for c in payload.entries
     ]
     try:
         results = upsert_cells_batch(db, actor, cells)
+    except CellConflict as exc:
+        raise _cell_conflict(exc)
     except GuardAccrualError as exc:
         raise _guard_accrual(exc)
     except PeriodLockedException as exc:

@@ -275,6 +275,8 @@ def _editable_periods(
             # Очистка часов — запись в месяц: строки периодов под разделяемой
             # блокировкой, как у любой записи (см. `lock_period`, п.1.5).
             .with_for_update(read=True, of=TimesheetPeriod)
+            # Статус — по перечитанной под блокировкой строке, как в `lock_period`.
+            .populate_existing()
             .all()
         )
     no_dept = [k for k in keys if k[0] is None]
@@ -288,6 +290,8 @@ def _editable_periods(
                 ),
             )
             .with_for_update(read=True, of=TimesheetPeriod)
+            # Статус — по перечитанной под блокировкой строке, как в `lock_period`.
+            .populate_existing()
             .all()
         )
 

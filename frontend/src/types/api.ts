@@ -810,6 +810,8 @@ export interface Employee {
   holiday_fixed_rate: string | null
   overtime_coefficient: string | null
   loan_amount: string | null
+  /** с какого рабочего места удерживается заём; null — с основного */
+  loan_position_id?: number | null
   loan_term_months: number | null
   loan_start_date: string | null
   is_active: boolean

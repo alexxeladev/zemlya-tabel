@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar as _cal
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 
@@ -170,27 +171,42 @@ def _check_expected_version(
 _CELL_UNIQUE = "uq_timesheet_employee_date_company"
 
 
-def _commit_cell_write(db: Session, lookup) -> None:
-    """Коммит правки ячейки; гонку двух редакторов превращает в `CellConflict`.
+@contextmanager
+def _cell_write(db: Session, lookup):
+    """Запись ячейки (flush + commit) — гонку редакторов превращает в `CellConflict`.
 
-    Проверка версии выше ловит устаревший экран. Двоих, прошедших её
+    Проверка `expected_version` ловит устаревший экран. Двоих, прошедших её
     ОДНОВРЕМЕННО, ловит сама база: `version_id_col` ставит версию в WHERE
     UPDATE/DELETE (опоздавший получает `StaleDataError`), а двойную вставку —
-    unique-ключ ячейки. `lookup` перечитывает ячейку уже после отката — чтобы
-    назвать в отказе актуальные часы.
+    unique-ключ ячейки (`IntegrityError`). Обе ошибки всплывают уже на FLUSH
+    внутри `_upsert_cell_no_commit`, а не на коммите, — поэтому менеджер обязан
+    охватывать ВЕСЬ блок записи, иначе опоздавший получал 500 вместо 409 (так
+    было в первой версии — нашло ревью, держит PG-тест).
+
+    `lookup` перечитывает ячейку уже после отката — чтобы назвать в отказе
+    актуальные часы. Любая другая ошибка откатывает транзакцию и летит дальше.
     """
     try:
-        db.commit()
+        yield
+    except CellConflict:
+        db.rollback()
+        raise
     except StaleDataError:
         db.rollback()
-        current = lookup()
-        raise CellConflict(int(current.hours) if current is not None else None)
+        raise _conflict_from(lookup())
     except IntegrityError as exc:
         db.rollback()
-        if _CELL_UNIQUE not in str(exc.orig) and "UNIQUE constraint failed: timesheet_entries" not in str(exc.orig):
+        cause = str(exc.orig)
+        if _CELL_UNIQUE not in cause and "UNIQUE constraint failed: timesheet_entries" not in cause:
             raise
-        current = lookup()
-        raise CellConflict(int(current.hours) if current is not None else None)
+        raise _conflict_from(lookup())
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _conflict_from(current: TimesheetEntry | None) -> CellConflict:
+    return CellConflict(int(current.hours) if current is not None else None)
 
 
 def _find_cell(
@@ -282,7 +298,8 @@ def _upsert_cell_no_commit(
 
 
 def _check_period_lock(
-    db: Session, employee_id: int, work_date: date, position_id: int | None = None
+    db: Session, employee_id: int, work_date: date, position_id: int | None = None,
+    already_locked: set[tuple[int | None, int, int]] | None = None,
 ) -> None:
     """Raises PeriodLockedException if the period for this position+date is not draft.
 
@@ -301,6 +318,14 @@ def _check_period_lock(
         return  # employee not found — let the FK check handle it
     position = emp.position_by_id(position_id)
     department_id = position.department_id if position is not None else None
+    # Батч: период одного (отдел, месяц) блокируется и проверяется ОДИН раз, а не
+    # на каждую ячейку — автозаполнение отдела это ~1500 ячеек на 1–2 периода.
+    # Блокировка держится до конца транзакции, повторять её незачем.
+    key = (department_id, work_date.year, work_date.month)
+    if already_locked is not None:
+        if key in already_locked:
+            return
+        already_locked.add(key)
     period = get_or_create_period(db, department_id, work_date.year, work_date.month)
     # Строка периода — под разделяемой блокировкой ДО проверки статуса и до конца
     # транзакции вызывающего: переход периода (submit/close) дождётся этой записи,
@@ -345,18 +370,12 @@ def upsert_cell(
             _resolve_position_id(db, employee_id, position_id),
         )
 
-    try:
+    with _cell_write(db, current_cell):
         result = _upsert_cell_no_commit(
             db, actor, employee_id, work_date, company_id, hours, position_id,
             expected_version,
         )
-    except (StaleDataError, CellConflict):
-        # Версия проверяется в WHERE самого UPDATE/DELETE, то есть конфликт может
-        # всплыть уже на flush — после снятия кода отсутствия. Откат обязателен.
-        db.rollback()
-        current = current_cell()
-        raise CellConflict(int(current.hours) if current is not None else None)
-    _commit_cell_write(db, current_cell)
+        db.commit()
     if result is not None:
         db.refresh(result)
     return result
@@ -403,7 +422,18 @@ def move_cell_company(
         raise CellNotFound()
     _check_expected_version(source, expected_version)
     hours = source.hours
-    try:
+    source_version = source.version
+    resolved_position_id = _resolve_position_id(db, employee_id, position_id)
+
+    def conflicting_cell():
+        # Опоздать можно на любой из двух ячеек. Исходная не тронута (версия та
+        # же) — значит, конфликт на ЦЕЛЕВОЙ: её и называем в отказе.
+        origin = _find_cell(db, employee_id, work_date, old_company_id, resolved_position_id)
+        if origin is None or origin.version != source_version:
+            return origin
+        return _find_cell(db, employee_id, work_date, new_company_id, resolved_position_id)
+
+    with _cell_write(db, conflicting_cell):
         _upsert_cell_no_commit(
             db, actor, employee_id, work_date, old_company_id, Decimal("0"), position_id
         )
@@ -411,16 +441,6 @@ def move_cell_company(
             db, actor, employee_id, work_date, new_company_id, hours, position_id
         )
         db.commit()
-    except StaleDataError:
-        db.rollback()
-        current = _find_cell(
-            db, employee_id, work_date, old_company_id,
-            _resolve_position_id(db, employee_id, position_id),
-        )
-        raise CellConflict(int(current.hours) if current is not None else None)
-    except Exception:
-        db.rollback()
-        raise
     db.refresh(moved)
     return moved
 
@@ -432,26 +452,46 @@ def upsert_cells_batch(
 ) -> list[TimesheetEntry | None]:
     """Transactional batch upsert — single commit for all cells.
 
-    Ячейка — (employee_id, work_date, company_id, hours[, position_id]); без
-    позиции она уходит на основную.
+    Ячейка — (employee_id, work_date, company_id, hours[, position_id[,
+    expected_version]]); без позиции она уходит на основную, без версии проверки
+    редакторов нет (автозаполнение).
     """
-    # Check period lock for all cells first
+    # Все проверки — ДО первой записи. Период блокируется один раз на (отдел,
+    # месяц), охранная позиция проверяется один раз на позицию: ни одного запроса
+    # на ячейку (см. «Производительность» в CLAUDE.md).
+    locked_periods: set[tuple[int | None, int, int]] = set()
+    hours_allowed: set[tuple[int, int | None]] = set()
     for cell in cells:
         position_id = cell[4] if len(cell) > 4 else None
-        _check_period_lock(db, cell[0], cell[1], position_id)
+        _check_period_lock(db, cell[0], cell[1], position_id, locked_periods)
         if cell[3] != Decimal("0"):
             check_employment_period(db, cell[0], cell[1], position_id)
-            _ensure_hours_allowed(db, cell[0], position_id)
+            if (cell[0], position_id) not in hours_allowed:
+                _ensure_hours_allowed(db, cell[0], position_id)
+                hours_allowed.add((cell[0], position_id))
 
     results = []
-    for cell in cells:
-        employee_id, work_date, company_id, hours = cell[:4]
-        position_id = cell[4] if len(cell) > 4 else None
-        result = _upsert_cell_no_commit(
-            db, actor, employee_id, work_date, company_id, hours, position_id
+    last: list = []
+
+    def conflicting_cell():
+        employee_id, work_date, company_id, position_id = last
+        return _find_cell(
+            db, employee_id, work_date, company_id,
+            _resolve_position_id(db, employee_id, position_id),
         )
-        results.append(result)
-    db.commit()
+
+    with _cell_write(db, conflicting_cell):
+        for cell in cells:
+            employee_id, work_date, company_id, hours = cell[:4]
+            position_id = cell[4] if len(cell) > 4 else None
+            expected_version = cell[5] if len(cell) > 5 else None
+            last[:] = [employee_id, work_date, company_id, position_id]
+            result = _upsert_cell_no_commit(
+                db, actor, employee_id, work_date, company_id, hours, position_id,
+                expected_version,
+            )
+            results.append(result)
+        db.commit()
     for r in results:
         if r is not None:
             db.refresh(r)

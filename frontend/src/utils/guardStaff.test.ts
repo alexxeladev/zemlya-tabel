@@ -129,7 +129,8 @@ test('общий ввод на охранное место закрыт одни
   assert.doesNotMatch(page, /\.is_guard_department/, 'флаг отдела читается только через utils/guardStaff')
   // Заём в карточке: по основной позиции, с возможностью снять.
   const card = read('../pages/admin/EmployeesPage.tsx')
-  assert.match(card, /const loanLocked = Boolean\(primary && isGuardPosition\(primary\)\)/)
+  assert.match(card, /p\.id === editTarget\?\.loan_position_id/, 'место займа — как у бэка, не всегда основное')
+  assert.match(card, /const loanLocked = Boolean\(loanPosition && isGuardPosition\(loanPosition\)\)/)
   assert.match(card, /Снять заём/)
 })
 

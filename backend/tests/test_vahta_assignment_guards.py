@@ -304,3 +304,44 @@ class TestScreenKnowsAboutClosedMonth:
         resp = _post(client, "admin", crew_id=gbr_place.id)
         assert resp.status_code == 409
         assert "на проверке" in resp.json()["detail"]
+
+
+class TestReviewFindings:
+    """Правки по итогам ревью."""
+
+    def test_position_of_another_guard_department_is_rejected(
+        self, client, users, db_session, gbr_place,
+    ):
+        """Менеджер охраны A не ставит на свой пост позицию охраны B: доступ
+        проверяется к отделу ПОСТА, а `position_id` приходит из запроса."""
+        from app.models.departments import Department
+
+        other_guard = Department(name="СБ Охрана-2", code="SEC-2", is_active=True,
+                                 is_guard_department=True)
+        db_session.add(other_guard)
+        db_session.commit()
+        stranger = _employee(db_session, "Чужой Охранник Иванович", other_guard, "0000-90300")
+
+        resp = _post(client, "manager", crew_id=gbr_place.id,
+                     position_id=stranger.primary_position.id)
+
+        assert resp.status_code == 422
+        assert "друго" in resp.json()["detail"].lower()
+        assert db_session.query(GuardAssignment).count() == 0
+
+    def test_write_into_a_month_without_a_period_creates_and_locks_a_draft(
+        self, client, users, db_session, guard_dept, gbr_place, rodionov,
+    ):
+        """Строки периода нет — правка заводит черновик (как запись ячейки), чтобы
+        было что блокировать от одновременной отправки на проверку."""
+        assert db_session.query(TimesheetPeriod).count() == 0
+        resp = _post(client, "admin", crew_id=gbr_place.id,
+                     position_id=rodionov.primary_position.id)
+        assert resp.status_code == 201
+        period = db_session.query(TimesheetPeriod).one()
+        assert (period.department_id, period.year, period.month, period.status) == (
+            guard_dept.id, YEAR, MONTH, "draft")
+
+    def test_reading_the_month_does_not_create_a_period(self, client, users, db_session, gbr_place):
+        client.get(f"/api/vahta/{YEAR}/{MONTH}", headers=_auth(client, "admin"))
+        assert db_session.query(TimesheetPeriod).count() == 0

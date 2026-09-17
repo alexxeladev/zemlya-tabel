@@ -2,8 +2,10 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.config import settings
 from app.database import SessionLocal
@@ -54,6 +56,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+
+@app.exception_handler(StaleDataError)
+async def stale_data_conflict(request: Request, exc: StaleDataError) -> JSONResponse:
+    """Строку успел изменить другой запрос → 409, а не 500 (task_stage1 п.1.5).
+
+    У ячейки табеля есть версия (`TimesheetEntry.version`, `version_id_col`), и
+    она стоит в WHERE любого ORM-UPDATE/DELETE. Правка часов переводит опоздание
+    в 409 сама (`services/timesheet._cell_write`); сюда попадают ОСТАЛЬНЫЕ
+    писатели ячеек — код отсутствия (он удаляет часы дня), очистка часов при
+    смене дат, перенос отдела. Транзакция запроса откатывается при закрытии
+    сессии в `get_db`, в базе ничего не меняется.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": (
+            "Данные табеля только что изменил другой пользователь — "
+            "обновите страницу и повторите действие"
+        )},
+    )
+
 
 app.include_router(auth_router, prefix="/api", tags=["auth"])
 app.include_router(departments_router, prefix="/api/departments", tags=["departments"])
