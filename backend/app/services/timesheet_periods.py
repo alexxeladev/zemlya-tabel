@@ -25,6 +25,27 @@ class PeriodLockedException(Exception):
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+def is_month_closed(
+    db: Session, department_id: int | None, year: int, month: int
+) -> bool:
+    """Закрыт ли месяц отдела. Период НЕ создаётся: нет строки — не закрыт.
+
+    Нужен там, где правка не является ячейкой табеля, но меняет цифры месяца —
+    назначения вахты (task_stage1 п.1.4). В отличие от `can_edit_cells`
+    блокирует только `closed`: `pending_review` — ещё не «бухгалтерия видела».
+    """
+    query = db.query(TimesheetPeriod.id).filter(
+        TimesheetPeriod.year == year,
+        TimesheetPeriod.month == month,
+        TimesheetPeriod.status == "closed",
+    )
+    if department_id is None:
+        query = query.filter(TimesheetPeriod.department_id.is_(None))
+    else:
+        query = query.filter(TimesheetPeriod.department_id == department_id)
+    return query.first() is not None
+
+
 def _can_edit(period: TimesheetPeriod) -> bool:
     return period.status == "draft"
 

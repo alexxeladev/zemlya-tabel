@@ -476,6 +476,32 @@ def default_rate(place) -> Decimal:
     return Decimal(str(place.shift_rate)) if place is not None else _ZERO
 
 
+def ensure_guard_position(db: Session, position: EmployeePosition | None) -> None:
+    """На место работы охраны встаёт ТОЛЬКО рабочее место охранного подразделения
+    (task_stage1 п.1.4). Пустой слот (`None`) законен.
+
+    Позиция с назначением вахты считается в ведомости модулем вахты, а не общим
+    расчётом (`guard_statement.load_guard_rows`). Поэтому постановка на пост
+    ЛЮБОЙ позиции подменяла её зарплату вахтовой: окладник обычного отдела с
+    86 087 ₽ превращался в «31 смену × ставка поста». Предикат — тот же
+    `is_guard_position`, что у владения штатом; второй копии не заводим.
+
+    Проверка стоит в сервисе, а не в роутере: через `create_assignment` идут и
+    постановка, и замена, и быстрый найм — новый эндпойнт её не обойдёт.
+    """
+    if position is None:
+        return
+    # Локальный импорт: guard_staff сам импортирует этот модуль.
+    from app.services.guard_staff import is_guard_position
+
+    if not is_guard_position(db, position):
+        raise GuardError(
+            "На пост можно поставить только рабочее место охранного подразделения. "
+            "Сотруднику другого отдела заведите рабочее место в охране — "
+            "выберите его по ФИО, а не по существующей должности"
+        )
+
+
 def create_assignment(
     db: Session,
     *,
@@ -497,6 +523,7 @@ def create_assignment(
     задана — берётся та, что для этого места обычна: у экипажа ГБР, у поста
     охранник.
     """
+    ensure_guard_position(db, position)
     is_post = isinstance(place, GuardPost)
     assignment = GuardAssignment(
         year=year,
@@ -642,6 +669,9 @@ def replace_on_post(
     last_day = monthrange(assignment.year, assignment.month)[1]
     if not 1 <= from_day <= last_day:
         raise GuardError("Число замены вне месяца")
+    # Замена с первого числа меняет человека в САМОЙ строке, мимо
+    # create_assignment — поэтому проверка здесь, на обе ветки сразу.
+    ensure_guard_position(db, position)
 
     days = marked_days(assignment)
     kept = {d for d in days if d < from_day}
@@ -699,12 +729,17 @@ def copy_previous_period(
         place = old.place
         if place is None or not place.is_active:
             continue
+        # Рабочее место, которое с прошлого месяца перевели из охраны, на пост
+        # не переносим: место копируется пустым слотом (task_stage1 п.1.4).
+        from app.services.guard_staff import is_guard_position
+
+        position_id = old.position_id if is_guard_position(db, old.position) else None
         new = GuardAssignment(
             year=year,
             month=month,
             post_id=old.post_id,
             crew_id=old.crew_id,
-            position_id=old.position_id,
+            position_id=position_id,
             kind=old.kind,
             rate=old.rate,
             is_official=old.is_official,

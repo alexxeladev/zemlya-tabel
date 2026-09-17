@@ -66,6 +66,7 @@ from app.services.guard_payroll import (
     half_bounds,
 )
 from app.services.org_access import can_see_finances
+from app.services.timesheet_periods import is_month_closed
 
 _ZERO = Decimal("0")
 
@@ -208,6 +209,11 @@ def build_guard_month(
 
     with_money = can_see_finances(actor)
     tax_percent = employer_tax_percent(db)
+    # Закрытый месяц: бэк отклонит любую правку назначения, поэтому экран гасит
+    # управление заранее. Охранное подразделение обычно одно; если их несколько
+    # и закрыто хотя бы одно — экран «все подразделения» только для чтения, а
+    # открытое правится через выбор своего подразделения.
+    period_closed = any(is_month_closed(db, d, year, month) for d in department_ids)
     assignments = list_assignments(db, year, month, department_ids)
     zones = list_zones(db, department_ids)
 
@@ -332,6 +338,7 @@ def build_guard_month(
         employer_tax_percent=tax_percent if with_money else None,
         halves=half_totals,
         company_totals=company_totals,
-        can_edit=actor.role in ("admin", "manager", "timekeeper"),
+        can_edit=actor.role in ("admin", "manager", "timekeeper") and not period_closed,
+        period_closed=period_closed,
         can_see_money=with_money,
     )

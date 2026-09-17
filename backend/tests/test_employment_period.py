@@ -741,6 +741,9 @@ class TestVahta:
     def vahta(self, db_session, company, dept, schedule):
         from app.models.guard_posts import GuardPost, GuardSite, GuardZone
 
+        # На пост встают только рабочие места ОХРАННОГО подразделения
+        # (task_stage1 п.1.4) — отдел фикстуры обязан быть охранным.
+        dept.is_guard_department = True
         zone = GuardZone(name="Зона 1", department_id=dept.id)
         db_session.add(zone)
         db_session.flush()

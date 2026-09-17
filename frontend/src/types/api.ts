@@ -1131,6 +1131,8 @@ export interface VahtaMonth {
   }[]
   company_totals: { company_id: number; amount: string }[]
   can_edit: boolean
+  /** Период табеля охранного подразделения закрыт — правки вахты бэк отклоняет (409). */
+  period_closed?: boolean
   can_see_money: boolean
 }
 

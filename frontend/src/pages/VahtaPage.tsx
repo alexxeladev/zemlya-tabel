@@ -400,7 +400,7 @@ const PersonRow = memo(
 export function VahtaPage() {
   const { year, month, setPeriod } = usePeriodStore()
   const role = useAuthStore((s) => s.user?.role)
-  const canManage = role === 'admin' || role === 'manager'
+  const roleCanManage = role === 'admin' || role === 'manager'
   const canOpenCard = role === 'admin' || role === 'manager' || role === 'accountant'
 
   // Режим отображения: месяц целиком или расчётная половина. Запоминается между
@@ -449,6 +449,10 @@ export function VahtaPage() {
   const places = useMemo(() => placesOf(sites, crews), [sites, crews])
   const showMoney = Boolean(data?.can_see_money)
   const canEdit = Boolean(data?.can_edit)
+  // Закрытый месяц: бэк отклоняет любую правку назначений (409), поэтому и
+  // кнопки «поставить / заменить / убрать», и правка сумм гаснут вместе с днями.
+  const periodClosed = Boolean(data?.period_closed)
+  const canManage = roleCanManage && !periodClosed
   const filtering = Boolean(query || zoneFilter || kindFilter)
 
   const placesOfCard = useCallback(
@@ -817,6 +821,13 @@ export function VahtaPage() {
           </span>
         </div>
       </div>
+
+      {periodClosed && (
+        <p className="border-b border-amber-200 bg-amber-50 px-5 py-1.5 text-[12px] text-amber-800">
+          Период закрыт — назначения, смены и суммы вахты за этот месяц не меняются.
+          Чтобы внести правку, период нужно переоткрыть.
+        </p>
+      )}
 
       {canEdit && (
         <p className="border-b border-slate-200 px-5 py-1.5 text-[11.5px] text-slate-500">

@@ -111,6 +111,7 @@ from app.services.guard_staff import (
 )
 from app.services.guard_month import build_guard_month
 from app.services.org_access import can_see_finances
+from app.services.timesheet_periods import is_month_closed
 
 router = APIRouter()
 
@@ -140,6 +141,26 @@ def _require_money(actor: Employee) -> None:
 
 def _guard_error(exc: GuardError) -> HTTPException:
     return HTTPException(status_code=422, detail=str(exc))
+
+
+def _require_open_month(
+    db: Session, department_id: int | None, year: int, month: int
+) -> None:
+    """Назначения вахты в ЗАКРЫТОМ месяце не меняются (task_stage1 п.1.4).
+
+    Своих статусов у вахты нет: закрытым считается период табеля охранного
+    подразделения за этот месяц. Снапшота расчёта в системе нет, поэтому любая
+    правка назначения — человек, дни, ставка, премия — пересчитала бы ведомость,
+    которую бухгалтерия уже видела. Нужно поправить — период переоткрывает admin.
+    """
+    if is_month_closed(db, department_id, year, month):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Период {month:02d}.{year} закрыт — назначения вахты в нём не "
+                "меняются. Переоткройте период, чтобы внести правку"
+            ),
+        )
 
 
 def _access(db: Session, actor: Employee, department_id: int) -> None:
@@ -614,6 +635,16 @@ def _assignment_or_404(db: Session, actor: Employee, assignment_id: int) -> Guar
     return assignment
 
 
+def _editable_assignment_or_404(
+    db: Session, actor: Employee, assignment_id: int
+) -> GuardAssignment:
+    """Строка для ПРАВКИ: доступ к отделу плюс незакрытый месяц. Все мутации
+    назначения берут строку отсюда — проверку периода нельзя забыть по месту."""
+    assignment = _assignment_or_404(db, actor, assignment_id)
+    _require_open_month(db, assignment.department_id, assignment.year, assignment.month)
+    return assignment
+
+
 def _resolve_position(
     db: Session,
     place,
@@ -709,6 +740,7 @@ def post_assignment(
     """Поставить на место работы одного человека, нескольких сразу или пустой слот."""
     _require_vahta(actor)
     place = _place_or_404(db, actor, payload.post_id, payload.crew_id)
+    _require_open_month(db, place.department_id, payload.year, payload.month)
     if payload.rate is not None:
         _require_money(actor)
     if payload.kind is not None and payload.kind not in GUARD_KINDS:
@@ -725,10 +757,13 @@ def post_assignment(
                 db, place, None, employee_id, payload.rate,
                 payload.year, payload.month, payload.kind,
             )
-            assignment = create_assignment(
-                db, year=payload.year, month=payload.month, place=place,
-                position=position, rate=payload.rate, kind=payload.kind,
-            )
+            try:
+                assignment = create_assignment(
+                    db, year=payload.year, month=payload.month, place=place,
+                    position=position, rate=payload.rate, kind=payload.kind,
+                )
+            except GuardError as exc:
+                raise _guard_error(exc)
             log_action(
                 db, actor, "guard_assignment", assignment.id, "create",
                 after={"place": place.name, "position_id": assignment.position_id},
@@ -742,15 +777,20 @@ def post_assignment(
         db, place, payload.position_id, payload.employee_id, payload.rate,
         payload.year, payload.month, payload.kind,
     )
-    assignment = create_assignment(
-        db,
-        year=payload.year,
-        month=payload.month,
-        place=place,
-        position=position,
-        rate=payload.rate,
-        kind=payload.kind,
-    )
+    try:
+        assignment = create_assignment(
+            db,
+            year=payload.year,
+            month=payload.month,
+            place=place,
+            position=position,
+            rate=payload.rate,
+            kind=payload.kind,
+        )
+    except GuardError as exc:
+        # Сюда приходит и «позиция не охранная»: `position_id` из запроса может
+        # указывать на любое рабочее место компании (task_stage1 п.1.4).
+        raise _guard_error(exc)
     log_action(
         db, actor, "guard_assignment", assignment.id, "create",
         after={"place": place.name, "position_id": assignment.position_id},
@@ -772,7 +812,7 @@ def patch_assignment(
     табельщику эндпойнт закрыт целиком: смены он ведёт другими вызовами.
     """
     _require_vahta(actor)
-    assignment = _assignment_or_404(db, actor, assignment_id)
+    assignment = _editable_assignment_or_404(db, actor, assignment_id)
     data = payload.model_dump(exclude_unset=True)
     # Должность — не деньги: её правит и табельщик. Всё остальное в этой форме
     # денежное, поэтому финансовая проверка стоит на нём.
@@ -799,7 +839,7 @@ def remove_assignment(
     actor: Employee = Depends(get_current_user),
 ):
     _require_vahta(actor)
-    assignment = _assignment_or_404(db, actor, assignment_id)
+    assignment = _editable_assignment_or_404(db, actor, assignment_id)
     log_action(db, actor, "guard_assignment", assignment_id, "delete")
     delete_assignment(db, assignment)
     db.commit()
@@ -814,7 +854,7 @@ def put_day(
 ):
     """Отметить или снять один день выхода."""
     _require_vahta(actor)
-    assignment = _assignment_or_404(db, actor, payload.assignment_id)
+    assignment = _editable_assignment_or_404(db, actor, payload.assignment_id)
     try:
         toggle_day(db, assignment, payload.day, payload.value)
     except GuardError as exc:
@@ -835,7 +875,7 @@ def put_days(
 ):
     """«Отметить все» / «снять все»: набор дней строки целиком."""
     _require_vahta(actor)
-    assignment = _assignment_or_404(db, actor, payload.assignment_id)
+    assignment = _editable_assignment_or_404(db, actor, payload.assignment_id)
     set_days(db, assignment, set(payload.days))
     log_action(
         db, actor, "guard_assignment", assignment.id, "shifts",
@@ -853,7 +893,7 @@ def post_replace(
 ):
     """Замена на посту: дни с указанного числа уходят сменщику."""
     _require_vahta(actor)
-    assignment = _assignment_or_404(db, actor, payload.assignment_id)
+    assignment = _editable_assignment_or_404(db, actor, payload.assignment_id)
     if payload.rate is not None:
         _require_money(actor)
     position = _resolve_position(
@@ -888,8 +928,11 @@ def post_copy_previous(
     """Скопировать состав, посты и ставки предыдущего месяца."""
     _require_vahta(actor)
     _require_settings(actor)
+    department_ids = guard_department_ids(db, actor)
+    for department_id in department_ids:
+        _require_open_month(db, department_id, year, month)
     try:
-        copied = copy_previous_period(db, year, month, guard_department_ids(db, actor))
+        copied = copy_previous_period(db, year, month, department_ids)
     except GuardError as exc:
         raise _guard_error(exc)
     log_action(
@@ -932,6 +975,10 @@ def post_quick_hire(
     _require_vahta(actor)
     _require_settings(actor)
     place = _place_or_404(db, actor, payload.post_id, payload.crew_id)
+    # Проверка ДО найма: иначе в закрытом месяце остался бы заведённый сотрудник
+    # без постановки на пост.
+    if payload.assign and payload.year and payload.month:
+        _require_open_month(db, place.department_id, payload.year, payload.month)
     try:
         employee, position = quick_hire(
             db, full_name=payload.full_name, place=place, rate=payload.rate,
