@@ -12,6 +12,7 @@ import { PayrollPage } from '../pages/admin/PayrollPage'
 import { TimesheetPage } from '../pages/TimesheetPage'
 import { VahtaPage } from '../pages/VahtaPage'
 import { VahtaSettingsPage } from '../pages/admin/VahtaSettingsPage'
+import { VahtaStaffPage } from '../pages/admin/VahtaStaffPage'
 import { TasksPage } from '../pages/TasksPage'
 import { PrivateRoute } from './PrivateRoute'
 import { useAuthStore } from '../store/auth'
@@ -64,6 +65,16 @@ export function AppRouter() {
               element={
                 <RoleRoute allow={['admin', 'manager']}>
                   <VahtaSettingsPage />
+                </RoleRoute>
+              }
+            />
+            {/* Сотрудники охраны (task_guard_ownership): штат охранных
+                подразделений ведётся здесь — админ и менеджер охраны. */}
+            <Route
+              path="/vahta/staff"
+              element={
+                <RoleRoute allow={['admin', 'manager']}>
+                  <VahtaStaffPage />
                 </RoleRoute>
               }
             />

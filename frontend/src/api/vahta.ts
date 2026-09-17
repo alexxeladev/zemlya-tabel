@@ -11,6 +11,8 @@ import type {
   VahtaSimilarEmployee,
   VahtaSettings,
   VahtaSite,
+  VahtaStaff,
+  VahtaStaffInput,
   VahtaZone,
 } from '../types/api'
 import { apiClient } from './client'
@@ -234,3 +236,20 @@ export const listVahtaCandidates = (year: number, month: number) =>
 
 export const vahtaExcelUrl = (year: number, month: number) =>
   `/api/vahta/${year}/${month}/export/excel`
+
+// ── Сотрудники охраны (task_guard_ownership) ──────────────────────────────
+/** Штат охраны: строка на рабочее место. Пост и официальность — за месяц. */
+export const listVahtaStaff = (year: number, month: number) =>
+  apiClient
+    .get<VahtaStaff[]>('/api/vahta/staff', { params: { year, month } })
+    .then((r) => r.data)
+
+export const createVahtaStaff = (data: VahtaStaffInput) =>
+  apiClient.post<VahtaStaff>('/api/vahta/staff', data).then((r) => r.data)
+
+/** Подразделение вне охраны — перевод: без `confirm` бэк отвечает 409 с
+ *  причинами, по которым место не войдёт в расчёт. */
+export const updateVahtaStaff = (positionId: number, data: VahtaStaffInput, confirm = false) =>
+  apiClient
+    .patch<VahtaStaff>(`/api/vahta/staff/${positionId}`, data, { params: confirm ? { confirm } : {} })
+    .then((r) => r.data)

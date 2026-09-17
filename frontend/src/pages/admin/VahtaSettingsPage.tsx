@@ -425,12 +425,20 @@ export function VahtaSettingsPage() {
             официальную выплату
           </p>
         </div>
-        <Link
-          to="/vahta"
-          className="rounded-md bg-gray-100 px-3 py-1.5 text-sm text-gray-800 hover:bg-gray-200"
-        >
-          ← К табелю
-        </Link>
+        <div className="flex gap-2">
+          <Link
+            to="/vahta/staff"
+            className="rounded-md bg-gray-100 px-3 py-1.5 text-sm text-gray-800 hover:bg-gray-200"
+          >
+            Сотрудники охраны
+          </Link>
+          <Link
+            to="/vahta"
+            className="rounded-md bg-gray-100 px-3 py-1.5 text-sm text-gray-800 hover:bg-gray-200"
+          >
+            ← К табелю
+          </Link>
+        </div>
       </div>
 
       <TaxRateSetting editable={canManage} />

@@ -43,7 +43,12 @@ export const updateDepartment = (
     quantity_part2_name: string | null
     is_active: boolean
   }>,
-) => apiClient.patch<Department>(`/api/departments/${id}`, data).then((r) => r.data)
+  /** подтвердить снятие флага охраны у отдела с сотрудниками (task_guard_ownership) */
+  confirm = false,
+) =>
+  apiClient
+    .patch<Department>(`/api/departments/${id}`, data, { params: confirm ? { confirm } : {} })
+    .then((r) => r.data)
 
 export const deleteDepartment = (id: number) =>
   apiClient.delete(`/api/departments/${id}`)

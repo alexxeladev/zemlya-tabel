@@ -796,6 +796,14 @@ export function VahtaPage() {
           )}
           {canManage && (
             <Link
+              to="/vahta/staff"
+              className="rounded-md bg-slate-100 px-3 py-1.5 text-sm text-slate-800 hover:bg-slate-200"
+            >
+              Сотрудники
+            </Link>
+          )}
+          {canManage && (
+            <Link
               to="/vahta/posts"
               className="rounded-md bg-slate-100 px-3 py-1.5 text-sm text-slate-800 hover:bg-slate-200"
             >

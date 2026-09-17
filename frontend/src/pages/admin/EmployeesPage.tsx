@@ -29,6 +29,7 @@ import { Select } from '../../components/Select'
 import { SharesEditor } from '../../components/SharesEditor'
 import { EmployeeImportModal } from './EmployeeImportModal'
 import { PositionsEditor } from './PositionsEditor'
+import { isGuardDepartment, isGuardPosition } from '../../utils/guardStaff'
 import { ApiError } from '../../api/client'
 import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
 import { copyText } from '../../utils/clipboard'
@@ -163,7 +164,9 @@ export function EmployeesPage() {
 
   const deptOptions = [
     { value: 0, label: '— без отдела —' },
-    ...(departments?.map((d) => ({ value: d.id, label: d.name })) ?? []),
+    // Сотрудников охраны оформляют в вахте (task_guard_ownership) — при
+    // создании здесь её подразделений нет, бэк такой найм отклоняет.
+    ...(departments?.filter((d) => !isGuardDepartment(d)).map((d) => ({ value: d.id, label: d.name })) ?? []),
   ]
   const companyOptions = [
     { value: 0, label: '— не указана —' },
@@ -816,11 +819,13 @@ export function EmployeesPage() {
           {/* Section 3b-3 — Распределение затрат по юрлицам по умолчанию (3.11b п.1).
               Проценты задаются РАБОЧЕМУ МЕСТУ: у совместителя каждое разносится
               по юрлицам отдельно. */}
-          {editTarget && !isMgr && (
+          {/* Распределение охранного рабочего места берётся от места работы в
+              вахте — в карточке задаются проценты только обычных позиций. */}
+          {editTarget && !isMgr && (editTarget.positions ?? []).some((p) => p.is_active && !isGuardPosition(p)) && (
             <CompanySharesEditor
               employeeId={editTarget.id}
               companies={companies ?? []}
-              positions={editTarget.positions ?? []}
+              positions={(editTarget.positions ?? []).filter((p) => !isGuardPosition(p))}
             />
           )}
 

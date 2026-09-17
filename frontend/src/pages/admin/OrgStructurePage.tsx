@@ -51,6 +51,7 @@ import { Button } from '../../components/Button'
 import { Confirm } from '../../components/Confirm'
 import { Modal } from '../../components/Modal'
 import { PageHeader } from '../../components/PageHeader'
+import { GUARD_CONFIRM_CANCELLED, withGuardConfirm } from '../../utils/guardStaff'
 
 type CompanyForm = {
   id?: number
@@ -430,7 +431,18 @@ export function OrgStructurePage() {
     setSaving(true)
     try {
       if (deptForm.id) {
-        await updateDepartment(deptForm.id, payload)
+        // Снятие флага охраны у отдела с людьми: их рабочие места уходят из
+        // вахты в общий справочник и могут не войти в расчёт. Бэк не
+        // запрещает, а спрашивает (409) — task_guard_ownership.
+        const deptId = deptForm.id
+        const saved = await withGuardConfirm(
+          (confirm) => updateDepartment(deptId, payload, confirm),
+          (message) => window.confirm(message),
+        )
+        if (saved === GUARD_CONFIRM_CANCELLED) {
+          toast.info('Сохранение отменено — ничего не изменилось')
+          return
+        }
         // Пустой список очищает дефолт отдела — сотрудники уходят на авто по часам.
         await setDepartmentShares(deptForm.id, shareList)
         toast.success('Отдел обновлён')

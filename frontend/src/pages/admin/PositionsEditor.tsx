@@ -11,11 +11,13 @@
 // разъехались бы.
 
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   createPosition, deletePosition, listPositions, makePositionPrimary, updatePosition,
 } from '../../api/employees'
 import { ApiError } from '../../api/client'
 import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
+import { GUARD_STAFF_PATH, isGuardDepartment, isGuardPosition } from '../../utils/guardStaff'
 import { toast } from '../../store/toasts'
 import type {
   Company, Department, EmployeePosition, EmployeePositionInput, PayType, Schedule, WeekendPayType,
@@ -294,6 +296,17 @@ export function PositionsEditor({
               <span className="text-xs text-gray-500">{PAY_TYPE_LABELS[p.pay_type]}</span>
               <span className="font-mono text-xs text-gray-700">{positionRateLabel(p)}</span>
               <span className="flex-1" />
+              {/* Рабочее место охраны ведёт вахта (task_guard_ownership): здесь
+                  только просмотр, бэк правку всё равно отклонит. */}
+              {isGuardPosition(p) && (
+                <Link
+                  to={GUARD_STAFF_PATH}
+                  className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-200"
+                  title="Рабочее место охранного подразделения правится только в модуле «Вахта»"
+                >
+                  ведётся в модуле «Вахта» →
+                </Link>
+              )}
               {!readOnly && editing === null && (
                 <div className="flex gap-1.5">
                   {!p.is_primary && p.is_active && (
@@ -307,14 +320,16 @@ export function PositionsEditor({
                       Сделать основной
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => startEdit(p)}
-                    className="rounded border border-gray-300 px-2 py-0.5 text-[11px] text-gray-600 hover:bg-gray-50"
-                  >
-                    Изменить
-                  </button>
-                  {!p.is_primary && activeCount > 1 && (
+                  {!isGuardPosition(p) && (
+                    <button
+                      type="button"
+                      onClick={() => startEdit(p)}
+                      className="rounded border border-gray-300 px-2 py-0.5 text-[11px] text-gray-600 hover:bg-gray-50"
+                    >
+                      Изменить
+                    </button>
+                  )}
+                  {!p.is_primary && activeCount > 1 && !isGuardPosition(p) && (
                     <button
                       type="button"
                       disabled={busy}
@@ -357,16 +372,21 @@ export function PositionsEditor({
               Расчёт по нему идёт отдельно: свой оклад, график и норма. «К выплате»
               с разных позиций не суммируется — платят разные компании.
             </p>
+            {/* Новое рабочее место охраны заводят в вахте — здесь его отделов нет. */}
             <PositionForm
               draft={draft}
               setDraft={setDraft}
-              departments={departments}
+              departments={departments.filter((d) => !isGuardDepartment(d))}
               companies={companies}
               schedules={schedules}
               busy={busy}
               onSave={save}
               onCancel={() => setEditing(null)}
             />
+            <p className="mt-1 text-[11px] text-gray-500">
+              Рабочее место в охране оформляется в{' '}
+              <Link to={GUARD_STAFF_PATH} className="underline">модуле «Вахта»</Link>.
+            </p>
           </div>
         )}
       </div>
@@ -436,6 +456,12 @@ function PositionForm({
             <option value="">— без отдела —</option>
             {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
+          {isGuardDepartment(departments.find((d) => String(d.id) === draft.department_id)) && (
+            <span className="text-[11px] leading-tight text-amber-700">
+              Подразделение охраны: после сохранения рабочее место ведётся в
+              модуле «Вахта», график и коэффициенты перестают учитываться.
+            </span>
+          )}
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-xs font-medium text-gray-700">График</span>

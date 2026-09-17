@@ -888,6 +888,38 @@ export interface EmployeeImportResult {
 /** Должность поста: охранник, ГБР и диспетчер посменно, начальник фикс-окладом. */
 export type VahtaKind = 'guard' | 'gbr' | 'dispatcher' | 'chief'
 
+/** Строка экрана «Сотрудники охраны» — рабочее место в охранном подразделении
+ *  (task_guard_ownership). Пост и официальность — за выбранный месяц. */
+export interface VahtaStaff {
+  employee_id: number
+  position_id: number
+  full_name: string
+  tab_number: string | null
+  department_id: number
+  department_name: string
+  kind: VahtaKind
+  kind_label: string
+  pay_type: PayType
+  /** оклад за месяц у начальника, ставка за смену у остальных */
+  amount: string | null
+  /** период работы на этом месте */
+  hire_date: string | null
+  dismissal_date: string | null
+  employee_is_active: boolean
+  places: string[]
+  is_official: boolean | null
+}
+
+export interface VahtaStaffInput {
+  full_name?: string
+  tab_number?: string | null
+  department_id?: number
+  kind?: VahtaKind
+  amount?: string | null
+  hire_date?: string | null
+  dismissal_date?: string | null
+}
+
 export interface VahtaDepartment {
   id: number
   name: string
