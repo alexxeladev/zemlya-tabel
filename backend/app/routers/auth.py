@@ -9,6 +9,8 @@ from app.database import get_db
 from app.models.employees import Employee
 from app.schemas.auth import ChangePasswordRequest, LoginRequest, TokenResponse
 from app.schemas.employee import EmployeeRead
+from app.services.finance_masking import mask_employee
+from app.services.org_access import hides_finances
 
 router = APIRouter()
 
@@ -48,4 +50,9 @@ def change_password(
 
 @router.get("/auth/me", response_model=EmployeeRead)
 def me(current_emp: Employee = Depends(get_current_user)):
+    # Своя карточка — тоже карточка: табельщику она отдаётся без денег, так же
+    # как `GET /employees/{id}`. Иначе через вложенный отдел утекал фонд ночных
+    # смен, а через саму карточку — оклад, коэффициенты и заём (task_stage1 п.1.3).
+    if hides_finances(current_emp):
+        return mask_employee(EmployeeRead.model_validate(current_emp))
     return current_emp

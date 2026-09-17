@@ -31,6 +31,7 @@ from app.services.department_move import (
     build_preview,
     move_department,
 )
+from app.services.finance_masking import mask_department
 from app.services.guard_staff import guard_flag_removal_report
 from app.services.org_access import (
     hides_finances,
@@ -70,9 +71,9 @@ def _read(dept: Department, actor: Employee) -> DepartmentRead:
     табельщику он не отдаётся (task_timekeeper_role). Число смен и остаток
     лимита ему видны отдельно, в табеле."""
     data = DepartmentRead.model_validate(dept)
-    if hides_finances(actor):
-        data.night_shift_fund = None
-    return data
+    # Список денежных полей отдела — один, в finance_masking: тот же отдел
+    # приходит ещё и вложенным в сотрудника и позицию.
+    return mask_department(data) if hides_finances(actor) else data
 
 
 def _check_night_fund(value: Decimal | None) -> None:

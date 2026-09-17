@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from app.schemas.department import DepartmentRead
 from app.schemas.employee import EmployeeRead
 from app.schemas.payroll import PayrollSummaryRead
 from app.schemas.position import EmployeePositionRead
@@ -43,6 +44,20 @@ FINANCIAL_EMPLOYEE_FIELDS = FINANCIAL_POSITION_FIELDS + (
 )
 
 
+# Денежные поля ОТДЕЛА. Фонд ночных смен: ставка смены = фонд / дни месяца, а
+# число смен табельщик видит — по фонду надбавка восстанавливается целиком.
+FINANCIAL_DEPARTMENT_FIELDS = ("night_shift_fund",)
+
+# ВЛОЖЕННЫЕ объекты карточки и позиции → чем их чистить (task_stage1 п.1.3).
+# Списки выше покрывают только поля верхнего уровня схемы: отдел, вложенный в
+# сотрудника и в позицию, шёл мимо маскирования, и фонд ночных утекал в табеле,
+# списке сотрудников, позициях и `/auth/me`. Появится денежное поле у юрлица
+# или графика — дописать сюда пару (имя вложенного поля, список его полей).
+_NESTED_FINANCIAL_FIELDS = {
+    "department": FINANCIAL_DEPARTMENT_FIELDS,
+}
+
+
 def _blank(model, fields: tuple[str, ...]):
     """Копия схемы с обнулёнными полями. Копия, а не правка на месте: тот же
     объект может уйти в другой ответ, а модели Pydantic здесь строятся из ORM.
@@ -50,8 +65,18 @@ def _blank(model, fields: tuple[str, ...]):
     Поля, которых у схемы нет, пропускаем: `model_copy` их не валидирует и молча
     завёл бы лишний атрибут вместо того, чтобы что-то скрыть.
     """
-    update = {f: None for f in fields if f in type(model).model_fields}
+    update: dict[str, object] = {
+        f: None for f in fields if f in type(model).model_fields
+    }
+    for nested, nested_fields in _NESTED_FINANCIAL_FIELDS.items():
+        value = getattr(model, nested, None)
+        if value is not None:
+            update[nested] = _blank(value, nested_fields)
     return model.model_copy(update=update)
+
+
+def mask_department(department: DepartmentRead) -> DepartmentRead:
+    return _blank(department, FINANCIAL_DEPARTMENT_FIELDS)
 
 
 def mask_position(position: EmployeePositionRead) -> EmployeePositionRead:
