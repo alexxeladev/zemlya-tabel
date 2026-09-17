@@ -6,7 +6,6 @@
 // какие кнопки прятать и куда вести. Признак берётся из пришедшего с бэка
 // `department.is_guard_department`, своего правила у фронта нет.
 
-import type { Department, EmployeePosition } from '../types/api'
 
 export type GuardKind = 'guard' | 'gbr' | 'dispatcher' | 'chief'
 
@@ -20,14 +19,26 @@ export const GUARD_KIND_OPTIONS: { value: GuardKind; label: string }[] = [
 /** Путь экрана «Сотрудники охраны». */
 export const GUARD_STAFF_PATH = '/vahta/staff'
 
-export function isGuardDepartment(dept: Pick<Department, 'is_guard_department'> | null | undefined): boolean {
+export function isGuardDepartment(dept: { is_guard_department?: boolean } | null | undefined): boolean {
   return Boolean(dept?.is_guard_department)
 }
 
 /** Рабочее место в охранном подразделении — правится в вахте, а не в карточке. */
-export function isGuardPosition(p: Pick<EmployeePosition, 'department'>): boolean {
+export function isGuardPosition(
+  // Структурный тип, а не `EmployeePosition`: у табеля своя, урезанная форма позиции.
+  p: { department?: { is_guard_department?: boolean } | null },
+): boolean {
   return isGuardDepartment(p.department)
 }
+
+/**
+ * Почему общий ввод на охранном рабочем месте закрыт (аудит 2-Г). Часы,
+ * премии/KPI/аванс и заём для него бэк отклоняет (403): позицию считает модуль
+ * вахты, и общий ввод расчётом игнорировался. Экран ввод не даёт, а уже
+ * введённое до запрета оставляет снимаемым.
+ */
+export const GUARD_ACCRUAL_HINT =
+  'Охранное рабочее место: смены, премии, штрафы и выплаты ведутся в модуле «Вахта»'
 
 /**
  * Подпись поля суммы в форме. Тип оплаты следует из ДОЛЖНОСТИ: у начальника

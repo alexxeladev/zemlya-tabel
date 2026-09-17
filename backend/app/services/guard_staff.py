@@ -146,6 +146,72 @@ def ensure_position_owned_outside_vahta(
         raise GuardOwnedError()
 
 
+# ── Начисления основной системы на охранной позиции (аудит 2-Г) ───────────────
+
+class GuardAccrualError(GuardOwnedError):
+    """Часы, премия/KPI/аванс или заём адресованы охранной позиции.
+
+    Позицию охранного подразделения считает модуль вахты: часов в табеле у
+    охранника нет, премия, штраф и официальная выплата у вахты свои. Общий ввод
+    для неё раньше принимался и молча игнорировался расчётом — а в месяц без
+    назначения на пост вдруг учитывался. Теперь он отклоняется на входе.
+
+    Наследник `GuardOwnedError`: это то же правило «охранное ведёт вахта», и
+    роутеры отвечают тем же 403.
+    """
+
+
+_GUARD_ACCRUAL_MESSAGE = (
+    "{what} для рабочего места охранного подразделения не {verb}: его смены, "
+    "премии, штрафы и выплаты ведутся в модуле «Вахта»"
+)
+
+
+def ensure_no_guard_accrual(
+    db: Session, position: EmployeePosition | None, what: str, verb: str = "вводятся"
+) -> None:
+    """ЕДИНСТВЕННОЕ место запрета общего ввода на охранную позицию.
+
+    Зовут все точки входа: часы (ячейка, батч, перенос юрлица), премии/KPI/аванс,
+    заём (карточка и ручная правка удержания). Автозаполнение такие позиции
+    пропускает с причиной. СНЯТИЕ (часы в 0, удаление премии, очистка займа)
+    сюда не приходит — оно разрешено всегда, иначе введённое до запрета было бы
+    нечем убрать.
+    """
+    if is_guard_position(db, position):
+        raise GuardAccrualError(_GUARD_ACCRUAL_MESSAGE.format(what=what, verb=verb))
+
+
+GUARD_AUTOFILL_SKIP_REASON = (
+    "Охранное рабочее место — смены ведутся в модуле «Вахта», табель не заполняется"
+)
+
+LOAN_FIELDS = ("loan_amount", "loan_term_months", "loan_start_date")
+
+
+def loan_position(employee: Employee) -> EmployeePosition | None:
+    """Рабочее место, с которого удерживается заём: `loan_position_id`, а у займов
+    без него — основная (так же читает расчёт, `_loan_belongs_to`)."""
+    if employee.loan_position_id is not None:
+        return employee.position_by_id(employee.loan_position_id)
+    return employee.primary_position
+
+
+def ensure_loan_change_allowed(db: Session, employee: Employee, changes: dict) -> None:
+    """Правка займа в карточке: на охранной позиции заём не заводится и не меняется.
+
+    Отказ только при РЕАЛЬНОМ расхождении (форма шлёт поля целиком) и только когда
+    заём остаётся заданным: очистка полей разрешена — это и есть способ убрать
+    заём, заведённый до запрета.
+    """
+    touched = {f: v for f, v in changes.items() if f in LOAN_FIELDS}
+    if not any(_differs(getattr(employee, f), v) for f, v in touched.items()):
+        return
+    if all(v is None for v in touched.values()) and set(touched) == set(LOAN_FIELDS):
+        return
+    ensure_no_guard_accrual(db, loan_position(employee), "Заём", "заводится")
+
+
 # ── Должность ↔ тип оплаты ────────────────────────────────────────────────────
 
 def guard_kind_of_position(position: EmployeePosition) -> str:

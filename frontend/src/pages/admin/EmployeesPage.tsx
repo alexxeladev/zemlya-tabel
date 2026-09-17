@@ -29,7 +29,7 @@ import { Select } from '../../components/Select'
 import { SharesEditor } from '../../components/SharesEditor'
 import { EmployeeImportModal } from './EmployeeImportModal'
 import { PositionsEditor } from './PositionsEditor'
-import { isGuardDepartment, isGuardPosition } from '../../utils/guardStaff'
+import { GUARD_ACCRUAL_HINT, isGuardDepartment, isGuardPosition } from '../../utils/guardStaff'
 import { ApiError } from '../../api/client'
 import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
 import { copyText } from '../../utils/clipboard'
@@ -829,27 +829,62 @@ export function EmployeesPage() {
             />
           )}
 
-          {/* Section 3c — Заём (задача 3.11a). Гасится равными долями автоматически. */}
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Заём</p>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-gray-700">Сумма (₽)</label>
-                <input {...form.register('loan_amount')} placeholder="12000" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          {/* Section 3c — Заём (задача 3.11a). Гасится равными долями автоматически.
+              Заём удерживается с ОСНОВНОГО рабочего места. Если оно охранное, заём
+              здесь не заводится и не меняется (бэк отвечает 403): выплаты охраны
+              ведёт вахта. Заведённый до запрета остаётся виден и его можно снять. */}
+          {(() => {
+            const primary = (editTarget?.positions ?? []).find((p) => p.is_primary)
+            const loanLocked = Boolean(primary && isGuardPosition(primary))
+            const hasLoan = Boolean(form.watch('loan_amount'))
+            const inputClass =
+              'rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 read-only:bg-gray-100 read-only:text-gray-500'
+            return (
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Заём</p>
+                {loanLocked && (
+                  <p className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    {GUARD_ACCRUAL_HINT}. Заём для него не заводится.
+                    {hasLoan && ' Заведённый раньше расчётом вахты не удерживается — его можно только снять.'}
+                  </p>
+                )}
+                {(!loanLocked || hasLoan) && (
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm font-medium text-gray-700">Сумма (₽)</label>
+                      <input {...form.register('loan_amount')} readOnly={loanLocked} placeholder="12000" className={inputClass} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm font-medium text-gray-700">Срок (мес.)</label>
+                      <input type="number" min={1} {...form.register('loan_term_months')} readOnly={loanLocked} placeholder="12" className={inputClass} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm font-medium text-gray-700">Начало погашения</label>
+                      <input type="date" {...form.register('loan_start_date')} readOnly={loanLocked} className={inputClass} />
+                    </div>
+                  </div>
+                )}
+                {loanLocked && hasLoan && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      form.setValue('loan_amount', '', { shouldDirty: true })
+                      form.setValue('loan_term_months', '', { shouldDirty: true })
+                      form.setValue('loan_start_date', '', { shouldDirty: true })
+                    }}
+                    className="mt-2 rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                  >
+                    Снять заём
+                  </button>
+                )}
+                {!loanLocked && (
+                  <p className="mt-1 text-xs text-gray-400">
+                    Гасится равными долями (сумма ÷ срок) автоматически с месяца начала. Удержание за конкретный месяц можно скорректировать в табеле.
+                  </p>
+                )}
               </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-gray-700">Срок (мес.)</label>
-                <input type="number" min={1} {...form.register('loan_term_months')} placeholder="12" className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="text-sm font-medium text-gray-700">Начало погашения</label>
-                <input type="date" {...form.register('loan_start_date')} className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
-            </div>
-            <p className="mt-1 text-xs text-gray-400">
-              Гасится равными долями (сумма ÷ срок) автоматически с месяца начала. Удержание за конкретный месяц можно скорректировать в табеле.
-            </p>
-          </div>
+            )
+          })()}
 
           {/* Section 4 — Access (manager не управляет доступом) */}
           {!isMgr && (

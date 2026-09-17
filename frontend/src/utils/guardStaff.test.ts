@@ -114,3 +114,32 @@ test('экран вахты не заводит своей проверки фл
     assert.doesNotMatch(read(file), /\.is_guard_department/, file)
   }
 })
+
+// ── Начисления на охранной позиции (аудит 2-Г) ────────────────────────────────
+
+test('общий ввод на охранное место закрыт одним предикатом — в табеле и в карточке', () => {
+  const page = read('../pages/TimesheetPage.tsx')
+  // Часы: ячейка дня получает признак от того же isGuardPosition, своего правила нет.
+  assert.match(page, /guardLocked=\{isGuardPosition\(position\)\}/)
+  // Премии/KPI/аванс/правка займа: окно открывается только на удаление.
+  assert.match(page, /const guardLocked = isGuardPosition\(position\)/)
+  assert.match(page, /disabled=\{busy \|\| guardLocked\}/)
+  // Введённое до запрета остаётся снимаемым: крестик чипа не гасится.
+  assert.match(page, /removeOnly=\{guardLocked\}/)
+  assert.doesNotMatch(page, /\.is_guard_department/, 'флаг отдела читается только через utils/guardStaff')
+  // Заём в карточке: по основной позиции, с возможностью снять.
+  const card = read('../pages/admin/EmployeesPage.tsx')
+  assert.match(card, /const loanLocked = Boolean\(primary && isGuardPosition\(primary\)\)/)
+  assert.match(card, /Снять заём/)
+})
+
+test('бэкенд: один предикат запрета на все точки входа, снятие не блокируется', () => {
+  const staff = read('../../../backend/app/services/guard_staff.py')
+  assert.match(staff, /def ensure_no_guard_accrual\(/)
+  const ts = read('../../../backend/app/services/timesheet.py')
+  // Часы проверяются только при записи (hours != 0) — удаление проходит.
+  assert.match(ts, /if hours != Decimal\("0"\):\s*\n\s*check_employment_period[^\n]*\n\s*_ensure_hours_allowed/)
+  const router = read('../../../backend/app/routers/timesheet.py')
+  assert.equal((router.match(/ensure_no_guard_accrual\(/g) ?? []).length, 2, 'премии и ручная правка займа')
+  assert.match(read('../../../backend/app/routers/employees.py'), /ensure_loan_change_allowed\(db, emp, data\)/)
+})

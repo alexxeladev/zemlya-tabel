@@ -35,6 +35,7 @@ import { payoutRoundingHint } from '../utils/money';
 import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
 import { overtimeHours } from '../utils/overtime'
 import { employmentHint, isoDay } from '../utils/employment';
+import { GUARD_ACCRUAL_HINT, isGuardPosition } from '../utils/guardStaff';
 import { useRowChecksStore } from '../store/rowChecks';
 import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
 import { usePeriodStore } from '../store/period';
@@ -80,7 +81,7 @@ export type Position = {
   display_title: string;
   is_primary: boolean;
   department_id: number | null;
-  department?: { id: number; name: string; head_company_id?: number | null } | null;
+  department?: { id: number; name: string; head_company_id?: number | null; is_guard_department?: boolean } | null;
   schedule_id: number | null;
   schedule?: { id: number; name: string; hours_per_shift: number } | null;
   company_id: number | null;
@@ -1931,6 +1932,7 @@ export function TimesheetPage() {
             isFirst={isFirst}
             editable={periodEditable}
             outsideHint={employmentHint(emp, position, isoDay(year, month, d))}
+            guardLocked={isGuardPosition(position)}
             companies={data.companies}
             employeeId={emp.id}
             positionId={positionId}
@@ -3445,6 +3447,9 @@ type DayCellProps = {
   // Подсказка «день вне периода работы» или null. Строка — значение стабильное,
   // memo от неё не ломается (task_employment_period).
   outsideHint: string | null;
+  /** Охранное рабочее место: часы на нём не вводятся (их ведёт вахта, бэк
+   *  отвечает 403). Введённое до запрета остаётся СНИМАЕМЫМ — крестик работает. */
+  guardLocked: boolean;
   companies: Company[];
   employeeId: number;
   positionId: number | undefined;
@@ -3469,7 +3474,7 @@ function sameSlots(a: TimesheetEntry[], b: TimesheetEntry[]): boolean {
 
 const DayCell = memo(function DayCell(props: DayCellProps) {
   const {
-    day, dayType, slots, absence, isFirst, editable, outsideHint, companies,
+    day, dayType, slots, absence, isFirst, editable, outsideHint, guardLocked, companies,
     employeeId, positionId,
     onSaveSlot, onChangeCompany, onAddSlot, onSetAbsence,
     onOpenCompanyPicker, onOpenAbsencePicker,
@@ -3480,7 +3485,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
   // отклоняется независимо от того, что нарисовано (task_employment_period).
   const outside = outsideHint !== null;
   const canEdit = editable && !outside;
-  const bgClass = outside
+  const bgClass = outside || guardLocked
     // Штриховка, а не просто серый: «нельзя» должно отличаться и от рабочего
     // дня, и от выходного — иначе читается как «можно, но не заполнено».
     ? 'bg-gray-100 bg-[repeating-linear-gradient(45deg,transparent,transparent_4px,rgba(0,0,0,0.05)_4px,rgba(0,0,0,0.05)_8px)] text-gray-400'
@@ -3498,7 +3503,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
       // Ширина под чип целиком (код + часы + крестик) — иначе колонки
       // дней разъезжаются по содержимому и «квадратики» выходят разными.
       style={{ minWidth: 84 }}
-      title={outsideHint ?? undefined}
+      title={outsideHint ?? (guardLocked ? GUARD_ACCRUAL_HINT : undefined)}
     >
       <div className="flex flex-col gap-1">
         {/* День с кодом отсутствия: часов в нём нет по определению.
@@ -3520,6 +3525,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
                 slot={slot}
                 companies={companies}
                 disabled={!canEdit}
+                removeOnly={guardLocked}
                 onHoursChange={(h) => onSaveSlot(employeeId, day, slot.company_id, h, positionId)}
                 onCompanyChange={(newCompId) =>
                   onChangeCompany(employeeId, day, slot.company_id, newCompId, positionId)
@@ -3532,7 +3538,9 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
               // Та же высота, что у чипов, и та же колонка справа —
               // кнопка кода встаёт ровно под крестиками.
               <div className="flex items-center gap-1 h-[22px]">
-                <button
+                {/* На охранном месте «+» нет: часы там не вводятся. Распорка держит
+                    кнопку кода отсутствия на своём месте справа. */}
+                {guardLocked ? <span className="flex-1" /> : <button
                   type="button"
                   onClick={() => onAddSlot(employeeId, positionId, day)}
                   className={
@@ -3544,7 +3552,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
                   title={isOff ? 'Добавить работу в выходной/праздник' : 'Добавить слот'}
                 >
                   +
-                </button>
+                </button>}
                 {/* Код отсутствия — на человека целиком, ставится с первой строки */}
                 {isFirst && (
                   <button
@@ -3571,6 +3579,7 @@ const DayCell = memo(function DayCell(props: DayCellProps) {
   prev.dayType === next.dayType &&
   prev.isFirst === next.isFirst &&
   prev.editable === next.editable &&
+  prev.guardLocked === next.guardLocked &&
   prev.companies === next.companies &&
   prev.employeeId === next.employeeId &&
   prev.positionId === next.positionId &&
@@ -3592,6 +3601,7 @@ function SlotChip({
   slot,
   companies,
   disabled,
+  removeOnly = false,
   onHoursChange,
   onCompanyChange,
   onDelete,
@@ -3600,6 +3610,9 @@ function SlotChip({
   slot: TimesheetEntry;
   companies: Company[];
   disabled: boolean;
+  /** Часы и юрлицо не правятся, но чип можно УБРАТЬ: охранное рабочее место,
+   *  часы на котором введены до запрета. */
+  removeOnly?: boolean;
   onHoursChange: (hours: number) => void;
   onCompanyChange: (newCompanyId: number) => void;
   onDelete: () => void;
@@ -3643,7 +3656,7 @@ function SlotChip({
       <button
         type="button"
         onClick={(e) => onOpenPicker(e.currentTarget, slot.company_id, onCompanyChange)}
-        disabled={disabled}
+        disabled={disabled || removeOnly}
         title={`Компания: ${company ? companyLabel(company) : slot.company_id}`}
         className="bg-transparent border-0 outline-none cursor-pointer p-0 h-full flex-1 min-w-[26px] text-left text-[11px] font-semibold disabled:cursor-default"
         style={{ color: col.color }}
@@ -3658,7 +3671,7 @@ function SlotChip({
         onKeyDown={(e) => {
           if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
         }}
-        disabled={disabled}
+        disabled={disabled || removeOnly}
         min={0}
         max={24}
         step={1}
@@ -3876,6 +3889,10 @@ function AdjustmentsModal({
   // В списке показываем только записи этой категории
   const shownAdjustments = adjustments.filter((a) => a.kind === kind);
   const hasLoan = category === 'deduction' && !!employee.loan_amount && num(employee.loan_amount) > 0;
+  // Охранное рабочее место: премии, KPI, аванс и заём основной системы на него
+  // не начисляются — их ведёт вахта, бэк отвечает 403. Форма добавления и правка
+  // удержания скрыты; записи, введённые до запрета, можно УДАЛИТЬ.
+  const guardLocked = isGuardPosition(position);
   const addLabel = kind === 'advance' ? 'Аванс (удержание)' : KIND_LABELS[kind];
 
   const add = async () => {
@@ -3971,6 +3988,12 @@ function AdjustmentsModal({
           {position.id > 0 && <> · рабочее место: <strong>{position.display_title}</strong></>}
         </p>
 
+        {guardLocked && (
+          <p className="mb-4 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {GUARD_ACCRUAL_HINT}. Здесь их добавить нельзя; введённое раньше можно удалить.
+          </p>
+        )}
+
         {/* Существующие записи этой категории */}
         <div className="mb-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">{addLabel}</p>
@@ -4004,7 +4027,7 @@ function AdjustmentsModal({
         </div>
 
         {/* Форма добавления — только эта категория, без выбора типа */}
-        <div className="mb-5 border border-gray-200 rounded-lg p-3 bg-gray-50">
+        <div className={'mb-5 border border-gray-200 rounded-lg p-3 bg-gray-50' + (guardLocked ? ' hidden' : '')}>
           <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Добавить: {addLabel}</p>
           <div className="flex flex-col gap-2">
             <div className="flex gap-2">
@@ -4096,13 +4119,14 @@ function AdjustmentsModal({
             <div className="flex gap-2 items-center">
               <input
                 type="number"
+                disabled={guardLocked}
                 value={loanInput}
                 onChange={(e) => setLoanInput(e.target.value)}
                 placeholder="Удержать в этом месяце ₽"
                 min={0}
                 className="flex-1 border border-gray-300 rounded px-2 py-1.5 text-sm"
               />
-              <button onClick={applyLoanOverride} disabled={busy} className="px-3 py-1.5 text-sm rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50">
+              <button onClick={applyLoanOverride} disabled={busy || guardLocked} className="px-3 py-1.5 text-sm rounded bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50">
                 Применить
               </button>
               {payroll?.loan_is_manual && (

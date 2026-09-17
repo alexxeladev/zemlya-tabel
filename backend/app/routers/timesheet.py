@@ -68,6 +68,11 @@ from app.services.company_order import (
     order_index,
 )
 from app.services.employment_period import OutsideEmploymentPeriod
+from app.services.guard_staff import (
+    GuardAccrualError,
+    ensure_no_guard_accrual,
+    loan_position,
+)
 from app.services.finance_masking import (
     mask_employees,
     mask_payroll_summary,
@@ -764,6 +769,12 @@ def get_month(
 
 # ── Cell mutations ────────────────────────────────────────────────────────────
 
+def _guard_accrual(exc: GuardAccrualError) -> HTTPException:
+    """Начисления на охранную позицию ведёт вахта — тот же 403, что у владения
+    штатом (`routers/employees._guard_owned`)."""
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+
+
 def _cell_conflict(exc: CellConflict) -> HTTPException:
     """Ячейку успел изменить другой редактор — 409 с текущим значением."""
     return HTTPException(
@@ -791,6 +802,8 @@ def save_cell(
         )
     except CellConflict as exc:
         raise _cell_conflict(exc)
+    except GuardAccrualError as exc:
+        raise _guard_accrual(exc)
     except PeriodLockedException as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -831,6 +844,8 @@ def change_cell_company(
         )
     except CellConflict as exc:
         raise _cell_conflict(exc)
+    except GuardAccrualError as exc:
+        raise _guard_accrual(exc)
     except CellNotFound:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -864,6 +879,8 @@ def save_cells_batch(
     ]
     try:
         results = upsert_cells_batch(db, actor, cells)
+    except GuardAccrualError as exc:
+        raise _guard_accrual(exc)
     except PeriodLockedException as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1233,6 +1250,13 @@ def create_adjustment(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year")
 
     position = target.position_by_id(payload.position_id)
+    # Охранной позиции премии, KPI и аванс основной системы не начисляются: у
+    # вахты свои премия, штраф и официальная выплата, а расчёт строки вахты эти
+    # записи игнорирует (аудит 2-Г). Удаление уже введённого — разрешено.
+    try:
+        ensure_no_guard_accrual(db, position, "Премии, KPI и аванс", "начисляются")
+    except GuardAccrualError as exc:
+        raise _guard_accrual(exc)
 
     # Источник финансирования (task_funding_source): только у премии и KPI —
     # аванс это удержание, затрат юрлица за ним нет.
@@ -1314,6 +1338,10 @@ def set_loan_override(
     """Скорректировать сумму удержания по займу за конкретный месяц."""
     _require_finance_role(actor)
     target = _check_cell_access(actor, payload.employee_id, db)
+    try:
+        ensure_no_guard_accrual(db, loan_position(target), "Удержание по займу", "правится")
+    except GuardAccrualError as exc:
+        raise _guard_accrual(exc)
     if target.loan_amount is None or target.loan_term_months is None or target.loan_start_date is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

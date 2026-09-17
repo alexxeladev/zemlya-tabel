@@ -311,6 +311,16 @@ def _check_period_lock(
         raise PeriodLockedException(period.status)
 
 
+def _ensure_hours_allowed(db: Session, employee_id: int, position_id: int | None) -> None:
+    """Часы на охранную позицию не вводятся — её смены ведёт вахта (аудит 2-Г).
+    Зовётся только для НЕнулевых часов: удаление ячейки разрешено всегда."""
+    from app.services.guard_staff import ensure_no_guard_accrual
+
+    emp = db.get(Employee, employee_id)
+    if emp is not None:
+        ensure_no_guard_accrual(db, emp.position_by_id(position_id), "Часы")
+
+
 def upsert_cell(
     db: Session,
     actor: Employee,
@@ -327,6 +337,8 @@ def upsert_cell(
     # оставшиеся за новой границей, было бы нечем убрать.
     if hours != Decimal("0"):
         check_employment_period(db, employee_id, work_date, position_id)
+        _ensure_hours_allowed(db, employee_id, position_id)
+
     def current_cell():
         return _find_cell(
             db, employee_id, work_date, company_id,
@@ -377,6 +389,7 @@ def move_cell_company(
     складывать и не отказывать).
     """
     _check_period_lock(db, employee_id, work_date, position_id)
+    _ensure_hours_allowed(db, employee_id, position_id)
     check_employment_period(db, employee_id, work_date, position_id)
     source = _find_cell(
         db, employee_id, work_date, old_company_id,
@@ -428,6 +441,7 @@ def upsert_cells_batch(
         _check_period_lock(db, cell[0], cell[1], position_id)
         if cell[3] != Decimal("0"):
             check_employment_period(db, cell[0], cell[1], position_id)
+            _ensure_hours_allowed(db, cell[0], position_id)
 
     results = []
     for cell in cells:
@@ -457,6 +471,7 @@ def build_autofill_preview(
     """
     from app.models.production_calendars import ProductionCalendar
     from app.schemas.timesheet import AutofillPreview, AutofillSkippedEmployee, TimesheetCellInput
+    from app.services.guard_staff import GUARD_AUTOFILL_SKIP_REASON, is_guard_position
     from app.services.timesheet_periods import can_edit_cells, get_or_create_period
     from app.services.work_schedule import (
         planned_work_dates,
@@ -518,6 +533,16 @@ def build_autofill_preview(
                 continue
 
             has_draft = True
+
+            # Охранное рабочее место табелем не ведётся вовсе (аудит 2-Г): ручной
+            # ввод на него отклоняется, автозаполнение — пропускает с причиной.
+            if is_guard_position(db, position):
+                employees_skipped.append(AutofillSkippedEmployee(
+                    employee_id=emp.id,
+                    employee_name=_position_label(emp, position),
+                    reason=GUARD_AUTOFILL_SKIP_REASON,
+                ))
+                continue
 
             schedule = position.schedule
             if schedule is None:

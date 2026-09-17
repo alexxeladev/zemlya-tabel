@@ -61,6 +61,7 @@ from app.services.employment_period import (
 from app.services.finance_masking import mask_employee, mask_employees, mask_position
 from app.services.guard_staff import (
     GuardOwnedError,
+    ensure_loan_change_allowed,
     ensure_position_create_allowed,
     ensure_position_edit_allowed,
     ensure_position_owned_outside_vahta,
@@ -342,6 +343,8 @@ def update_employee(
             for name, value in data.items()
             if name in EMPLOYEE_COMPAT_FIELDS
         })
+        # Заём удерживается с рабочего места; на охранном его не ведут (аудит 2-Г).
+        ensure_loan_change_allowed(db, emp, data)
     except GuardOwnedError as exc:
         raise _guard_owned(exc) from exc
 
