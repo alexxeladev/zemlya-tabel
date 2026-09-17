@@ -58,13 +58,16 @@ from app.services.employment_period import (
     clear_entries_outside,
     clearing_report,
 )
-from app.services.finance_masking import mask_employee, mask_employees, mask_position
+from app.services.finance_masking import employee_for, employees_for, position_for
 from app.services.guard_staff import (
     GuardOwnedError,
+    GuardTransferInError,
     ensure_loan_change_allowed,
     ensure_position_create_allowed,
     ensure_position_edit_allowed,
     ensure_position_owned_outside_vahta,
+    ensure_transfer_into_guard_allowed,
+    pin_loan_before_primary_change,
     is_guard_position,
 )
 from app.services.org_access import (
@@ -108,6 +111,17 @@ def _guard_owned(exc: GuardOwnedError) -> HTTPException:
     """Охранную позицию ведёт вахта (task_guard_ownership): общий справочник
     получает отказ на бэке, а не только спрятанную кнопку."""
     return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+
+
+def _ensure_transfer_into_guard(db: Session, position, new_department_id) -> None:
+    """Перевод обычного рабочего места в охрану при наличии на нём часов, премий
+    или займа отклоняется: для расчёта вахты они стали бы невидимыми."""
+    try:
+        ensure_transfer_into_guard_allowed(db, position, new_department_id)
+    except GuardTransferInError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
 
 
 def _ensure_tab_number_free(
@@ -222,7 +236,8 @@ def list_employees(
 ):
     if current_user.role == "employee":
         emp = db.query(Employee).filter(Employee.id == current_user.id).all()
-        return emp
+        # Своя карточка: оклад виден, бюджет отдела (фонд ночных) — нет.
+        return employees_for(current_user, [EmployeeRead.model_validate(e) for e in emp])
 
     q = db.query(Employee)
 
@@ -246,10 +261,8 @@ def list_employees(
         )
 
     rows = q.all()
-    if hides_finances(current_user):
-        # Табельщику список сотрудников отдела виден, оклады в нём — нет
-        return mask_employees([EmployeeRead.model_validate(e) for e in rows])
-    return rows
+    # Табельщику — без окладов, сотруднику — без денег отдела (finance_masking).
+    return employees_for(current_user, [EmployeeRead.model_validate(e) for e in rows])
 
 
 @router.get("/{emp_id}", response_model=EmployeeRead)
@@ -270,9 +283,7 @@ def get_employee(
         if not can_access_department(current_user, emp.department_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-    if hides_finances(current_user):
-        return mask_employee(EmployeeRead.model_validate(emp))
-    return emp
+    return employee_for(current_user, EmployeeRead.model_validate(emp))
 
 
 # ── Create ─────────────────────────────────────────────────────────────────────
@@ -347,6 +358,9 @@ def update_employee(
         ensure_loan_change_allowed(db, emp, data)
     except GuardOwnedError as exc:
         raise _guard_owned(exc) from exc
+    # Плоское `department_id` карточки переводит ОСНОВНУЮ позицию.
+    if "department_id" in data:
+        _ensure_transfer_into_guard(db, emp.primary_position, data["department_id"])
 
     before_bounds = bounds_snapshot(emp)
     before = _to_dict(emp)
@@ -626,12 +640,11 @@ def list_positions(
     отделы имеет смысл в табеле, где по ним вводят часы."""
     emp = _employee_for_read(db, emp_id, current_user)
     positions = _sorted_positions(emp)
-    if hides_finances(current_user):
-        # Табельщику — должность/график/отдел рабочего места, но без ставок
-        return [
-            mask_position(EmployeePositionRead.model_validate(p)) for p in positions
-        ]
-    return positions
+    # Табельщику — без ставок, сотруднику — без денег отдела (finance_masking).
+    return [
+        position_for(current_user, EmployeePositionRead.model_validate(p))
+        for p in positions
+    ]
 
 
 @router.post(
@@ -682,6 +695,8 @@ def update_position(
         ensure_position_edit_allowed(db, position, data)
     except GuardOwnedError as exc:
         raise _guard_owned(exc) from exc
+    if "department_id" in data:
+        _ensure_transfer_into_guard(db, position, data["department_id"])
     # Деактивировать основную нельзя — иначе сотрудник останется без рабочего
     # места, а расчёт молча съедет на случайную позицию.
     if data.get("is_active") is False and position.is_primary:
@@ -716,6 +731,9 @@ def make_position_primary(
     emp = _employee_for_write(db, emp_id)
     position = _position_or_404(emp, position_id)
     before = emp.primary_position.id if emp.primary_position else None
+    # Заём без привязки живёт на основной позиции: если ею становится охранная,
+    # он закрепляется за прежним местом, иначе удержание молча прекратилось бы.
+    pinned_loan = pin_loan_before_primary_change(db, emp, position)
     try:
         set_primary(emp, position)
     except PositionError as exc:
@@ -725,7 +743,8 @@ def make_position_primary(
     db.flush()
     log_action(db, actor, "employee_position", position.id, "make_primary",
                before={"primary_position_id": before},
-               after={"primary_position_id": position.id})
+               after={"primary_position_id": position.id,
+                      **({"loan_position_id": pinned_loan} if pinned_loan else {})})
     db.commit()
     db.refresh(emp)
     return _sorted_positions(emp)

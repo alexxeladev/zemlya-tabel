@@ -378,6 +378,13 @@ function PayrollBlock({ data }: { data: DashboardData }) {
           : 'ФОТ (брутто к начислению)'
       }
     >
+      {/* Что НЕ входит в ФОТ дашборда — одной строкой, чтобы цифру не сверяли с
+          ведомостью вслепую. Пересмотр состава ФОТ — отдельная задача. */}
+      <p className="-mt-1 text-xs text-gray-500">
+        В ФОТ входят начисления по табелю и сменам вахты. Премии и KPI, штрафы вахты и налог на её
+        официальную выплату сюда не входят — поэтому цифра отличается от «Итого начислено» и от
+        разнесения по юрлицам в ведомости.
+      </p>
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
         <KpiCard label="Всего начислено" value={formatMoney(p.total, { showZero: true })} accent="text-blue-700" />
         <KpiCard label="Оклады" value={formatMoney(p.base, { showZero: true })} />

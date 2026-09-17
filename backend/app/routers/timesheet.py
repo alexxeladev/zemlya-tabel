@@ -74,9 +74,9 @@ from app.services.guard_staff import (
     loan_position,
 )
 from app.services.finance_masking import (
-    mask_employees,
+    employees_for,
     mask_payroll_summary,
-    mask_positions_by_employee,
+    positions_by_employee_for,
 )
 from app.services.night_shifts import (
     NightLimitExceeded,
@@ -754,14 +754,14 @@ def get_month(
         adjustments=adjustments,
         checked_positions=checked_positions,
     )
+    # Карточки и позиции — часть этого же ответа: табельщику они идут без денег
+    # вовсе, сотруднику — без денег ОТДЕЛА (фонд ночных вложен в `department`).
+    # Кому что — решает finance_masking. Скрывать это только в UI недостаточно.
+    response.employees = employees_for(actor, response.employees)
+    response.positions_by_employee = positions_by_employee_for(
+        actor, response.positions_by_employee
+    )
     if hides_finances(actor):
-        # Табельщику табель приходит целиком, но без денег: оклад и ставки живут в
-        # карточке сотрудника и его позициях, а они часть этого же ответа
-        # (task_timekeeper_role). Скрывать это только в UI недостаточно.
-        response.employees = mask_employees(response.employees)
-        response.positions_by_employee = mask_positions_by_employee(
-            response.positions_by_employee
-        )
         if response.payroll is not None:
             response.payroll = mask_payroll_summary(response.payroll)
     return response

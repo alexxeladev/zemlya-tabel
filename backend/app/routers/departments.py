@@ -31,7 +31,7 @@ from app.services.department_move import (
     build_preview,
     move_department,
 )
-from app.services.finance_masking import mask_department
+from app.services.finance_masking import department_for
 from app.services.guard_staff import guard_flag_removal_report
 from app.services.org_access import (
     hides_finances,
@@ -70,10 +70,9 @@ def _read(dept: Department, actor: Employee) -> DepartmentRead:
     """Карточка отдела для ответа: фонд ночных смен — деньги, поэтому
     табельщику он не отдаётся (task_timekeeper_role). Число смен и остаток
     лимита ему видны отдельно, в табеле."""
-    data = DepartmentRead.model_validate(dept)
-    # Список денежных полей отдела — один, в finance_masking: тот же отдел
-    # приходит ещё и вложенным в сотрудника и позицию.
-    return mask_department(data) if hides_finances(actor) else data
+    # Кому отдавать деньги отдела, решает finance_masking: табельщику и сотруднику
+    # фонд не виден (тот же отдел приходит ещё и вложенным в сотрудника и позицию).
+    return department_for(actor, DepartmentRead.model_validate(dept))
 
 
 def _check_night_fund(value: Decimal | None) -> None:

@@ -287,3 +287,62 @@ def test_night_fund_does_not_leak_through_nested_department(client, world, url_k
     assert resp.status_code == 200
     assert str(NIGHT_FUND) not in resp.text
     assert '"department":{' in resp.text.replace(" ", ""), "вложенный отдел должен остаться"
+
+
+# ── Роль employee: свой оклад — да, бюджет отдела — нет ──────────────────────
+
+def _fund_leaks(node, path="$") -> list[str]:
+    """Только деньги ОТДЕЛА: собственный оклад сотруднику виден по решению заказчика."""
+    found = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}"
+            if key in ("night_shift_fund", "fund") and not _is_empty(value):
+                found.append(f"{here} = {value!r}")
+            found += _fund_leaks(value, here)
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            found += _fund_leaks(item, f"{path}[{i}]")
+    return found
+
+
+def test_employee_does_not_see_department_night_fund_anywhere(client, db_session, world):
+    """Фонд ночных — бюджет отдела: по нему и числу смен восстанавливается
+    надбавка коллег. Сотрудник видит СВОЙ оклад (`/auth/me`), но не фонд."""
+    worker = db_session.get(Employee, world["emp_id"])
+    worker.email = "plain.employee@example.com"
+    worker.hashed_password = hash_password("Test1234!")
+    worker.role = "employee"
+    db_session.commit()
+    headers = {"Authorization": f"Bearer {get_token(client, 'plain.employee@example.com', 'Test1234!')}"}
+
+    leaks, scanned = {}, 0
+    for url in _urls(world):
+        resp = client.get(url, headers=headers)
+        if resp.status_code != 200 or not resp.headers.get("content-type", "").startswith("application/json"):
+            continue
+        scanned += 1
+        found = _fund_leaks(resp.json())
+        if str(NIGHT_FUND) in resp.text:
+            found.append(f"сумма {NIGHT_FUND} в сыром ответе")
+        if found:
+            leaks[url] = found
+
+    assert scanned >= 8, f"просканировано всего {scanned} ответов"
+    assert not leaks, "Сотрудник получил фонд отдела:\n" + "\n".join(
+        f"{u}: {f[:3]}" for u, f in leaks.items())
+    # Собственный оклад остаётся — решение заказчика, не «чиним заодно».
+    me = client.get("/api/auth/me", headers=headers).json()
+    assert me["rate"] is not None and me["department"] is not None
+
+
+def test_manager_still_sees_the_fund(client, db_session, world, other_dept):
+    boss = Employee(full_name="Менеджер Сканера", email="scan.manager@example.com",
+                    hashed_password=hash_password("Test1234!"), role="manager", is_active=True)
+    db_session.add(boss)
+    db_session.commit()
+    boss.managed_departments = [other_dept]
+    db_session.commit()
+    headers = {"Authorization": f"Bearer {get_token(client, 'scan.manager@example.com', 'Test1234!')}"}
+    depts = client.get("/api/departments", headers=headers).json()
+    assert any(d["night_shift_fund"] is not None for d in depts)

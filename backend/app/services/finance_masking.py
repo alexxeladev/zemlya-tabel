@@ -19,6 +19,7 @@ from app.schemas.department import DepartmentRead
 from app.schemas.employee import EmployeeRead
 from app.schemas.payroll import PayrollSummaryRead
 from app.schemas.position import EmployeePositionRead
+from app.services.org_access import can_see_finances, hides_finances
 
 _ZERO = Decimal("0")
 
@@ -100,6 +101,60 @@ def mask_positions_by_employee(
         emp_id: [mask_position(p) for p in positions]
         for emp_id, positions in positions_by_employee.items()
     }
+
+
+# ── Кому что отдавать: одно место решения (task_stage1, п.1.3 + правка) ─────────
+#
+# Три уровня, и решает их ТОЛЬКО эта секция — роутеры уровень не выбирают:
+#
+# * финансовые роли (admin / accountant / manager) — всё как есть;
+# * табельщик (`hides_finances`) — без денег вовсе: ни окладов, ни бюджета отдела;
+# * сотрудник (`employee`) — СВОЙ оклад, коэффициенты и заём видит (решение
+#   заказчика: это его данные), а ДЕНЬГИ ОТДЕЛА — нет. Фонд ночных — бюджет
+#   отдела: по нему и по числу смен восстанавливается надбавка коллег.
+#
+# Правило «кто видит деньги отдела» — `can_see_finances`, второго списка ролей нет.
+
+def _department_money_only(model):
+    """Карточка/позиция как есть, но вложенные объекты — без своих денег."""
+    return _blank(model, ())
+
+
+def employee_for(actor, employee: EmployeeRead) -> EmployeeRead:
+    if hides_finances(actor):
+        return mask_employee(employee)
+    if can_see_finances(actor):
+        return employee
+    masked = _department_money_only(employee)
+    masked.positions = [_department_money_only(p) for p in employee.positions]
+    return masked
+
+
+def employees_for(actor, employees: list[EmployeeRead]) -> list[EmployeeRead]:
+    if can_see_finances(actor):
+        return employees
+    return [employee_for(actor, e) for e in employees]
+
+
+def position_for(actor, position: EmployeePositionRead) -> EmployeePositionRead:
+    if hides_finances(actor):
+        return mask_position(position)
+    return position if can_see_finances(actor) else _department_money_only(position)
+
+
+def positions_by_employee_for(
+    actor, positions_by_employee: dict[int, list[EmployeePositionRead]],
+) -> dict[int, list[EmployeePositionRead]]:
+    if can_see_finances(actor):
+        return positions_by_employee
+    return {
+        emp_id: [position_for(actor, p) for p in positions]
+        for emp_id, positions in positions_by_employee.items()
+    }
+
+
+def department_for(actor, department: DepartmentRead) -> DepartmentRead:
+    return department if can_see_finances(actor) else mask_department(department)
 
 
 # ── Расчёт: часы оставить, деньги убрать ──────────────────────────────────────

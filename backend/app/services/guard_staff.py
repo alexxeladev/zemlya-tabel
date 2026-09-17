@@ -215,6 +215,102 @@ def ensure_loan_change_allowed(db: Session, employee: Employee, changes: dict) -
     ensure_no_guard_accrual(db, loan_position(employee), "Заём", "заводится")
 
 
+# ── Рабочее место СТАНОВИТСЯ охранным: деньги не должны пропасть молча ─────────
+
+class GuardTransferInError(Exception):
+    """Перевод в охрану рабочего места, на котором есть общие начисления."""
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} {one}"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} {few}"
+    return f"{n} {many}"
+
+
+def ensure_transfer_into_guard_allowed(
+    db: Session, position: EmployeePosition | None, new_department_id: int | None
+) -> None:
+    """Обычное рабочее место не переводится в охрану, пока на нём есть часы,
+    премии/KPI/аванс или заём.
+
+    Охранную позицию считает вахта, общие начисления на неё не действуют: после
+    перевода всё перечисленное стало бы невидимым для расчёта — тихо, и всплыло
+    бы только при сверке. Отказ, а не «подтвердите потерю»: история рабочего
+    места должна остаться на нём. Правильный путь — оформить человеку НОВОЕ
+    рабочее место в охране из модуля «Вахта» (постановка на пост по ФИО заводит
+    его сама), прежнее остаётся с историей.
+
+    Считаются данные ЭТОГО рабочего места, а не человека; часы и премии с
+    `position_id IS NULL` принадлежат основной позиции.
+    """
+    if position is None or is_guard_position(db, position):
+        return
+    if not is_guard_department_id(db, new_department_id):
+        return
+
+    from sqlalchemy import or_
+
+    from app.models.employee_adjustments import EmployeeAdjustment
+    from app.models.timesheet_entries import TimesheetEntry
+
+    def owned(model):
+        mine = model.position_id == position.id
+        if position.is_primary:
+            mine = or_(mine, model.position_id.is_(None))
+        return db.query(model).filter(model.employee_id == position.employee_id, mine)
+
+    employee = position.employee
+    found = []
+    hours = owned(TimesheetEntry).count()
+    if hours:
+        found.append(_plural(hours, "ячейка часов", "ячейки часов", "ячеек часов"))
+    adjustments = owned(EmployeeAdjustment).count()
+    if adjustments:
+        found.append(_plural(
+            adjustments, "запись премий/KPI/аванса", "записи премий/KPI/аванса",
+            "записей премий/KPI/аванса",
+        ))
+    if employee.loan_amount is not None and loan_position(employee) is position:
+        found.append(f"заём {employee.loan_amount} ₽")
+    if not found:
+        return
+    raise GuardTransferInError(
+        "Рабочее место нельзя перевести в охранное подразделение: на нём есть "
+        + ", ".join(found)
+        + ". Охрану считает модуль «Вахта», и после перевода эти данные перестали бы "
+        "участвовать в расчёте. Оформите сотруднику новое рабочее место в охране "
+        "из модуля «Вахта» — история останется на прежнем месте"
+    )
+
+
+def pin_loan_before_primary_change(
+    db: Session, employee: Employee, new_primary: EmployeePosition
+) -> int | None:
+    """Заём без привязки удерживается с ОСНОВНОЙ позиции. Если основной становится
+    охранная, он переехал бы на неё и перестал удерживаться — расчёт вахты заём
+    не знает. Поэтому заём закрепляется за ПРЕЖНИМ, обычным местом.
+
+    Возвращает id позиции, за которой закреплён заём, либо None — ничего не
+    менялось (займа нет, он уже привязан, новая основная не охранная, прежняя
+    основная сама охранная). Между обычными местами поведение прежнее: заём
+    следует за основной.
+    """
+    current = employee.primary_position
+    if (
+        employee.loan_amount is None
+        or employee.loan_position_id is not None
+        or current is None
+        or current is new_primary
+        or not is_guard_position(db, new_primary)
+        or is_guard_position(db, current)
+    ):
+        return None
+    employee.loan_position_id = current.id
+    return current.id
+
+
 # ── Должность ↔ тип оплаты ────────────────────────────────────────────────────
 
 def guard_kind_of_position(position: EmployeePosition) -> str:
