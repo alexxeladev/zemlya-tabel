@@ -449,10 +449,11 @@ export function VahtaPage() {
   const places = useMemo(() => placesOf(sites, crews), [sites, crews])
   const showMoney = Boolean(data?.can_see_money)
   const canEdit = Boolean(data?.can_edit)
-  // Закрытый месяц: бэк отклоняет любую правку назначений (409), поэтому и
-  // кнопки «поставить / заменить / убрать», и правка сумм гаснут вместе с днями.
-  const periodClosed = Boolean(data?.period_closed)
-  const canManage = roleCanManage && !periodClosed
+  // Месяц на проверке у бухгалтера или закрыт: бэк отклоняет любую правку
+  // назначений (409), поэтому и кнопки «поставить / заменить / убрать», и правка
+  // сумм гаснут вместе с днями.
+  const periodLock = data?.period_lock ?? null
+  const canManage = roleCanManage && !periodLock
   const filtering = Boolean(query || zoneFilter || kindFilter)
 
   const placesOfCard = useCallback(
@@ -822,10 +823,11 @@ export function VahtaPage() {
         </div>
       </div>
 
-      {periodClosed && (
+      {periodLock && (
         <p className="border-b border-amber-200 bg-amber-50 px-5 py-1.5 text-[12px] text-amber-800">
-          Период закрыт — назначения, смены и суммы вахты за этот месяц не меняются.
-          Чтобы внести правку, период нужно переоткрыть.
+          {periodLock === 'closed' ? 'Период закрыт' : 'Период на проверке у бухгалтера'} —
+          назначения, смены и суммы вахты за этот месяц не меняются. Чтобы внести правку,
+          период нужно вернуть в черновик.
         </p>
       )}
 

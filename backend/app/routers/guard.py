@@ -111,7 +111,7 @@ from app.services.guard_staff import (
 )
 from app.services.guard_month import build_guard_month
 from app.services.org_access import can_see_finances
-from app.services.timesheet_periods import is_month_closed
+from app.services.timesheet_periods import month_lock_status
 
 router = APIRouter()
 
@@ -143,23 +143,33 @@ def _guard_error(exc: GuardError) -> HTTPException:
     return HTTPException(status_code=422, detail=str(exc))
 
 
+_PERIOD_LOCK_REASON = {
+    "pending_review": "на проверке у бухгалтера",
+    "closed": "закрыт",
+}
+
+
 def _require_open_month(
     db: Session, department_id: int | None, year: int, month: int
 ) -> None:
-    """Назначения вахты в ЗАКРЫТОМ месяце не меняются (task_stage1 п.1.4).
+    """Назначения вахты правятся только в периоде-ЧЕРНОВИКЕ (task_stage1 п.1.4).
 
-    Своих статусов у вахты нет: закрытым считается период табеля охранного
-    подразделения за этот месяц. Снапшота расчёта в системе нет, поэтому любая
-    правка назначения — человек, дни, ставка, премия — пересчитала бы ведомость,
-    которую бухгалтерия уже видела. Нужно поправить — период переоткрывает admin.
+    Своих статусов у вахты нет: берётся период табеля охранного подразделения за
+    этот месяц, правило то же, что у ячеек табеля, — `pending_review` блокирует
+    наравне с `closed`: месяц, отправленный бухгалтеру, не должен меняться под
+    проверяющим. Снапшота расчёта в системе нет, поэтому любая правка назначения
+    — человек, дни, ставка, премия — пересчитала бы ведомость, которую уже
+    смотрят. Нужно поправить — период возвращают в черновик.
     """
     # for_write: строка периода под блокировкой до коммита правки (п.1.5).
-    if is_month_closed(db, department_id, year, month, for_write=True):
+    lock = month_lock_status(db, department_id, year, month, for_write=True)
+    if lock is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Период {month:02d}.{year} закрыт — назначения вахты в нём не "
-                "меняются. Переоткройте период, чтобы внести правку"
+                f"Период {month:02d}.{year} {_PERIOD_LOCK_REASON.get(lock, lock)} — "
+                "назначения вахты в нём не меняются. Верните период в черновик, "
+                "чтобы внести правку"
             ),
         )
 

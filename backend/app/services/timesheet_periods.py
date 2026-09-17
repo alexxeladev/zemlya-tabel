@@ -59,19 +59,23 @@ def lock_period(
     )
 
 
-def is_month_closed(
+def month_lock_status(
     db: Session, department_id: int | None, year: int, month: int,
     *, for_write: bool = False,
-) -> bool:
-    """Закрыт ли месяц отдела. Период НЕ создаётся: нет строки — не закрыт.
+) -> str | None:
+    """Статус, которым месяц отдела ЗАКРЫТ ДЛЯ ПРАВОК, либо None — править можно.
+
+    Правило то же, что у ячеек табеля (`can_edit_cells`): правится только
+    `draft`. `pending_review` блокирует наравне с `closed` — период, отправленный
+    бухгалтеру, не должен меняться под проверяющим, иначе проверка бессмысленна.
 
     Нужен там, где правка не является ячейкой табеля, но меняет цифры месяца —
-    назначения вахты (task_stage1 п.1.4). В отличие от `can_edit_cells`
-    блокирует только `closed`: `pending_review` — ещё не «бухгалтерия видела».
+    назначения вахты (task_stage1 п.1.4). Период НЕ создаётся: нет строки — месяц
+    ещё никто не открывал, это черновик.
 
     `for_write=True` — проверка ПЕРЕД записью: строка периода берётся под
-    разделяемую блокировку (см. `lock_period`), чтобы закрытие не проскочило
-    между проверкой и коммитом. Для чтения (экран вахты) блокировка не нужна.
+    разделяемую блокировку (см. `lock_period`), чтобы переход не проскочил между
+    проверкой и коммитом. Для чтения (экран вахты) блокировка не нужна.
     """
     query = db.query(TimesheetPeriod).filter(
         TimesheetPeriod.year == year,
@@ -83,10 +87,10 @@ def is_month_closed(
         query = query.filter(TimesheetPeriod.department_id == department_id)
     period = query.first()
     if period is None:
-        return False
+        return None
     if for_write:
         period = lock_period(db, period, exclusive=False)
-    return period.status == "closed"
+    return None if can_edit_cells(period) else period.status
 
 
 def _can_edit(period: TimesheetPeriod) -> bool:

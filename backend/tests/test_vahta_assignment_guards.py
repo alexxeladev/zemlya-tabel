@@ -1,5 +1,5 @@
-"""Постановка на пост: только охранные позиции и только в незакрытом периоде
-(task_stage1 п.1.4).
+"""Постановка на пост: только охранные позиции и только в периоде-ЧЕРНОВИКЕ
+(task_stage1 п.1.4; `pending_review` блокирует так же, как `closed`).
 
 Было: `POST /vahta/assignments` с `position_id` ставил на пост ЛЮБОЕ рабочее
 место, после чего его строка в ведомости считалась вахтой, а обычная зарплата
@@ -175,9 +175,13 @@ class TestClosedPeriod:
     def assignment(self, db_session, gbr_place, rodionov) -> GuardAssignment:
         return _assign(db_session, gbr_place, rodionov)
 
-    def test_new_assignment_is_rejected(self, client, users, db_session, gbr_place, guard_dept, rodionov):
-        """Приёмка: назначение в закрытом месяце отклоняется."""
-        _close(db_session, guard_dept)
+    @pytest.mark.parametrize("status", ["closed", "pending_review"])
+    def test_new_assignment_is_rejected(
+        self, client, users, db_session, gbr_place, guard_dept, rodionov, status,
+    ):
+        """Приёмка: назначение в закрытом месяце отклоняется. Месяц на проверке у
+        бухгалтера защищён так же — иначе он меняется под проверяющим."""
+        _close(db_session, guard_dept, status=status)
 
         resp = _post(client, "admin", crew_id=gbr_place.id,
                      position_id=rodionov.primary_position.id)
@@ -185,13 +189,14 @@ class TestClosedPeriod:
         assert resp.status_code == 409
         assert db_session.query(GuardAssignment).count() == 0
 
+    @pytest.mark.parametrize("status", ["closed", "pending_review"])
     @pytest.mark.parametrize("call", [
         "patch", "delete", "day_on", "day_off", "days", "replace",
     ])
     def test_every_change_of_an_assignment_is_rejected(
-        self, client, users, db_session, guard_dept, assignment, second_guard, call,
+        self, client, users, db_session, guard_dept, assignment, second_guard, call, status,
     ):
-        _close(db_session, guard_dept)
+        _close(db_session, guard_dept, status=status)
         headers = _auth(client, "admin")
         aid = assignment.id
         resp = {
@@ -211,10 +216,11 @@ class TestClosedPeriod:
         assert {s.work_date.day for s in kept.shifts} == FIRST_HALF
         assert kept.rate == Decimal("5000")
 
+    @pytest.mark.parametrize("status", ["closed", "pending_review"])
     def test_copy_into_closed_month_is_rejected(
-        self, client, users, db_session, guard_dept, assignment,
+        self, client, users, db_session, guard_dept, assignment, status,
     ):
-        _close(db_session, guard_dept, month=MONTH + 1)
+        _close(db_session, guard_dept, month=MONTH + 1, status=status)
 
         resp = client.post(f"/api/vahta/{YEAR}/{MONTH + 1}/copy-previous",
                            headers=_auth(client, "admin"))
@@ -222,10 +228,11 @@ class TestClosedPeriod:
         assert resp.status_code == 409
         assert db_session.query(GuardAssignment).filter_by(month=MONTH + 1).count() == 0
 
+    @pytest.mark.parametrize("status", ["closed", "pending_review"])
     def test_quick_hire_with_assignment_is_rejected(
-        self, client, users, db_session, guard_dept, gbr_place,
+        self, client, users, db_session, guard_dept, gbr_place, status,
     ):
-        _close(db_session, guard_dept)
+        _close(db_session, guard_dept, status=status)
         before = db_session.query(Employee).count()
 
         resp = client.post("/api/vahta/quick-hire", json={
@@ -249,12 +256,8 @@ class TestClosedPeriod:
         after = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH).rows[0].accrued_total
         assert before == after == Decimal("75000.00")
 
-    @pytest.mark.parametrize("status", ["draft", "pending_review"])
-    def test_not_closed_month_is_editable(
-        self, client, users, db_session, guard_dept, assignment, status,
-    ):
-        """Блокирует только `closed`: так сформулирована задача («в закрытом периоде»)."""
-        _close(db_session, guard_dept, status=status)
+    def test_draft_month_is_editable(self, client, users, db_session, guard_dept, assignment):
+        _close(db_session, guard_dept, status="draft")
 
         resp = client.put("/api/vahta/day", json={
             "assignment_id": assignment.id, "day": 20, "value": True,
@@ -281,13 +284,23 @@ class TestClosedPeriod:
 class TestScreenKnowsAboutClosedMonth:
     """Кнопка, которая ответит 409, не должна выглядеть рабочей."""
 
-    def test_closed_month_is_read_only(self, client, users, db_session, guard_dept, gbr_place):
-        _close(db_session, guard_dept)
+    @pytest.mark.parametrize("status", ["closed", "pending_review"])
+    def test_locked_month_is_read_only(
+        self, client, users, db_session, guard_dept, gbr_place, status,
+    ):
+        _close(db_session, guard_dept, status=status)
         data = client.get(f"/api/vahta/{YEAR}/{MONTH}", headers=_auth(client, "admin")).json()
-        assert data["period_closed"] is True
+        # Статус отдаётся как есть: «на проверке» и «закрыт» экран подписывает по-разному.
+        assert data["period_lock"] == status
         assert data["can_edit"] is False
 
     def test_open_month_is_editable(self, client, users, gbr_place):
         data = client.get(f"/api/vahta/{YEAR}/{MONTH}", headers=_auth(client, "admin")).json()
-        assert data["period_closed"] is False
+        assert data["period_lock"] is None
         assert data["can_edit"] is True
+
+    def test_refusal_names_the_status(self, client, users, db_session, guard_dept, gbr_place):
+        _close(db_session, guard_dept, status="pending_review")
+        resp = _post(client, "admin", crew_id=gbr_place.id)
+        assert resp.status_code == 409
+        assert "на проверке" in resp.json()["detail"]

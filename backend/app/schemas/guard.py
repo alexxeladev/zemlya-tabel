@@ -317,9 +317,10 @@ class GuardMonthRead(BaseModel):
     halves: list[GuardHalfTotal] = []
     company_totals: list[GuardCompanyTotal] = []
     can_edit: bool = False
-    #: Период табеля охранного подразделения за этот месяц закрыт: назначения не
-    #: меняются (task_stage1 п.1.4), `can_edit` при этом всегда False.
-    period_closed: bool = False
+    #: Статус, которым период табеля охранного подразделения закрыт для правок:
+    #: `pending_review` или `closed`; None — черновик. Назначения при нём не
+    #: меняются (task_stage1 п.1.4), `can_edit` всегда False.
+    period_lock: str | None = None
     can_see_money: bool = False
 
 
