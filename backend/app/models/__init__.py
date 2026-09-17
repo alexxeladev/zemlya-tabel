@@ -40,6 +40,7 @@ from app.models.guard_posts import (
     GuardSiteShare,
     GuardZone,
 )
+from app.models.guard_settings import DEFAULT_EMPLOYER_TAX_PERCENT, GuardSettings
 from app.models.loan_deductions import LoanDeduction
 from app.models.night_shifts import NightShift
 from app.models.positions import (
@@ -93,6 +94,8 @@ __all__ = [
     "GuardSiteShare",
     "GuardZone",
     "GuardShift",
+    "GuardSettings",
+    "DEFAULT_EMPLOYER_TAX_PERCENT",
     "HALF_FIRST",
     "HALF_SECOND",
     "PER_SHIFT_GUARD_KINDS",

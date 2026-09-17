@@ -42,6 +42,7 @@ from app.models.guard_posts import (
     GuardSiteShare,
     GuardZone,
 )
+from app.models.guard_settings import DEFAULT_EMPLOYER_TAX_PERCENT, GuardSettings
 from app.models.positions import PAY_TYPE_PER_SHIFT, EmployeePosition
 from app.services.org_access import can_access_department, is_department_scoped
 
@@ -57,6 +58,34 @@ _TAB_NUMBER_RE = re.compile(rf"^{re.escape(TAB_NUMBER_PREFIX)}(\d+)$")
 
 class GuardError(Exception):
     """Ошибка модуля вахты; роутер переводит её в 422."""
+
+
+# ── Настройки вахты ───────────────────────────────────────────────────────────
+
+def employer_tax_percent(db: Session) -> Decimal:
+    """Ставка налога на официальную часть выплаты, в процентах (task_vahta_taxes).
+
+    Единственное место, откуда расчёт вахты берёт ставку. Строки настроек нет
+    (база без миграции) — действует ставка по умолчанию.
+    """
+    settings = db.query(GuardSettings).order_by(GuardSettings.id).first()
+    if settings is None:
+        return DEFAULT_EMPLOYER_TAX_PERCENT
+    return Decimal(str(settings.employer_tax_percent))
+
+
+def set_employer_tax_percent(db: Session, percent: Decimal) -> GuardSettings:
+    """Задать ставку налога. Строки настроек нет — заводится. Коммит снаружи."""
+    if percent < 0 or percent > 100:
+        raise GuardError("Ставка налога должна быть от 0 до 100 %")
+    settings = db.query(GuardSettings).order_by(GuardSettings.id).first()
+    if settings is None:
+        settings = GuardSettings(employer_tax_percent=percent)
+        db.add(settings)
+    else:
+        settings.employer_tax_percent = percent
+    db.flush()
+    return settings
 
 
 # ── Отделы охраны ─────────────────────────────────────────────────────────────
