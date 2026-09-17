@@ -19,6 +19,13 @@
 ведёт смены, но сумм не видит: прямой запрос к API тоже вернёт `null`. Правило
 «кто видит деньги» берётся из `org_access.can_see_finances` — второго списка
 ролей заводить нельзя.
+
+**Режим отображения** (task_vahta_taxes): месяц целиком, первая половина (1–15)
+или вторая (16–конец). В режиме половины ВСЕ суммы и смены — строк, карточек,
+зон, подвала и юрлиц — считаются только за неё; налог — от официальной выплаты
+этой половины. Поле `days` строки при этом остаётся полным набором отметок
+месяца: это данные, а не итог, и фронт отправляет набор дней строки целиком —
+урезанный набор стёр бы смены второй половины при первой же отметке.
 """
 from __future__ import annotations
 
@@ -46,6 +53,7 @@ from app.schemas.guard import (
 )
 from app.services.company_order import company_order_by
 from app.services.guard_duty import (
+    employer_tax_percent,
     guard_department_ids,
     list_assignments,
     list_zones,
@@ -61,8 +69,13 @@ from app.services.org_access import can_see_finances
 
 _ZERO = Decimal("0")
 
-def calculate_assignment(assignment: GuardAssignment):
-    """Расчёт одной строки табеля из её данных."""
+def calculate_assignment(assignment: GuardAssignment, *, tax_percent: Decimal):
+    """Расчёт одной строки табеля из её данных.
+
+    `tax_percent` обязателен и без значения по умолчанию: забытая ставка молча
+    дала бы нулевой налог и заниженную базу разнесения. Берётся из
+    `guard_duty.employer_tax_percent`.
+    """
     return calculate_guard_row(
         kind=assignment.kind,
         rate=Decimal(str(assignment.rate)),
@@ -72,31 +85,44 @@ def calculate_assignment(assignment: GuardAssignment):
         premium={h: assignment.premium(h) for h in GUARD_HALVES},
         penalty={h: assignment.penalty(h) for h in GUARD_HALVES},
         official={h: assignment.official_payout(h) for h in GUARD_HALVES},
+        tax_percent=tax_percent,
     )
 
 
-def assignment_distribution(assignment: GuardAssignment) -> dict[int, Decimal]:
-    """Разбивка «Итого начислено» строки по юрлицам её МЕСТА РАБОТЫ.
+def assignment_distribution(
+    assignment: GuardAssignment, *, tax_percent: Decimal
+) -> dict[int, Decimal]:
+    """Разбивка затрат строки (начислено + налог) по юрлицам её МЕСТА РАБОТЫ.
 
     У поста проценты берутся от объекта, у экипажа — от него самого; решает это
     один `shares_map`, чтобы «откуда проценты» не расползлось по коду.
     """
-    result = calculate_assignment(assignment)
-    return distribute_guard_amount(result.accrued, shares_map(assignment.place))
+    result = calculate_assignment(assignment, tax_percent=tax_percent)
+    return distribute_guard_amount(
+        result.distribution_base, shares_map(assignment.place)
+    )
 
 
-def _row_read(assignment: GuardAssignment, with_money: bool) -> GuardRowRead:
-    result = calculate_assignment(assignment)
+def _row_read(
+    assignment: GuardAssignment,
+    with_money: bool,
+    tax_percent: Decimal,
+    half: int | None = None,
+) -> GuardRowRead:
+    result = calculate_assignment(assignment, tax_percent=tax_percent)
+    if half is not None:
+        # Режим половины: суммы строки — только за неё (см. шапку модуля).
+        result = result.only_half(half)
     position = assignment.position
     employee = position.employee if position else None
 
     halves = []
-    for half in GUARD_HALVES:
-        first, last = half_bounds(assignment.year, assignment.month, half)
-        h = result.halves[half]
+    for number in sorted(result.halves):
+        first, last = half_bounds(assignment.year, assignment.month, number)
+        h = result.halves[number]
         halves.append(
             GuardHalfRead(
-                half=half,
+                half=number,
                 first_day=first,
                 last_day=last,
                 shifts=h.shifts,
@@ -106,6 +132,9 @@ def _row_read(assignment: GuardAssignment, with_money: bool) -> GuardRowRead:
                 official_payout=h.official_payout if with_money else None,
                 accrued=h.accrued if with_money else None,
                 net_payout=h.net_payout if with_money else None,
+                net_payout_exact=h.net_payout_exact if with_money else None,
+                tax=h.tax if with_money else None,
+                distribution_base=h.distribution_base if with_money else None,
             )
         )
 
@@ -144,13 +173,14 @@ def _row_read(assignment: GuardAssignment, with_money: bool) -> GuardRowRead:
         official_payout=result.official_payout if with_money else None,
         accrued=result.accrued if with_money else None,
         net_payout=result.net_payout if with_money else None,
+        net_payout_exact=result.net_payout_exact if with_money else None,
+        tax=result.tax if with_money else None,
+        distribution_base=result.distribution_base if with_money else None,
+        # База разнесения — затраты: начислено + налог на официальную часть.
         distribution=(
-            {
-                cid: amount
-                for cid, amount in distribute_guard_amount(
-                    result.accrued, shares_map(assignment.place)
-                ).items()
-            }
+            distribute_guard_amount(
+                result.distribution_base, shares_map(assignment.place)
+            )
             if with_money
             else None
         ),
@@ -163,20 +193,28 @@ def build_guard_month(
     year: int,
     month: int,
     department_id: int | None = None,
+    half: int | None = None,
 ) -> GuardMonthRead:
-    """Табель вахты за месяц, СГРУППИРОВАННЫЙ ПО ЗОНАМ обслуживания."""
+    """Табель вахты за месяц, СГРУППИРОВАННЫЙ ПО ЗОНАМ обслуживания.
+
+    `half` — режим отображения: None — месяц целиком, 1 или 2 — расчётная
+    половина; суммы и смены тогда считаются только за неё.
+    """
+    if half is not None and half not in GUARD_HALVES:
+        raise ValueError(f"Неизвестная половина месяца: {half}")
     department_ids = guard_department_ids(db, actor)
     if department_id is not None:
         department_ids = [d for d in department_ids if d == department_id]
 
     with_money = can_see_finances(actor)
+    tax_percent = employer_tax_percent(db)
     assignments = list_assignments(db, year, month, department_ids)
     zones = list_zones(db, department_ids)
 
     rows_by_crew: dict[int, list[GuardRowRead]] = {}
     rows_by_site: dict[int, list[GuardRowRead]] = {}
     for assignment in assignments:
-        row = _row_read(assignment, with_money)
+        row = _row_read(assignment, with_money, tax_percent, half)
         if assignment.crew_id is not None:
             rows_by_crew.setdefault(assignment.crew_id, []).append(row)
         elif row.site_id is not None:
@@ -224,12 +262,13 @@ def build_guard_month(
     all_rows = [r for zc in zone_cards for card in zc.cards for r in card.rows]
 
     # Итоги по расчётным половинам — «выплата дважды» видна прямо в подвале.
+    shown_halves = GUARD_HALVES if half is None else (half,)
     half_totals = []
-    for half in GUARD_HALVES:
-        per_half = [h for r in all_rows for h in r.halves if h.half == half]
+    for number in shown_halves:
+        per_half = [h for r in all_rows for h in r.halves if h.half == number]
         half_totals.append(
             GuardHalfTotal(
-                half=half,
+                half=number,
                 shifts=sum(h.shifts for h in per_half),
                 accrued=(
                     sum((h.accrued or _ZERO for h in per_half), _ZERO)
@@ -237,6 +276,10 @@ def build_guard_month(
                 ),
                 net_payout=(
                     sum((h.net_payout or _ZERO for h in per_half), _ZERO)
+                    if with_money else None
+                ),
+                tax=(
+                    sum((h.tax or _ZERO for h in per_half), _ZERO)
                     if with_money else None
                 ),
             )
@@ -259,9 +302,20 @@ def build_guard_month(
             GuardCompanyTotal(company_id=cid, amount=totals[cid]) for (cid,) in ordered
         ]
 
+    if half is None:
+        first_day, last_day = 1, monthrange(year, month)[1]
+    else:
+        first_day, last_day = half_bounds(year, month, half)
+
+    def _money_sum(values) -> Decimal | None:
+        return sum((v or _ZERO for v in values), _ZERO) if with_money else None
+
     return GuardMonthRead(
         year=year,
         month=month,
+        view_half=half,
+        first_day=first_day,
+        last_day=last_day,
         days_in_month=monthrange(year, month)[1],
         first_half_last_day=FIRST_HALF_LAST_DAY,
         departments=department_ids,
@@ -272,6 +326,10 @@ def build_guard_month(
             sum((r.net_payout or _ZERO for r in all_rows), _ZERO)
             if with_money else None
         ),
+        total_tax=_money_sum(r.tax for r in all_rows),
+        total_distribution_base=_money_sum(r.distribution_base for r in all_rows),
+        total_distribution=_money_sum(t.amount for t in company_totals),
+        employer_tax_percent=tax_percent if with_money else None,
         halves=half_totals,
         company_totals=company_totals,
         can_edit=actor.role in ("admin", "manager", "timekeeper"),

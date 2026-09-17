@@ -180,17 +180,20 @@ class TestDistribution:
 
 
 class TestNoRounding:
-    """Суммы вахты НЕ округляются — ни к выплате, ни в распределении (п.7)."""
+    """Начисления и распределение НЕ округляются; «к выплате» — вверх до 500
+    по каждой половине (правка заказчика)."""
 
-    def test_payout_keeps_kopecks_and_is_not_rounded_to_thousand(self):
+    def test_payout_rounds_up_to_500_accrued_keeps_kopecks(self):
         row = calculate_guard_row(
             kind="guard", rate=Decimal("3333.33"), year=2026, month=8,
             days=_all_days(1, 3), premium={1: Decimal("0.55")},
         )
         assert row.salary == Decimal("9999.99")
         assert row.accrued == Decimal("10000.54")
-        # Правило основной системы дало бы 10 000 или 11 000 — в вахте его нет.
-        assert row.net_payout == Decimal("10000.54")
+        assert row.net_payout_exact == Decimal("10000.54")
+        # Вверх до 500, а не к ближайшей тысяче, как в основной системе.
+        assert row.net_payout == Decimal("10500")
+        assert row.rounding_tail == Decimal("-499.46")
 
     def test_distribution_sum_equals_base_exactly(self):
         amounts = distribute_guard_amount(

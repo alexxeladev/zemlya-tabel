@@ -192,6 +192,10 @@ class StatementRow(BaseModel):
     # не приписываются (иначе затраты юрлиц превысили бы начисленное).
     # Не путать с `rounding_tail` — тот про округление ВЫПЛАТЫ.
     unallocated_remainder: Decimal = Decimal("0")
+    # Вахта (task_vahta_taxes): налог на официальную часть выплаты, включённый в
+    # базу распределения. Ровно на эту сумму Σ распределения строки больше
+    # «Итого начислено»; у строк прочих подразделений всегда 0.
+    guard_tax_amount: Decimal = Decimal("0")
 
     is_calculable: bool
     note: str | None

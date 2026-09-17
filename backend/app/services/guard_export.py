@@ -4,7 +4,10 @@
 Формат снят с образца заказчика `Табель зп блок охрана август.xlsx`: шапка с
 юрлицом и отчётным периодом, колонки № · ФИО · Должность · Смена/руб · КП ·
 сетка дней · Кол-во смен · Зарплата · Трудоустройство · Премия · Штраф ·
-Оф. выплата · К выплате · Примечания · юрлица · Итого разбивка.
+Оф. выплата · К выплате · Примечания · юрлица · Итого разбивка · Налоги.
+
+«Итого разбивка» — база разнесения: начислено ПЛЮС налог на официальную часть
+(task_vahta_taxes); хвостовая «Налоги» объясняет, почему она больше начисленного.
 
 Отличие от образца **одно и согласовано**: у заказчика два листа по половинам
 месяца (1–15 и 16–31), здесь — ОДИН лист на месяц с полной сеткой 1–31 и чертой
@@ -96,7 +99,11 @@ def generate_guard_timesheet_excel(db: Session, month: GuardMonthRead) -> bytes:
     col_tail_start = col_days_start + len(days)
     col_companies_start = col_tail_start + len(_TAIL_HEADERS)
     col_total = col_companies_start + len(company_ids)
-    total_cols = col_total
+    # «Налоги» — хвостом ПОСЛЕ «Итого разбивка» (task_vahta_taxes): разбивка
+    # включает налог на официальную часть и больше «Зарплата + премия − штраф»
+    # ровно на эту колонку. В середину не вставлять — порядок колонок из образца.
+    col_tax = col_total + 1
+    total_cols = col_tax
 
     # ── Шапка ────────────────────────────────────────────────────────────────
     ws.cell(row=1, column=2).value = "ВАХТА — табель охраны"
@@ -124,6 +131,8 @@ def generate_guard_timesheet_excel(db: Session, month: GuardMonthRead) -> bytes:
         )
         cell.comment = None
     _set(ws, header_row, col_total, "Итого разбивка", bold=True, fill="FFEFF7EE", wrap=True)
+    _set(ws, header_row, col_tax, "Налоги (входят в разбивку)", bold=True,
+         fill="FFEFF7EE", wrap=True)
 
     row = header_row + 1
 
@@ -206,7 +215,9 @@ def _write_cards(ws, row, cards: list[GuardCardRead], month, days, col_days_star
                 # Юрлицо без доли пишем НУЛЁМ, а не пустой ячейкой: так в
                 # образце — по строке видно, что оно в распределение не вошло.
                 _set(ws, row, col_companies_start + i, _money(distribution.get(cid)))
-            _set(ws, row, col_total, _money(item.accrued), bold=True)
+            # «Итого разбивка» — база разнесения: начислено + налог.
+            _set(ws, row, col_total, _money(item.distribution_base), bold=True)
+            _set(ws, row, col_total + 1, _money(item.tax))
             row += 1
     return row
 
@@ -229,7 +240,12 @@ def _finish(ws, wb, month, days, col_days_start, col_tail_start,
             ws, row, col_companies_start + i,
             _money(company_totals.get(cid)), bold=True, fill="FFF2F2F2",
         )
-    _set(ws, row, col_total, _money(month.total_accrued), bold=True, fill="FFF2F2F2")
+    _set(
+        ws, row, col_total,
+        _money(month.total_distribution_base),
+        bold=True, fill="FFF2F2F2",
+    )
+    _set(ws, row, col_total + 1, _money(month.total_tax), bold=True, fill="FFF2F2F2")
     row += 2
 
     # Суммы по каждой расчётной половине — то, ради чего в образце два листа.
@@ -239,7 +255,8 @@ def _finish(ws, wb, month, days, col_days_start, col_tail_start,
         ws.cell(row=row, column=2).value = (
             f"Половина {half.half} ({first}–{last}): смен {half.shifts}, "
             f"начислено {_money(half.accrued):.2f}, "
-            f"к выплате {_money(half.net_payout):.2f}"
+            f"к выплате {_money(half.net_payout):.2f}, "
+            f"налоги {_money(half.tax):.2f}"
         )
         ws.cell(row=row, column=2).font = Font(name="Arial", size=9, bold=True)
         row += 1
@@ -258,6 +275,7 @@ def _finish(ws, wb, month, days, col_days_start, col_tail_start,
     for i in range(len(company_ids)):
         ws.column_dimensions[get_column_letter(col_companies_start + i)].width = 14
     ws.column_dimensions[get_column_letter(col_total)].width = 15
+    ws.column_dimensions[get_column_letter(col_total + 1)].width = 14
     ws.freeze_panes = ws.cell(row=header_row + 1, column=col_days_start)
 
     buffer = BytesIO()

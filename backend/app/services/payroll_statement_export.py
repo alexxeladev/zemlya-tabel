@@ -222,6 +222,13 @@ def _note_text(row: StatementRow) -> str:
     # непонятно, почему фактический % юрлица разошёлся с заданным в каскаде.
     if row.targeted_note:
         note = (note + "; " if note else "") + row.targeted_note
+    # Вахта: разбивка больше «Итого начислено» на налог — объяснить в строке.
+    if row.guard_tax_amount:
+        note = (note + "; " if note else "") + (
+            "разбивка включает налоги "
+            + f"{row.guard_tax_amount:,.2f}".replace(",", " ").replace(".", ",")
+            + " ₽"
+        )
     return note
 
 

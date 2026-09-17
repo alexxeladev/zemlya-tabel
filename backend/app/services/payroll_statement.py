@@ -423,8 +423,15 @@ def distribution_base(p: EmployeePayrollRead) -> Decimal:
 
     Одно место на всю систему: ведомость, блок распределения в табеле и Excel
     обязаны делить одно и то же число, иначе экраны разойдутся.
+
+    **Вахта — уточнение того же принципа, а не исключение** (task_vahta_taxes):
+    к затратам на официально устроенного охранника добавляется налоговая
+    нагрузка на официальную часть выплаты (`guard_tax_amount` = оф. выплата ×
+    ставка из настроек вахты). Поэтому у строки вахты сумма по юрлицам больше
+    «Итого начислено» ровно на налог. У всех остальных строк налог ноль — их
+    база не меняется ни на рубль.
     """
-    return accrued_total(p)
+    return accrued_total(p) + p.guard_tax_amount
 
 
 def unallocated_remainder(base: Decimal, amounts: dict[int, Decimal]) -> Decimal:
@@ -1092,6 +1099,7 @@ def build_payroll_statement(
             distribution=distribution,
             distribution_total=sum(dist_amounts.values(), _ZERO),
             unallocated_remainder=row_unallocated,
+            guard_tax_amount=p.guard_tax_amount,
             is_calculable=p.is_calculable,
             note=p.reason_if_not_calculable,
         ))

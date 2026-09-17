@@ -178,6 +178,12 @@ class GuardHalfRead(BaseModel):
     official_payout: Decimal | None = None
     accrued: Decimal | None = None
     net_payout: Decimal | None = None
+    #: Точная «к выплате» до округления вверх до 500 ₽.
+    net_payout_exact: Decimal | None = None
+    #: Налог на официальную выплату половины (task_vahta_taxes).
+    tax: Decimal | None = None
+    #: База разнесения половины: начислено + налог.
+    distribution_base: Decimal | None = None
 
 
 class GuardRowRead(BaseModel):
@@ -220,7 +226,14 @@ class GuardRowRead(BaseModel):
     official_payout: Decimal | None = None
     accrued: Decimal | None = None
     net_payout: Decimal | None = None
-    #: Разбивка «Итого начислено» по юрлицам согласно процентам ПОСТА.
+    #: Точная «к выплате» до округления (сумма точных по половинам).
+    net_payout_exact: Decimal | None = None
+    #: Налог на официальную часть выплаты (официальная выплата × ставка).
+    tax: Decimal | None = None
+    #: База разнесения — затраты компании: «итого начислено» + налог.
+    distribution_base: Decimal | None = None
+    #: Разбивка БАЗЫ РАЗНЕСЕНИЯ (начислено + налог) по юрлицам согласно
+    #: процентам места работы. Сумма больше «итого начислено» ровно на `tax`.
     distribution: dict[int, Decimal] | None = None
 
 
@@ -267,13 +280,20 @@ class GuardHalfTotal(BaseModel):
     shifts: int
     accrued: Decimal | None = None
     net_payout: Decimal | None = None
+    tax: Decimal | None = None
 
 
 class GuardMonthRead(BaseModel):
-    """Табель вахты за месяц целиком."""
+    """Табель вахты за месяц — целиком или за одну расчётную половину."""
 
     year: int
     month: int
+    #: Режим отображения: None — месяц целиком, 1 или 2 — расчётная половина.
+    #: В режиме половины все суммы и смены посчитаны только за неё.
+    view_half: int | None = None
+    #: Первый и последний день показанного периода (1–31, 1–15 или 16–31).
+    first_day: int = 1
+    last_day: int = 31
     days_in_month: int
     #: Последний день первой расчётной половины — по нему рисуется черта в сетке.
     first_half_last_day: int
@@ -283,10 +303,32 @@ class GuardMonthRead(BaseModel):
     total_shifts: int = 0
     total_accrued: Decimal | None = None
     total_net_payout: Decimal | None = None
+    #: Налоги на официальную часть за показанный период — ровно на столько
+    #: сумма разнесения по юрлицам больше «итого начислено».
+    total_tax: Decimal | None = None
+    #: База разнесения за период: total_accrued + total_tax.
+    total_distribution_base: Decimal | None = None
+    #: Сумма разнесения по юрлицам (= total_accrued + total_tax, если у всех
+    #: строк задано распределение места работы).
+    total_distribution: Decimal | None = None
+    #: Действующая ставка налога, в процентах — для подписи на экране.
+    employer_tax_percent: Decimal | None = None
     halves: list[GuardHalfTotal] = []
     company_totals: list[GuardCompanyTotal] = []
     can_edit: bool = False
     can_see_money: bool = False
+
+
+# ── Настройки вахты ───────────────────────────────────────────────────────────
+
+class GuardSettingsRead(BaseModel):
+    """Настройки вахты. Ставка — в ПРОЦЕНТАХ (40 = 40 %)."""
+
+    employer_tax_percent: Decimal
+
+
+class GuardSettingsUpdate(BaseModel):
+    employer_tax_percent: Decimal = Field(ge=0, le=100)
 
 
 # ── Мутации ───────────────────────────────────────────────────────────────────

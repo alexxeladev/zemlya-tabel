@@ -12,9 +12,12 @@
 
 Три отличия от общего расчёта, которые эта врезка обязана сохранить:
 
-* база распределения — «Итого начислено» ВКЛЮЧАЯ премию (75 000 + 230 = 75 230);
-* суммы НЕ округляются — ни «к выплате», ни доли по юрлицам (в основной системе
-  «к выплате» режется до ближайшей тысячи, здесь этого нет);
+* база распределения — затраты: «Итого начислено» ВКЛЮЧАЯ премию (75 000 +
+  230 = 75 230) ПЛЮС налог на официальную часть выплаты (task_vahta_taxes:
+  оф. выплата 25 230 × 40 % = 10 092 → база 85 322). Поэтому у строки вахты
+  сумма по юрлицам больше «Итого начислено» ровно на налог;
+* «к выплате» округляется ВВЕРХ до 500 ₽ по каждой половине (в основной
+  системе — к ближайшей тысяче), доли по юрлицам не округляются вовсе;
 * проценты берутся от МЕСТА РАБОТЫ — у поста от его объекта, у выездного
   экипажа ГБР от самого экипажа, — а каскад (месяц → карточка → отдел → часы)
   к этим строкам не применяется вовсе.
@@ -37,7 +40,7 @@ from app.models.guard_assignments import GuardAssignment
 from app.models.guard_posts import GuardCrew, GuardPost, GuardSite
 from app.models.positions import PAY_TYPE_PER_SHIFT, EmployeePosition
 from app.schemas.payroll import EmployeePayrollRead
-from app.services.guard_duty import shares_map
+from app.services.guard_duty import employer_tax_percent, shares_map
 from app.services.guard_month import calculate_assignment
 from app.services.guard_payroll import (
     HOURS_PER_SHIFT,
@@ -110,9 +113,10 @@ def load_guard_rows(
         .all()
     )
 
+    tax_percent = employer_tax_percent(db) if assignments else None
     rows: dict[int, GuardStatementRow] = {}
     for assignment in assignments:
-        result = calculate_assignment(assignment)
+        result = calculate_assignment(assignment, tax_percent=tax_percent)
         existing = rows.get(assignment.position_id)
         if existing is None:
             rows[assignment.position_id] = GuardStatementRow(
@@ -139,6 +143,7 @@ def _merge(left: GuardRowResult, right: GuardRowResult) -> GuardRowResult:
             premium=a.premium + b.premium,
             penalty=a.penalty + b.penalty,
             official_payout=a.official_payout + b.official_payout,
+            tax=a.tax + b.tax,
         )
     return GuardRowResult(halves=halves)
 
@@ -191,16 +196,19 @@ def guard_payroll_read(
         # Штраф вахты уменьшает «Итого начислено» (и, значит, базу распределения):
         # так сформулировано в ТЗ — «зарплата плюс премия минус штраф».
         guard_penalty_amount=result.penalty,
+        # Налог на официальную часть: в «Итого начислено» не входит, но
+        # увеличивает базу распределения по юрлицам (task_vahta_taxes).
+        guard_tax_amount=result.tax,
         advance_deduction=result.official_payout,
         loan_deduction=_ZERO,
         loan_remaining=_ZERO,
         loan_planned_deduction=_ZERO,
         loan_is_manual=False,
         total_deductions=result.official_payout,
-        # БЕЗ ОКРУГЛЕНИЯ: точная сумма и есть выплата, хвоста округления нет.
+        # «К выплате» вверх до 500 ₽ по каждой половине; хвост ≤ 0 (доплата).
         net_payout=result.net_payout,
-        net_payout_exact=result.net_payout,
-        rounding_tail=_ZERO,
+        net_payout_exact=result.net_payout_exact,
+        rounding_tail=result.rounding_tail,
         breakdown_by_company=[],
         is_calculable=True,
         reason_if_not_calculable=None,

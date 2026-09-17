@@ -47,6 +47,8 @@ from app.schemas.guard import (
     GuardPostUpdate,
     GuardQuickHireInput,
     GuardReplaceInput,
+    GuardSettingsRead,
+    GuardSettingsUpdate,
     GuardShareRead,
     GuardSimilarEmployee,
     GuardSiteCreate,
@@ -72,6 +74,7 @@ from app.services.guard_duty import (
     delete_post,
     delete_site,
     delete_zone,
+    employer_tax_percent,
     find_similar_employees,
     guard_department_ids,
     list_assignments,
@@ -84,6 +87,7 @@ from app.services.guard_duty import (
     require_department_access,
     set_crew_shares,
     set_days,
+    set_employer_tax_percent,
     set_site_shares,
     toggle_day,
     update_crew,
@@ -130,6 +134,44 @@ def _access(db: Session, actor: Employee, department_id: int) -> None:
         require_department_access(db, actor, department_id)
     except GuardError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
+
+
+# ── Настройки вахты ───────────────────────────────────────────────────────────
+
+@router.get("/settings", response_model=GuardSettingsRead)
+def get_settings(
+    db: Session = Depends(get_db), actor: Employee = Depends(get_current_user)
+):
+    """Ставка налога на официальную часть выплаты — деньги, табельщику 403."""
+    _require_vahta(actor)
+    _require_money(actor)
+    return GuardSettingsRead(employer_tax_percent=employer_tax_percent(db))
+
+
+@router.patch("/settings", response_model=GuardSettingsRead)
+def patch_settings(
+    payload: GuardSettingsUpdate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Сменить ставку налога (admin и менеджер охраны, как прочие настройки).
+
+    Ставка одна на все месяцы: правка пересчитывает разнесение и прошлых.
+    """
+    _require_settings(actor)
+    before = employer_tax_percent(db)
+    try:
+        settings = set_employer_tax_percent(db, payload.employer_tax_percent)
+    except GuardError as exc:
+        raise _guard_error(exc)
+    if before != payload.employer_tax_percent:
+        log_action(
+            db, actor, "guard_settings", settings.id, "update",
+            before={"employer_tax_percent": str(before)},
+            after={"employer_tax_percent": str(payload.employer_tax_percent)},
+        )
+    db.commit()
+    return GuardSettingsRead(employer_tax_percent=employer_tax_percent(db))
 
 
 # ── Отделы охраны ─────────────────────────────────────────────────────────────
@@ -542,11 +584,13 @@ def get_month(
     year: int,
     month: int,
     department_id: int | None = Query(default=None),
+    #: Режим отображения: не задан — месяц целиком, 1 — дни 1–15, 2 — 16–конец.
+    half: int | None = Query(default=None, ge=1, le=2),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
     _require_vahta(actor)
-    return build_guard_month(db, actor, year, month, department_id)
+    return build_guard_month(db, actor, year, month, department_id, half)
 
 
 def _assignment_or_404(db: Session, actor: Employee, assignment_id: int) -> GuardAssignment:

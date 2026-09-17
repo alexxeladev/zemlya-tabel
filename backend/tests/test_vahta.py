@@ -471,8 +471,8 @@ class TestStatementIntegration:
         statement = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH)
         assert statement.rows[0].accrued_total == Decimal("74230.00")
 
-    def test_net_payout_is_not_rounded(self, db_session, gbr_place, rodionov):
-        """В вахте округления к тысяче НЕТ (п.7): 50 000 − оф. выплата в копейках."""
+    def test_net_payout_rounds_up_to_500(self, db_session, gbr_place, rodionov):
+        """«К выплате» вахты — вверх до 500 ₽, а не к ближайшей тысяче."""
         assignment = create_assignment(
             db_session, year=YEAR, month=MONTH, place=gbr_place,
             position=rodionov.primary_position, days=FIRST_HALF,
@@ -482,8 +482,11 @@ class TestStatementIntegration:
         db_session.commit()
         statement = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH)
         row = statement.rows[0]
-        assert row.net_payout == Decimal("49999.50")
-        assert row.rounding_tail == Decimal("0")
+        assert row.net_payout_exact == Decimal("49999.50")
+        assert row.net_payout == Decimal("50000")
+        assert row.rounding_tail == Decimal("-0.50")
+        # Разнесение от округления не зависит: база — начислено + налог.
+        assert row.accrued_total == Decimal("75230")
 
     def test_round_the_clock_hours(self, db_session, gbr_place, rodionov):
         """Норма — все часы месяца (744), факт — смены × 24 (15 → 360)."""

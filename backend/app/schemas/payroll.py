@@ -128,6 +128,10 @@ class EmployeePayrollRead(BaseModel):
     # Поэтому он здесь, а не в total_deductions — там удержания из уже
     # начисленного, они базу не трогают.
     guard_penalty_amount: Decimal = Decimal("0")
+    # Налог на официальную часть выплаты вахты (task_vahta_taxes). В «Итого
+    # начислено» НЕ входит (это затрата компании, а не деньги сотрудника), но
+    # добавляется к БАЗЕ распределения — см. `payroll_statement.distribution_base`.
+    guard_tax_amount: Decimal = Decimal("0")
 
     breakdown_by_company: list[CompanyBreakdownRead]
     is_calculable: bool
