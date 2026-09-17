@@ -1,6 +1,12 @@
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -96,6 +102,92 @@ def inactive_user(db_session) -> Employee:
     db_session.commit()
     db_session.refresh(emp)
     return emp
+
+
+# ── PostgreSQL: интеграционные тесты (маркер `postgres`) ──────────────────────
+#
+# Основной набор идёт на SQLite in-memory: быстро, но блокировок строк там нет
+# (`SELECT … FOR UPDATE` диалект просто опускает), соединение одно, и гонку
+# транзакций на нём не воспроизвести. Всё, что про конкурентность, живёт здесь.
+#
+#   TEST_POSTGRES_URL=postgresql+psycopg://tabel:tabel@localhost:5432/tabel_test \
+#       pytest -m postgres
+#
+# Без переменной тесты ПРОПУСКАЮТСЯ — обычный `pytest` остаётся зелёным и без
+# Postgres. База обязана называться `*_test`: фикстура чистит её целиком, и
+# направить её на дев-базу нельзя даже по ошибке. Схема строится миграциями
+# Alembic, а не `create_all` — заодно проверяется, что цепочка миграций
+# применяется на пустую базу.
+
+PG_URL = os.environ.get("TEST_POSTGRES_URL")
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
+def _ensure_pg_database(url) -> None:
+    admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            exists = conn.execute(
+                text("select 1 from pg_database where datname = :n"), {"n": url.database}
+            ).scalar()
+            if not exists:
+                conn.execute(text(f'create database "{url.database}"'))
+    finally:
+        admin.dispose()
+
+
+@pytest.fixture(scope="session")
+def pg_engine():
+    if not PG_URL:
+        pytest.skip("TEST_POSTGRES_URL не задан — интеграционные тесты на PostgreSQL пропущены")
+    url = make_url(PG_URL)
+    assert url.get_backend_name() == "postgresql", "TEST_POSTGRES_URL должен указывать на PostgreSQL"
+    assert (url.database or "").endswith("_test"), (
+        f"База «{url.database}» не похожа на тестовую: фикстура чистит все таблицы, "
+        "поэтому имя обязано заканчиваться на _test"
+    )
+    _ensure_pg_database(url)
+    migrate = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=_BACKEND_DIR, env={**os.environ, "DATABASE_URL": PG_URL},
+        capture_output=True, text=True,
+    )
+    assert migrate.returncode == 0, "alembic upgrade head упал:\n" + migrate.stderr[-2000:]
+    engine = create_engine(PG_URL)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture
+def pg_sessions(pg_engine):
+    """Фабрика сессий на ЧИСТОЙ базе: сессия на запрос, как в проде."""
+    with pg_engine.begin() as conn:
+        tables = conn.execute(text(
+            "select tablename from pg_tables "
+            "where schemaname = 'public' and tablename <> 'alembic_version'"
+        )).scalars().all()
+        if tables:
+            names = ", ".join(f'"{t}"' for t in tables)
+            conn.execute(text(f"truncate {names} restart identity cascade"))
+    return sessionmaker(bind=pg_engine, autocommit=False, autoflush=False)
+
+
+@pytest.fixture
+def pg_client(pg_sessions):
+    """TestClient поверх Postgres. В отличие от `client`, сессия у КАЖДОГО запроса
+    своя — иначе два одновременных запроса делили бы одну транзакцию и гонки бы
+    не было по построению."""
+    def override_get_db():
+        db = pg_sessions()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
 
 
 def get_token(client: TestClient, email: str, password: str) -> str:

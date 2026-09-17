@@ -43,3 +43,6 @@ select = ["E", "F", "I"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "postgres: интеграционные тесты на PostgreSQL (нужен TEST_POSTGRES_URL, иначе пропускаются)",
+]
