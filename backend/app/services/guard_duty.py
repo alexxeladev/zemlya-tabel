@@ -43,7 +43,7 @@ from app.models.guard_posts import (
     GuardZone,
 )
 from app.models.guard_settings import DEFAULT_EMPLOYER_TAX_PERCENT, GuardSettings
-from app.models.positions import PAY_TYPE_PER_SHIFT, EmployeePosition
+from app.models.positions import EmployeePosition
 from app.services.org_access import can_access_department, is_department_scoped
 
 _ZERO = Decimal("0")
@@ -775,26 +775,25 @@ def quick_hire(
     if len(full_name) < 3:
         raise GuardError("Укажите ФИО")
 
-    title = GUARD_KIND_LABELS.get(kind or place.default_kind, "Охранник")
+    from app.services.guard_staff import apply_guard_kind
+
+    kind = kind or place.default_kind
     employee = Employee(
         full_name=full_name,
         tab_number=next_tab_number(db),
-        position=title,
+        position=GUARD_KIND_LABELS.get(kind, "Охранник"),
         is_active=True,
     )
     db.add(employee)
     db.flush()
 
     position = employee.ensure_primary_position()
-    position.title = title
     position.department_id = place.department_id
-    # Тип оплаты — посменный: это ближайшее к вахте из общих типов, и карточка
-    # такого сотрудника не выглядит окладной. Сам расчёт вахты берёт ставку из
-    # строки табеля, а не отсюда.
-    position.pay_type = PAY_TYPE_PER_SHIFT
-    position.shift_rate = rate if rate is not None else default_rate(place)
-    position.rate = None
-    position.hour_rate = None
+    # Тип оплаты — от ДОЛЖНОСТИ (task_guard_ownership): начальник охраны на
+    # окладе, остальные посменно. Раньше здесь всем ставился посменный, и
+    # начальник заводился со ставкой за смену. Сам расчёт вахты по-прежнему
+    # берёт ставку из строки табеля.
+    apply_guard_kind(position, kind, rate if rate is not None else default_rate(place))
     db.flush()
     return employee, position
 
@@ -809,13 +808,17 @@ def add_position_for_guard(
     ставками 5 000 и 3 500 под одним табельным номером. Каждое место — своя
     позиция, иначе расчёт по ним не разделить.
     """
+    from app.services.guard_staff import apply_guard_kind
+
     position = EmployeePosition(
         employee_id=employee.id,
-        title=GUARD_KIND_LABELS.get(kind or place.default_kind, "Охранник"),
         department_id=place.department_id,
-        pay_type=PAY_TYPE_PER_SHIFT,
-        shift_rate=rate if rate is not None else default_rate(place),
         is_primary=not employee.positions,
+    )
+    # Тип оплаты — от должности, как при найме.
+    apply_guard_kind(
+        position, kind or place.default_kind,
+        rate if rate is not None else default_rate(place),
     )
     db.add(position)
     db.flush()

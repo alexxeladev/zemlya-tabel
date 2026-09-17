@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
 from app.models.positions import (
+    EMPLOYEE_COMPAT_FIELDS,
     PAY_TYPE_BASE_FIELD,
     EmployeePosition,
 )
@@ -47,13 +48,24 @@ from app.services.employee_import import (
     import_valid_rows,
     parse_import_file,
 )
-from app.services.employees import build_employee
+from app.services.employees import (
+    build_employee,
+    normalize_tab_number,
+    tab_number_conflict,
+)
 from app.services.employment_period import (
     bounds_snapshot,
     clear_entries_outside,
     clearing_report,
 )
 from app.services.finance_masking import mask_employee, mask_employees, mask_position
+from app.services.guard_staff import (
+    GuardOwnedError,
+    ensure_position_create_allowed,
+    ensure_position_edit_allowed,
+    ensure_position_owned_outside_vahta,
+    is_guard_position,
+)
 from app.services.org_access import (
     accessible_department_ids,
     can_access_department,
@@ -91,35 +103,19 @@ _PAY_TYPE_BASE_FIELD = PAY_TYPE_BASE_FIELD
 # доходил до Postgres, IntegrityError не ловился и пользователь получал 500.
 
 
-def _normalize_tab_number(value: str | None) -> str | None:
-    """Пустой номер — это «номера нет» (NULL), а не значение.
-
-    Пустая строка уникальна так же, как любая другая: два сотрудника с «» упёрлись
-    бы в unique, хотя номера нет ни у одного.
-    """
-    if value is None:
-        return None
-    value = value.strip()
-    return value or None
+def _guard_owned(exc: GuardOwnedError) -> HTTPException:
+    """Охранную позицию ведёт вахта (task_guard_ownership): общий справочник
+    получает отказ на бэке, а не только спрятанную кнопку."""
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
 
 
 def _ensure_tab_number_free(
     db: Session, tab_number: str | None, exclude_id: int | None = None,
 ) -> None:
     """409, если табельный номер уже занят другим сотрудником (включая уволенных)."""
-    if tab_number is None:
-        return
-    query = db.query(Employee).filter(Employee.tab_number == tab_number)
-    if exclude_id is not None:
-        query = query.filter(Employee.id != exclude_id)
-    holder = query.first()
-    if holder is None:
-        return
-    suffix = "" if holder.is_active else " (уволен)"
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=f"Табельный номер {tab_number} уже занят: {holder.full_name}{suffix}",
-    )
+    conflict = tab_number_conflict(db, tab_number, exclude_id)
+    if conflict is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=conflict)
 
 
 # ── Смена дат периода работы: очистка часов за новой границей ─────────────────
@@ -286,8 +282,14 @@ def create_employee(
     db: Session = Depends(get_db),
     actor: Employee = Depends(_admin_only),
 ):
-    payload.tab_number = _normalize_tab_number(payload.tab_number)
+    payload.tab_number = normalize_tab_number(payload.tab_number)
     _ensure_tab_number_free(db, payload.tab_number)
+    # Основная позиция в охранном подразделении — это найм охранника, он
+    # оформляется в вахте.
+    try:
+        ensure_position_create_allowed(db, payload.department_id)
+    except GuardOwnedError as exc:
+        raise _guard_owned(exc) from exc
     emp = build_employee(payload)
 
     if payload.access:
@@ -329,8 +331,19 @@ def update_employee(
 
     data = payload.model_dump(exclude_unset=True)
     if "tab_number" in data:
-        data["tab_number"] = _normalize_tab_number(data["tab_number"])
+        data["tab_number"] = normalize_tab_number(data["tab_number"])
         _ensure_tab_number_free(db, data["tab_number"], exclude_id=emp.id)
+
+    # Плоские поля карточки пишут ОСНОВНУЮ позицию; если она охранная — её ведёт
+    # вахта. Поля человека (ФИО, таб. №, даты, активность) правятся здесь.
+    try:
+        ensure_position_edit_allowed(db, emp.primary_position, {
+            EMPLOYEE_COMPAT_FIELDS[name]: value
+            for name, value in data.items()
+            if name in EMPLOYEE_COMPAT_FIELDS
+        })
+    except GuardOwnedError as exc:
+        raise _guard_owned(exc) from exc
 
     before_bounds = bounds_snapshot(emp)
     before = _to_dict(emp)
@@ -339,9 +352,12 @@ def update_employee(
     # Смена типа оплаты гасит поля чужих типов: у окладника не должно остаться
     # ставки за смену или за час, у посменного — оклада (иначе расчёт молча
     # возьмёт не ту базу).
-    for pay_type, base_field in _PAY_TYPE_BASE_FIELD.items():
-        if emp.pay_type != pay_type:
-            setattr(emp, base_field, None)
+    # Охранную основную позицию не трогаем вовсе: её ведёт вахта, и сохранение
+    # ФИО в карточке не должно молча гасить её базу (task_guard_ownership).
+    if not is_guard_position(db, emp.primary_position):
+        for pay_type, base_field in _PAY_TYPE_BASE_FIELD.items():
+            if emp.pay_type != pay_type:
+                setattr(emp, base_field, None)
     db.flush()
     # Сдвинулась дата приёма/увольнения — часы за новой границей уходят
     # (task_employment_period), но только с подтверждения.
@@ -627,6 +643,10 @@ def add_position(
     actor: Employee = Depends(_admin_only),
 ):
     emp = _employee_for_write(db, emp_id)
+    try:
+        ensure_position_create_allowed(db, payload.department_id)
+    except GuardOwnedError as exc:
+        raise _guard_owned(exc) from exc
     position = create_position(emp, payload.model_dump())
     db.flush()
     log_action(db, actor, "employee_position", position.id, "create",
@@ -653,6 +673,12 @@ def update_position(
     before_bounds = bounds_snapshot(emp)
     before = _position_dict(position)
     data = payload.model_dump(exclude_unset=True)
+    # Охранную позицию правят в вахте. Обычную можно перевести в охрану отсюда —
+    # после этого её ведёт вахта (перевод делает тот, кто владеет позицией ДО).
+    try:
+        ensure_position_edit_allowed(db, position, data)
+    except GuardOwnedError as exc:
+        raise _guard_owned(exc) from exc
     # Деактивировать основную нельзя — иначе сотрудник останется без рабочего
     # места, а расчёт молча съедет на случайную позицию.
     if data.get("is_active") is False and position.is_primary:
@@ -713,6 +739,10 @@ def remove_position(
     удаляется — иначе история табеля осталась бы без рабочего места."""
     emp = _employee_for_write(db, emp_id)
     position = _position_or_404(emp, position_id)
+    try:
+        ensure_position_owned_outside_vahta(db, position)
+    except GuardOwnedError as exc:
+        raise _guard_owned(exc) from exc
     before = _position_dict(position)
     try:
         result = delete_position(db, emp, position)
@@ -865,6 +895,11 @@ def set_company_shares(
     # основному, как было до совместительства.
     position = emp.position_by_id(payload.position_id)
     position_id = position.id if position else None
+    # Распределение охранника берётся от места работы в вахте, не из карточки.
+    try:
+        ensure_position_owned_outside_vahta(db, position)
+    except GuardOwnedError as exc:
+        raise _guard_owned(exc) from exc
 
     # Журнал изменений (task_audit_log): набор переписывается целиком Core-DELETE
     # мимо ORM, поэтому события сессии его не видят — пишем ОДНОЙ записью

@@ -37,6 +37,7 @@ from app.schemas.employee import EmployeeCreate
 from app.schemas.employee_import import EmployeeImportResult, ImportRowRead
 from app.services.company_order import company_order_by
 from app.services.employees import build_employee
+from app.services.guard_staff import is_guard_department
 from app.services.reference_audit import audit_operation
 
 # Строка-пример помечается этим текстом в первой колонке; парсер такие строки
@@ -412,6 +413,13 @@ def _parse_row(
         department = _lookup(refs.departments, _plain_keys(raw["department"]))
         if department is None:
             errors.append(f"Отдел «{raw['department']}» не найден")
+        elif is_guard_department(department):
+            # Штат охраны ведётся в вахте (task_guard_ownership) — импорт
+            # общего справочника охранные рабочие места не заводит.
+            errors.append(
+                f"«{department.name}» — подразделение охраны, его сотрудников "
+                "оформляют в модуле «Вахта»"
+            )
 
     # График — необязателен, но если указан, должен существовать
     schedule = None

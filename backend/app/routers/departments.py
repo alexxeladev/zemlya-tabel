@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -31,6 +31,7 @@ from app.services.department_move import (
     build_preview,
     move_department,
 )
+from app.services.guard_staff import guard_flag_removal_report
 from app.services.org_access import (
     hides_finances,
     is_department_scoped,
@@ -164,6 +165,10 @@ def get_department(
 def update_department(
     dept_id: int,
     payload: DepartmentUpdate,
+    confirm: bool = Query(
+        False,
+        description="Подтвердить снятие флага охраны у отдела с сотрудниками",
+    ),
     db: Session = Depends(get_db),
     actor: Employee = Depends(_admin_only),
 ):
@@ -184,6 +189,26 @@ def update_department(
         # Флаг «подразделение охраны» (task_vahta) — обязательная колонка:
         # пришедший null означает «не менять», как у фонда и показателя.
         changes.pop("is_guard_department", None)
+    elif dept.is_guard_department and changes["is_guard_department"] is False and not confirm:
+        # Снятие флага у отдела с людьми (task_guard_ownership): их рабочие
+        # места перестанут вестись в вахте и могут не войти в обычный расчёт.
+        # Не запрещаем — отдел могли завести охранным по ошибке, — но
+        # показываем последствия и ждём подтверждения.
+        report = guard_flag_removal_report(db, dept.id)
+        if report.position_count:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "guard_flag_removal_confirmation_required",
+                    "message": (
+                        f"{report.position_count} рабочих мест перестанут вестись "
+                        "в модуле «Вахта» и перейдут в общий справочник"
+                    ),
+                    "position_count": report.position_count,
+                    "not_calculable_count": report.not_calculable_count,
+                    "issues": report.issues,
+                },
+            )
     if changes.get("uses_quantity_distribution") is None:
         # Флаг «по количественному показателю» — обязательная колонка: пришедший
         # null означает «не менять», как и у фонда.

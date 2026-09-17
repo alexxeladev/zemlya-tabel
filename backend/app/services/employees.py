@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from sqlalchemy.orm import Session
+
 from app.models.employees import Employee
 from app.models.positions import (
     PAY_TYPE_HOURLY,
@@ -62,3 +64,38 @@ def build_employee(payload: EmployeeCreate) -> Employee:
         hire_date=payload.hire_date,
         dismissal_date=payload.dismissal_date,
     )
+
+
+# ── Табельный номер: уникальность ─────────────────────────────────────────────
+# `employees.tab_number` уникален в БД. Без проверки заранее занятый номер
+# доходил до Postgres, IntegrityError не ловился и пользователь получал 500.
+# Нумерация ОДНА на всю систему (общий справочник и вахта), поэтому и проверка
+# одна — ей пользуются оба места создания сотрудника.
+
+
+def normalize_tab_number(value: str | None) -> str | None:
+    """Пустой номер — это «номера нет» (NULL), а не значение.
+
+    Пустая строка уникальна так же, как любая другая: два сотрудника с «» упёрлись
+    бы в unique, хотя номера нет ни у одного.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def tab_number_conflict(
+    db: Session, tab_number: str | None, exclude_id: int | None = None,
+) -> str | None:
+    """Текст ошибки, если номер уже занят другим сотрудником (включая уволенных)."""
+    if tab_number is None:
+        return None
+    query = db.query(Employee).filter(Employee.tab_number == tab_number)
+    if exclude_id is not None:
+        query = query.filter(Employee.id != exclude_id)
+    holder = query.first()
+    if holder is None:
+        return None
+    suffix = "" if holder.is_active else " (уволен)"
+    return f"Табельный номер {tab_number} уже занят: {holder.full_name}{suffix}"

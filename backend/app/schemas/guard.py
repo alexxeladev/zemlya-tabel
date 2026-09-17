@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -426,3 +427,58 @@ class GuardCandidateRead(BaseModel):
     tab_number: str | None = None
     #: Откуда человек: «3 экипаж, ГБР» или пусто, если сейчас нигде не стоит.
     where: str | None = None
+
+
+# ── Сотрудники охраны (task_guard_ownership) ──────────────────────────────────
+
+class GuardStaffRead(BaseModel):
+    """Строка экрана «Сотрудники охраны» — одно рабочее место в охране.
+
+    Пост и признак официального трудоустройства — не свойства карточки, а
+    строки табеля месяца: человека ставят на пост помесячно. Поэтому они
+    приходят за выбранный месяц и могут быть пустыми.
+    """
+
+    employee_id: int
+    position_id: int
+    full_name: str
+    tab_number: str | None = None
+    department_id: int
+    department_name: str
+    #: Должность: guard / gbr / dispatcher / chief. От неё тип оплаты.
+    kind: str
+    kind_label: str
+    pay_type: str
+    #: Оклад за месяц у начальника, ставка за смену у остальных.
+    amount: Decimal | None = None
+    #: Период работы НА ЭТОМ МЕСТЕ — правится здесь.
+    hire_date: datetime.date | None = None
+    dismissal_date: datetime.date | None = None
+    #: Работает ли человек в компании (даты человека ведёт общий справочник).
+    employee_is_active: bool = True
+    #: Где стоит в выбранном месяце: «Объект · Пост» или экипаж ГБР.
+    places: list[str] = []
+    #: Официально трудоустроен в выбранном месяце; None — не стоит нигде.
+    is_official: bool | None = None
+
+
+class GuardStaffCreate(BaseModel):
+    full_name: str = Field(min_length=3, max_length=255)
+    #: Пусто — следующий номер общей нумерации.
+    tab_number: str | None = None
+    department_id: int
+    kind: str
+    amount: Decimal | None = Field(default=None, ge=0)
+    hire_date: datetime.date | None = None
+    dismissal_date: datetime.date | None = None
+
+
+class GuardStaffUpdate(BaseModel):
+    """ФИО и таб. № здесь не правятся: это поля человека, их ведёт справочник.
+    Подразделение вне охраны — перевод, он требует `?confirm=true`."""
+
+    department_id: int | None = None
+    kind: str | None = None
+    amount: Decimal | None = Field(default=None, ge=0)
+    hire_date: datetime.date | None = None
+    dismissal_date: datetime.date | None = None

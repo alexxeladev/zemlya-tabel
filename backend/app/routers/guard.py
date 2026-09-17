@@ -15,6 +15,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -25,6 +26,7 @@ from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.guard_assignments import GuardAssignment
 from app.models.guard_posts import (
+    GUARD_KIND_LABELS,
     GUARD_KINDS,
     GuardCrew,
     GuardPost,
@@ -50,6 +52,9 @@ from app.schemas.guard import (
     GuardSettingsRead,
     GuardSettingsUpdate,
     GuardShareRead,
+    GuardStaffCreate,
+    GuardStaffRead,
+    GuardStaffUpdate,
     GuardSimilarEmployee,
     GuardSiteCreate,
     GuardSiteRead,
@@ -96,6 +101,14 @@ from app.services.guard_duty import (
     update_zone,
 )
 from app.services.guard_export import generate_guard_timesheet_excel
+from app.services.guard_staff import (
+    amount_of,
+    create_staff,
+    guard_kind_of_position,
+    is_guard_position,
+    list_staff_positions,
+    update_staff,
+)
 from app.services.guard_month import build_guard_month
 from app.services.org_access import can_see_finances
 
@@ -609,6 +622,7 @@ def _resolve_position(
     rate: Decimal | None,
     year: int,
     month: int,
+    kind: str | None = None,
 ) -> EmployeePosition | None:
     """Рабочее место, которое встаёт на место работы охраны.
 
@@ -634,7 +648,12 @@ def _resolve_position(
     ]
     if existing:
         return existing[0]
-    return add_position_for_guard(db, employee, place, rate)
+    # Должность строки задаёт тип оплаты нового рабочего места: начальник,
+    # поставленный на пост, заводится на окладе (task_guard_ownership).
+    try:
+        return add_position_for_guard(db, employee, place, rate, kind)
+    except GuardError as exc:
+        raise _guard_error(exc)
 
 
 def _position_busy(
@@ -704,7 +723,7 @@ def post_assignment(
         for employee_id in dict.fromkeys(payload.employee_ids):
             position = _resolve_position(
                 db, place, None, employee_id, payload.rate,
-                payload.year, payload.month,
+                payload.year, payload.month, payload.kind,
             )
             assignment = create_assignment(
                 db, year=payload.year, month=payload.month, place=place,
@@ -721,7 +740,7 @@ def post_assignment(
 
     position = _resolve_position(
         db, place, payload.position_id, payload.employee_id, payload.rate,
-        payload.year, payload.month,
+        payload.year, payload.month, payload.kind,
     )
     assignment = create_assignment(
         db,
@@ -839,7 +858,7 @@ def post_replace(
         _require_money(actor)
     position = _resolve_position(
         db, assignment.place, payload.position_id, payload.employee_id, payload.rate,
-        assignment.year, assignment.month,
+        assignment.year, assignment.month, assignment.kind,
     )
     try:
         kept, successor = replace_on_post(
@@ -942,6 +961,14 @@ def post_quick_hire(
     }
 
 
+def _place_label(assignment: GuardAssignment) -> str:
+    """Где человек стоит: у поста — «Объект · Пост», у экипажа — его имя."""
+    if assignment.post is not None:
+        site = assignment.post.site
+        return f"{site.name} · {assignment.post.name}" if site else assignment.post.name
+    return assignment.crew.name if assignment.crew else ""
+
+
 @router.get("/{year}/{month}/candidates", response_model=list[GuardCandidateRead])
 def get_candidates(
     year: int,
@@ -966,12 +993,7 @@ def get_candidates(
     for assignment in list_assignments(db, year, month, department_ids):
         if assignment.position is None or assignment.position.employee is None:
             continue
-        # Где человек стоит: у поста — «Объект · Пост», у экипажа — его имя.
-        if assignment.post is not None:
-            site = assignment.post.site
-            label = f"{site.name} · {assignment.post.name}" if site else assignment.post.name
-        else:
-            label = assignment.crew.name if assignment.crew else ""
+        label = _place_label(assignment)
         where = busy.setdefault(assignment.position.employee_id, [])
         if label not in where:
             where.append(label)
@@ -1032,3 +1054,175 @@ def export_excel(
             "Content-Disposition": f'attachment; filename="vahta_{year}_{month:02d}.xlsx"'
         },
     )
+
+
+# ── Сотрудники охраны (task_guard_ownership) ──────────────────────────────────
+#
+# Штат охраны ведётся ЗДЕСЬ: рабочее место в охранном подразделении общий
+# справочник не правит (403 на бэке). Человек при этом один на всю систему —
+# ФИО, таб. №, доступ и его даты работы в компании остаются в справочнике.
+# Доступ к экрану — администратор и менеджер охраны, как у настроек вахты.
+
+
+def _staff_read(
+    position: EmployeePosition,
+    places: dict[int, list[str]],
+    official: dict[int, bool],
+) -> GuardStaffRead:
+    employee = position.employee
+    kind = guard_kind_of_position(position)
+    return GuardStaffRead(
+        employee_id=employee.id,
+        position_id=position.id,
+        full_name=employee.full_name,
+        tab_number=employee.tab_number,
+        department_id=position.department_id,
+        department_name=position.department.name if position.department else "",
+        kind=kind,
+        kind_label=GUARD_KIND_LABELS[kind],
+        pay_type=position.pay_type,
+        amount=amount_of(position),
+        hire_date=position.hire_date,
+        dismissal_date=position.dismissal_date,
+        employee_is_active=employee.is_active,
+        places=places.get(position.id, []),
+        is_official=official.get(position.id),
+    )
+
+
+def _staff_month_context(
+    db: Session, department_ids: list[int], year: int | None, month: int | None
+) -> tuple[dict[int, list[str]], dict[int, bool]]:
+    """Где стоит каждое рабочее место в месяце и официален ли он там."""
+    places: dict[int, list[str]] = {}
+    official: dict[int, bool] = {}
+    if year is None or month is None:
+        return places, official
+    for assignment in list_assignments(db, year, month, department_ids):
+        if assignment.position_id is None:
+            continue
+        labels = places.setdefault(assignment.position_id, [])
+        label = _place_label(assignment)
+        if label not in labels:
+            labels.append(label)
+        official[assignment.position_id] = (
+            official.get(assignment.position_id, False) or bool(assignment.is_official)
+        )
+    return places, official
+
+
+def _staff_position_or_404(
+    db: Session, actor: Employee, position_id: int
+) -> EmployeePosition:
+    position = db.get(EmployeePosition, position_id)
+    if position is None or not is_guard_position(db, position):
+        raise HTTPException(status_code=404, detail="Сотрудник охраны не найден")
+    _access(db, actor, position.department_id)
+    return position
+
+
+@router.get("/staff", response_model=list[GuardStaffRead])
+def get_staff(
+    year: int | None = Query(default=None),
+    month: int | None = Query(default=None),
+    department_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Сотрудники охраны: строка на рабочее место в охранном подразделении."""
+    _require_vahta(actor)
+    _require_settings(actor)
+    department_ids = guard_department_ids(db, actor)
+    if department_id is not None:
+        _access(db, actor, department_id)
+        department_ids = [department_id]
+    places, official = _staff_month_context(db, department_ids, year, month)
+    return [
+        _staff_read(p, places, official)
+        for p in list_staff_positions(db, department_ids)
+    ]
+
+
+@router.post("/staff", response_model=GuardStaffRead, status_code=status.HTTP_201_CREATED)
+def post_staff(
+    payload: GuardStaffCreate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Оформить сотрудника охраны: охранника со ставкой или начальника с окладом."""
+    _require_vahta(actor)
+    _require_settings(actor)
+    _access(db, actor, payload.department_id)
+    try:
+        employee, position = create_staff(
+            db,
+            full_name=payload.full_name,
+            tab_number=payload.tab_number,
+            department_id=payload.department_id,
+            kind=payload.kind,
+            amount=payload.amount,
+            hire_date=payload.hire_date,
+            dismissal_date=payload.dismissal_date,
+        )
+    except GuardError as exc:
+        raise _guard_error(exc)
+    log_action(
+        db, actor, "employee", employee.id, "create",
+        after={"full_name": employee.full_name, "tab_number": employee.tab_number,
+               "position_id": position.id, "source": "vahta_staff"},
+    )
+    db.commit()
+    db.refresh(position)
+    return _staff_read(position, {}, {})
+
+
+@router.patch("/staff/{position_id}", response_model=GuardStaffRead)
+def patch_staff(
+    position_id: int,
+    payload: GuardStaffUpdate,
+    confirm: bool = Query(
+        False, description="Подтвердить перевод из охраны в обычное подразделение"
+    ),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Правка рабочего места охраны. Перевод в обычное подразделение без
+    `confirm` отвечает 409 с причинами, по которым место не войдёт в расчёт."""
+    _require_vahta(actor)
+    _require_settings(actor)
+    position = _staff_position_or_404(db, actor, position_id)
+    data = payload.model_dump(exclude_unset=True)
+    before = {
+        "department_id": position.department_id,
+        "title": position.title,
+        "pay_type": position.pay_type,
+        "amount": str(amount_of(position)) if amount_of(position) is not None else None,
+        "hire_date": str(position.hire_date) if position.hire_date else None,
+        "dismissal_date": str(position.dismissal_date) if position.dismissal_date else None,
+    }
+    try:
+        warning = update_staff(db, actor, position, data, confirm)
+    except GuardError as exc:
+        db.rollback()
+        raise _guard_error(exc)
+    if warning is not None:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "guard_transfer_out_confirmation_required",
+                "message": (
+                    f"Рабочее место переходит в «{warning.department_name}» и "
+                    "дальше ведётся в общем справочнике"
+                ),
+                "department_name": warning.department_name,
+                "issues": warning.issues,
+            },
+        )
+    log_action(
+        db, actor, "employee_position", position.id, "update",
+        before=before, after=jsonable_encoder({**data, "source": "vahta_staff"}),
+    )
+    db.commit()
+    db.refresh(position)
+    return _staff_read(position, {}, {})
