@@ -159,6 +159,33 @@ def is_hourly(position) -> bool:
     return getattr(position, "pay_type", PAY_TYPE_SALARY) == PAY_TYPE_HOURLY
 
 
+def pay_base_issue(position) -> str | None:
+    """Почему у рабочего места нет базы оплаты. None — база задана.
+
+    Единственное место этих формулировок: расчёт пишет их в
+    `reason_if_not_calculable`, а перевод позиции из охраны показывает их же в
+    предупреждении (`position_setup_issues`).
+    """
+    if is_per_shift(position):
+        value, message = getattr(position, "shift_rate", None), "Не задана ставка за смену"
+    elif is_hourly(position):
+        value, message = getattr(position, "hour_rate", None), "Не задана ставка за час"
+    else:
+        value, message = getattr(position, "rate", None), "Не задан оклад"
+    if value is None or Decimal(str(value)) == _ZERO:
+        return message
+    return None
+
+
+def position_setup_issues(position) -> list[str]:
+    """Причины, по которым рабочее место не войдёт в расчёт, видимые по САМОЙ
+    карточке — без месяца: график и база оплаты. Календарь и норма зависят от
+    месяца и сюда не входят. Формулировки — те же, что в расчёте."""
+    schedule = getattr(position, "schedule", None)
+    issues = [schedule_issue(schedule), pay_base_issue(position)]
+    return [issue for issue in issues if issue is not None]
+
+
 def notional_salary(position, norm_shifts: int | None) -> Decimal | None:
     """
     «Условный месячный оклад» посменного = ставка_за_смену × норма_смен_месяца.
@@ -623,23 +650,23 @@ def calculate_position_payroll(
     if per_shift:
         raw_shift_rate = getattr(position, "shift_rate", None)
         shift_rate = None if raw_shift_rate is None else Decimal(str(raw_shift_rate))
-        if is_calculable and (shift_rate is None or shift_rate == _ZERO):
+        if is_calculable and pay_base_issue(position) is not None:
             is_calculable = False
-            reason = "Не задана ставка за смену"
+            reason = pay_base_issue(position)
         # Оклад для формул (отпуск/больничный) — условный, из ставки и нормы смен.
         rate = notional_salary(position, norm_shifts) if is_calculable else None
     elif hourly:
         raw_hour_rate = getattr(position, "hour_rate", None)
         hour_rate = None if raw_hour_rate is None else Decimal(str(raw_hour_rate))
-        if is_calculable and (hour_rate is None or hour_rate == _ZERO):
+        if is_calculable and pay_base_issue(position) is not None:
             is_calculable = False
-            reason = "Не задана ставка за час"
+            reason = pay_base_issue(position)
         # У почасовика оклада нет ни настоящего, ни условного: отпуск и
         # больничный ему не начисляются, а значит и «оклад для формул» не нужен.
         rate = None
-    elif is_calculable and (rate is None or rate == _ZERO):
+    elif is_calculable and pay_base_issue(position) is not None:
         is_calculable = False
-        reason = "Не задан оклад"
+        reason = pay_base_issue(position)
 
     # Переработка ПО ДНЯМ (task_overtime_daily, финальное решение — откат помесячного
     # варианта 3.11b п.0): для каждого дня max(0, факт_дня − дневная норма смены),
