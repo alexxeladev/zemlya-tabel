@@ -28,6 +28,8 @@ export const UI_KEYS = {
   payrollFilters: 'payroll.filters',
   /** «Задачи»: показывать ли закрытые периоды */
   tasksShowClosed: 'tasks.showClosed',
+  /** вахта: режим отображения — месяц целиком, первая или вторая половина */
+  vahtaView: 'vahta.view',
 } as const
 
 export function loadUiState<T>(key: string, fallback: T): T {

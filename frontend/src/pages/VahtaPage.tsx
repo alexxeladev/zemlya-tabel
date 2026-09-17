@@ -19,6 +19,7 @@ import { apiClient } from '../api/client'
 import { Button } from '../components/Button'
 import { Modal } from '../components/Modal'
 import { QuickHireModal } from '../components/vahta/QuickHireModal'
+import { usePersistentState } from '../hooks/usePersistentState'
 import { ReplaceModal } from '../components/vahta/ReplaceModal'
 import { usePeriodStore } from '../store/period'
 import { useAuthStore } from '../store/auth'
@@ -32,8 +33,10 @@ import type {
   VahtaMonth,
   VahtaRow,
   VahtaSite,
+  VahtaView,
 } from '../types/api'
 import { formatMoney } from '../utils/money'
+import { UI_KEYS } from '../utils/persist'
 import { companyLabel } from '../utils/companies'
 
 /** Должности строк. Из должности следует и способ оплаты начальника охраны. */
@@ -43,6 +46,14 @@ const KINDS: { value: VahtaKind; label: string }[] = [
   { value: 'dispatcher', label: 'Диспетчер' },
   { value: 'chief', label: 'Начальник охраны' },
 ]
+
+/** Родительный падеж — «1–15 сентября». */
+const MONTHS_GEN = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+]
+
+const isVahtaView = (v: unknown): boolean => v === 'month' || v === 1 || v === 2
 
 const MONTHS = [
   'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
@@ -119,7 +130,9 @@ const placeRef = (place: Place) =>
 
 interface PersonRowProps {
   row: VahtaRow
-  daysInMonth: number
+  /** Показанный отрезок сетки: весь месяц или одна расчётная половина. */
+  firstDay: number
+  lastDay: number
   midDay: number
   showMoney: boolean
   canManage: boolean
@@ -158,13 +171,13 @@ function highlight(text: string | null, query: string) {
  */
 const PersonRow = memo(
   function PersonRow({
-    row, daysInMonth, midDay, showMoney, canManage, canEdit, canOpenCard, query,
+    row, firstDay, lastDay, midDay, showMoney, canManage, canEdit, canOpenCard, query,
     onPaintStart, onPaintOver, onMoney, onReplace, onRemove, onKind,
   }: PersonRowProps) {
     const marked = useMemo(() => new Set(row.days), [row.days])
     const days = useMemo(
-      () => Array.from({ length: daysInMonth }, (_, i) => i + 1),
-      [daysInMonth],
+      () => Array.from({ length: lastDay - firstDay + 1 }, (_, i) => firstDay + i),
+      [firstDay, lastDay],
     )
     const hasAdjustments =
       parseFloat(row.premium ?? '0') > 0 ||
@@ -239,7 +252,7 @@ const PersonRow = memo(
           <td
             key={day}
             className={`p-0 text-center ${
-              day === midDay + 1 ? 'border-l-2 border-slate-800' : ''
+              day === midDay + 1 && day !== firstDay ? 'border-l-2 border-slate-800' : ''
             }`}
             style={{ width: DAY_W, minWidth: DAY_W }}
           >
@@ -270,6 +283,20 @@ const PersonRow = memo(
           <>
             <td className="px-2 py-1 text-right font-bold tabular-nums text-emerald-800">
               {parseFloat(row.accrued ?? '0') ? money(row.accrued) : '—'}
+            </td>
+            {/* Налог на официальную часть: сверх начисленного, но входит в
+                разнесение по юрлицам — отсюда и разница сумм в подвале. */}
+            <td
+              className="px-2 py-1 text-right tabular-nums text-slate-600"
+              title={
+                parseFloat(row.tax ?? '0')
+                  ? `Налог с официальной выплаты ${money(row.official_payout)}. ` +
+                    `Входит в разнесение по юрлицам: ${money(row.accrued)} + ` +
+                    `${money(row.tax)} = ${money(row.distribution_base)}`
+                  : 'Официальной выплаты нет — налога нет, разносится начисленное'
+              }
+            >
+              {parseFloat(row.tax ?? '0') ? money(row.tax) : '—'}
             </td>
             <td className="px-2 py-1 text-right" style={{ width: 150 }}>
               {/* Премия и штраф вводятся отсюда: пустая ячейка прямо предлагает
@@ -308,6 +335,17 @@ const PersonRow = memo(
                 </span>
               )}
             </td>
+            {/* К выплате = начислено − оф. выплата, вверх до 500 ₽ по половинам. */}
+            <td
+              className="px-2 py-1 text-right font-bold tabular-nums text-slate-800"
+              title={
+                `Начислено минус официальная выплата — остаток из кассы. ` +
+                `Точно ${money(row.net_payout_exact)}, округлено вверх до 500 ₽ ` +
+                `по каждой половине`
+              }
+            >
+              {parseFloat(row.accrued ?? '0') ? money(row.net_payout) : '—'}
+            </td>
           </>
         )}
 
@@ -340,6 +378,9 @@ const PersonRow = memo(
     a.row.id === b.row.id &&
     a.row.days.join(',') === b.row.days.join(',') &&
     a.row.accrued === b.row.accrued &&
+    a.row.tax === b.row.tax &&
+    a.row.net_payout === b.row.net_payout &&
+    a.row.net_payout_exact === b.row.net_payout_exact &&
     a.row.premium === b.row.premium &&
     a.row.penalty === b.row.penalty &&
     a.row.official_payout === b.row.official_payout &&
@@ -350,7 +391,8 @@ const PersonRow = memo(
     a.showMoney === b.showMoney &&
     a.canManage === b.canManage &&
     a.canEdit === b.canEdit &&
-    a.daysInMonth === b.daysInMonth,
+    a.firstDay === b.firstDay &&
+    a.lastDay === b.lastDay,
 )
 
 // ── Экран ─────────────────────────────────────────────────────────────────────
@@ -361,6 +403,11 @@ export function VahtaPage() {
   const canManage = role === 'admin' || role === 'manager'
   const canOpenCard = role === 'admin' || role === 'manager' || role === 'accountant'
 
+  // Режим отображения: месяц целиком или расчётная половина. Запоминается между
+  // заходами, как остальные настройки вида.
+  const [view, setView] = usePersistentState<VahtaView>(
+    UI_KEYS.vahtaView, 'month', isVahtaView,
+  )
   const [data, setData] = useState<VahtaMonth | null>(null)
   const [sites, setSites] = useState<VahtaSite[]>([])
   const [crews, setCrews] = useState<VahtaCrew[]>([])
@@ -378,13 +425,14 @@ export function VahtaPage() {
 
   const reload = useCallback(async () => {
     try {
-      setData(await getVahtaMonth(year, month))
+      // Суммы половины считает сервер — фронт их из месячных не вычитает.
+      setData(await getVahtaMonth(year, month, null, view === 'month' ? null : view))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не удалось загрузить табель вахты')
     } finally {
       setLoading(false)
     }
-  }, [year, month])
+  }, [year, month, view])
 
   useEffect(() => {
     setLoading(true)
@@ -470,6 +518,8 @@ export function VahtaPage() {
   const patchDays = useCallback((rowId: number, days: number[]) => {
     setData((prev) => {
       if (!prev) return prev
+      // `days` — отметки всего месяца; смены — только в показанном отрезке.
+      const shifts = days.filter((d) => d >= prev.first_day && d <= prev.last_day).length
       return {
         ...prev,
         zones: prev.zones.map((z) => ({
@@ -477,7 +527,7 @@ export function VahtaPage() {
           cards: z.cards.map((c) => ({
             ...c,
             rows: c.rows.map((r) =>
-              r.id === rowId ? { ...r, days, shifts: days.length } : r,
+              r.id === rowId ? { ...r, days, shifts } : r,
             ),
           })),
         })),
@@ -610,8 +660,21 @@ export function VahtaPage() {
     )
   }
 
-  const days = Array.from({ length: data.days_in_month }, (_, i) => i + 1)
+  const days = Array.from(
+    { length: data.last_day - data.first_day + 1 },
+    (_, i) => data.first_day + i,
+  )
   const mid = data.first_half_last_day
+  const periodLabel =
+    data.view_half === null
+      ? `${MONTHS[month - 1]} ${year}, периоды 1–${mid} и ${mid + 1}–${data.days_in_month}`
+      : `${data.view_half === 1 ? 'Первая' : 'Вторая'} половина: ` +
+        `${data.first_day}–${data.last_day} ${MONTHS_GEN[month - 1]} ${year}`
+  const viewOptions: { value: VahtaView; label: string }[] = [
+    { value: 'month', label: 'Месяц' },
+    { value: 1, label: `1–${mid}` },
+    { value: 2, label: `${mid + 1}–${data.days_in_month}` },
+  ]
 
   return (
     <div className="-m-6 flex h-[calc(100vh-3.5rem)] flex-col bg-[#FBFBF9] text-[#12263A]">
@@ -619,9 +682,20 @@ export function VahtaPage() {
       <div className="border-b-2 border-slate-800 px-5 pb-2.5 pt-3.5">
         <div className="flex flex-wrap items-baseline gap-3.5">
           <h1 className="text-[19px] font-bold tracking-tight">Вахта</h1>
-          <span className="text-slate-500">
-            {MONTHS[month - 1]} {year}, периоды 1–{mid} и {mid + 1}–{data.days_in_month}
+          <span
+            className={
+              data.view_half === null
+                ? 'text-slate-500'
+                : 'rounded bg-amber-100 px-2 py-0.5 font-semibold text-amber-900'
+            }
+          >
+            {periodLabel}
           </span>
+          {data.view_half !== null && (
+            <span className="text-xs text-slate-500">
+              смены, начисления и итоги — только за эту половину
+            </span>
+          )}
         </div>
 
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
@@ -687,6 +761,29 @@ export function VahtaPage() {
             className="w-20 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
           />
 
+          {/* Режим отображения: месяц — общая картина, половины — сверка выплат. */}
+          <div
+            role="group"
+            aria-label="Период отображения"
+            className="flex overflow-hidden rounded-md border border-slate-200 bg-white text-sm"
+          >
+            {viewOptions.map((opt) => (
+              <button
+                key={String(opt.value)}
+                type="button"
+                aria-pressed={view === opt.value}
+                onClick={() => setView(opt.value)}
+                className={`cursor-pointer border-l border-slate-200 px-3 py-1.5 first:border-l-0 ${
+                  view === opt.value
+                    ? 'bg-slate-800 font-semibold text-white'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
           {canManage && (
             <Button variant="secondary" size="sm" onClick={handleCopy}>
               Скопировать прошлый период
@@ -747,7 +844,9 @@ export function VahtaPage() {
                 <th
                   key={day}
                   className={`sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] py-1.5 text-center text-[11px] font-semibold text-slate-500 ${
-                    day === mid + 1 ? 'border-l-2 border-l-slate-800' : ''
+                    day === mid + 1 && day !== data.first_day
+                      ? 'border-l-2 border-l-slate-800'
+                      : ''
                   }`}
                   style={{ width: DAY_W, minWidth: DAY_W }}
                 >
@@ -762,8 +861,17 @@ export function VahtaPage() {
                   <th className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-right text-[11px] font-semibold text-slate-500">
                     Начислено
                   </th>
+                  <th
+                    className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-right text-[11px] font-semibold text-slate-500"
+                    title="Налог на официальную выплату. Входит в разнесение по юрлицам сверх начисленного."
+                  >
+                    Налог{data.employer_tax_percent ? ` ${Number(data.employer_tax_percent)} %` : ''}
+                  </th>
                   <th className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-right text-[11px] font-semibold text-slate-500">
                     Премия и штраф
+                  </th>
+                  <th className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-right text-[11px] font-semibold text-slate-500">
+                    К выплате
                   </th>
                 </>
               )}
@@ -776,7 +884,7 @@ export function VahtaPage() {
               const zoneRows = cards.flatMap((c) => c.rows)
               const crewCount = cards.filter((c) => c.card.kind === 'crew').length
               const siteCount = cards.filter((c) => c.card.kind === 'site').length
-              const totalCols = 4 + days.length + (showMoney ? 2 : 0)
+              const totalCols = 4 + days.length + (showMoney ? 4 : 0)
               return (
                 <ZoneGroup key={zone.zone_id}>
                   {/* Спина зоны: верхний уровень группировки, без карточек. */}
@@ -885,7 +993,8 @@ export function VahtaPage() {
                         <PersonRow
                           key={row.id}
                           row={row}
-                          daysInMonth={data.days_in_month}
+                          firstDay={data.first_day}
+                          lastDay={data.last_day}
                           midDay={mid}
                           showMoney={showMoney}
                           canManage={canManage}
@@ -933,9 +1042,16 @@ export function VahtaPage() {
               <span className="mr-1.5 text-slate-500">К выплате</span>
               <b className="text-[15px]">{money(data.total_net_payout)}</b>
             </span>
+            {/* Налоги объясняют, почему разнесение больше начисленного. */}
+            <span title="Налог на официальную часть выплаты. Затрата компании: входит в разнесение по юрлицам, но не в начислено и не в выплату.">
+              <span className="mr-1.5 text-slate-500">
+                Налоги{data.employer_tax_percent ? ` (${Number(data.employer_tax_percent)} % от оф. выплаты)` : ''}
+              </span>
+              <b className="text-[15px]">{money(data.total_tax)}</b>
+            </span>
           </>
         )}
-        {data.halves.map((half) => (
+        {data.view_half === null && data.halves.map((half) => (
           <span key={half.half}>
             <span className="mr-1.5 text-slate-500">
               {half.half === 1 ? `1–${mid}` : `${mid + 1}–${data.days_in_month}`}
@@ -947,6 +1063,18 @@ export function VahtaPage() {
         ))}
         {showMoney && data.company_totals.length > 0 && (
           <span className="text-slate-500">
+            <span className="mr-1.5">
+              Разнесено по юрлицам {money(data.total_distribution)}
+              {/* Равенство пишем, только когда оно верно: строка без процентов
+                  места работы в разнесение не попадает вовсе. */}
+              {parseFloat(data.total_tax ?? '0') > 0 &&
+                Math.abs(
+                  parseFloat(data.total_distribution ?? '0') -
+                    parseFloat(data.total_distribution_base ?? '0'),
+                ) < 0.005 &&
+                ` = начислено ${money(data.total_accrued)} + налоги ${money(data.total_tax)}`}
+              :
+            </span>
             {data.company_totals
               .map((t) => `${companyName(t.company_id)} ${money(t.amount)}`)
               .join(' · ')}
@@ -1043,6 +1171,10 @@ function MoneyPopover({
   onDone: () => void
 }) {
   const half = (n: number) => row.halves.find((h) => h.half === n)
+  // В режиме половины строка приходит ТОЛЬКО с ней. Поля другой половины здесь
+  // не показываются и НЕ отправляются: иначе их «0» по умолчанию затёр бы
+  // премию и оф. выплату, заведённые в другой половине.
+  const shownHalves = [1, 2].filter((n) => half(n) !== undefined)
   const [form, setForm] = useState({
     premium_h1: half(1)?.premium ?? '0',
     premium_h2: half(2)?.premium ?? '0',
@@ -1075,12 +1207,20 @@ function MoneyPopover({
     setSaving(true)
     try {
       await updateVahtaAssignment(row.id, {
-        premium_h1: form.premium_h1 || '0',
-        premium_h2: form.premium_h2 || '0',
-        penalty_h1: form.penalty_h1 || '0',
-        penalty_h2: form.penalty_h2 || '0',
-        official_payout_h1: form.official_payout_h1 || '0',
-        official_payout_h2: form.official_payout_h2 || '0',
+        ...(shownHalves.includes(1)
+          ? {
+              premium_h1: form.premium_h1 || '0',
+              penalty_h1: form.penalty_h1 || '0',
+              official_payout_h1: form.official_payout_h1 || '0',
+            }
+          : {}),
+        ...(shownHalves.includes(2)
+          ? {
+              premium_h2: form.premium_h2 || '0',
+              penalty_h2: form.penalty_h2 || '0',
+              official_payout_h2: form.official_payout_h2 || '0',
+            }
+          : {}),
         is_official: form.is_official,
         note: form.note || null,
       })
@@ -1116,12 +1256,15 @@ function MoneyPopover({
             </tr>
           </thead>
           <tbody>
+            {shownHalves.includes(1) && (
             <tr>
               <td className="pr-2 text-right text-[11.5px] text-slate-500">1–{midDay}</td>
               <td className="p-0.5">{field('premium_h1')}</td>
               <td className="p-0.5">{field('penalty_h1')}</td>
               <td className="p-0.5">{field('official_payout_h1')}</td>
             </tr>
+            )}
+            {shownHalves.includes(2) && (
             <tr>
               <td className="pr-2 text-right text-[11.5px] text-slate-500">
                 {midDay + 1}–{daysInMonth}
@@ -1130,6 +1273,7 @@ function MoneyPopover({
               <td className="p-0.5">{field('penalty_h2')}</td>
               <td className="p-0.5">{field('official_payout_h2')}</td>
             </tr>
+            )}
           </tbody>
         </table>
 
@@ -1151,7 +1295,9 @@ function MoneyPopover({
 
         <p className="mt-2 text-[11px] leading-snug text-slate-500">
           Начислено = зарплата + премия − штраф. К выплате = начислено − оф. выплата,
-          остаток идёт из кассы. Суммы не округляются.
+          остаток идёт из кассы. С оф. выплаты считается налог — он входит в
+          разнесение по юрлицам сверх начисленного. К выплате округляется вверх
+          до 500 ₽ по каждой половине, остальные суммы — точные.
         </p>
 
         <div className="mt-2.5 flex justify-end gap-2">

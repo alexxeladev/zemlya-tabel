@@ -145,7 +145,7 @@ export interface DepartmentShares {
  * quantity — отдел с флагом «распределение по количественному показателю»
  * (заявки у HR, АРМ у ИТ): каскад для него не применяется вовсе.
  */
-export type DistributionSource = 'month' | 'employee' | 'department' | 'hours' | 'quantity'
+export type DistributionSource = 'month' | 'employee' | 'department' | 'hours' | 'quantity' | 'guard_post'
 
 /**
  * Количественный показатель отдела по юрлицу за месяц.
@@ -322,6 +322,12 @@ export interface StatementRow {
    * (округление ВЫПЛАТЫ, знак любой).
    */
   unallocated_remainder: string
+  /**
+   * Вахта (task_vahta_taxes): налог на официальную часть выплаты, включённый в
+   * базу распределения. Ровно на эту сумму Σ распределения строки больше
+   * «Итого начислено». У прочих подразделений всегда "0".
+   */
+  guard_tax_amount: string
   is_calculable: boolean
   note: string | null
 }
@@ -967,6 +973,12 @@ export interface VahtaHalf {
   official_payout: string | null
   accrued: string | null
   net_payout: string | null
+  /** Точная «к выплате» до округления вверх до 500 ₽. */
+  net_payout_exact: string | null
+  /** Налог на официальную выплату половины (task_vahta_taxes). */
+  tax: string | null
+  /** База разнесения половины: начислено + налог. */
+  distribution_base: string | null
 }
 
 export interface VahtaRow {
@@ -992,7 +1004,10 @@ export interface VahtaRow {
   rate: string | null
   is_official: boolean
   note: string | null
-  /** Числа месяца, в которые человек выходил. */
+  /**
+   * Числа месяца, в которые человек выходил. ВСЕГДА весь месяц, даже в режиме
+   * половины: это отметки, а не итог, и `setVahtaDays` шлёт набор целиком.
+   */
   days: number[]
   shifts: number
   /** Смена равна суткам: факт часов = смены × 24. */
@@ -1004,8 +1019,15 @@ export interface VahtaRow {
   official_payout: string | null
   /** «Итого начислено» = зарплата + премия − штраф. База распределения. */
   accrued: string | null
-  /** Остаток из кассы: начислено − официальная (банковская) выплата. */
+  /** Остаток из кассы: начислено − оф. выплата, вверх до 500 ₽ по каждой половине. */
   net_payout: string | null
+  /** Та же сумма до округления. */
+  net_payout_exact: string | null
+  /** Налог на официальную часть выплаты: оф. выплата × ставка из настроек. */
+  tax: string | null
+  /** База разнесения — затраты: начислено + налог. */
+  distribution_base: string | null
+  /** Разбивка базы разнесения (начислено + налог) по юрлицам места работы. */
   distribution: Record<number, string> | null
 }
 
@@ -1035,9 +1057,22 @@ export interface VahtaZoneCard {
   total_shifts: number
 }
 
+/** Настройки вахты. Ставка налога — в ПРОЦЕНТАХ (40 = 40 %). */
+export interface VahtaSettings {
+  employer_tax_percent: string
+}
+
+/** Режим отображения вахты: месяц целиком или расчётная половина. */
+export type VahtaView = 'month' | 1 | 2
+
 export interface VahtaMonth {
   year: number
   month: number
+  /** null — месяц целиком; 1 или 2 — суммы и смены только за эту половину. */
+  view_half: 1 | 2 | null
+  /** Первый и последний день показанного периода. */
+  first_day: number
+  last_day: number
   days_in_month: number
   /** Последний день первой половины — по нему рисуется черта в сетке. */
   first_half_last_day: number
@@ -1047,7 +1082,21 @@ export interface VahtaMonth {
   total_shifts: number
   total_accrued: string | null
   total_net_payout: string | null
-  halves: { half: number; shifts: number; accrued: string | null; net_payout: string | null }[]
+  /** Налоги на официальную часть — на столько разнесение больше начисленного. */
+  total_tax: string | null
+  /** Начислено + налоги. */
+  total_distribution_base: string | null
+  /** Сумма разнесения по юрлицам. */
+  total_distribution: string | null
+  /** Действующая ставка налога, в процентах. */
+  employer_tax_percent: string | null
+  halves: {
+    half: number
+    shifts: number
+    accrued: string | null
+    net_payout: string | null
+    tax: string | null
+  }[]
   company_totals: { company_id: number; amount: string }[]
   can_edit: boolean
   can_see_money: boolean

@@ -9,18 +9,39 @@ import type {
   VahtaMonth,
   VahtaPost,
   VahtaSimilarEmployee,
+  VahtaSettings,
   VahtaSite,
   VahtaZone,
 } from '../types/api'
 import { apiClient } from './client'
 
 // ── Табель ────────────────────────────────────────────────────────────────
-export const getVahtaMonth = (year: number, month: number, departmentId?: number | null) =>
+/**
+ * Табель месяца. `half` — режим отображения: не задан — месяц целиком, 1 или 2 —
+ * расчётная половина, и тогда ВСЕ суммы и смены посчитаны сервером за неё.
+ */
+export const getVahtaMonth = (
+  year: number,
+  month: number,
+  departmentId?: number | null,
+  half?: 1 | 2 | null,
+) =>
   apiClient
     .get<VahtaMonth>(`/api/vahta/${year}/${month}`, {
-      params: departmentId ? { department_id: departmentId } : undefined,
+      params: {
+        ...(departmentId ? { department_id: departmentId } : {}),
+        ...(half ? { half } : {}),
+      },
     })
     .then((r) => r.data)
+
+// ── Настройки вахты ───────────────────────────────────────────────────────
+/** Ставка налога на официальную часть выплаты — в процентах (40 = 40 %). */
+export const getVahtaSettings = () =>
+  apiClient.get<VahtaSettings>('/api/vahta/settings').then((r) => r.data)
+
+export const updateVahtaSettings = (data: { employer_tax_percent: string }) =>
+  apiClient.patch<VahtaSettings>('/api/vahta/settings', data).then((r) => r.data)
 
 export const getVahtaDepartments = () =>
   apiClient.get<VahtaDepartment[]>('/api/vahta/departments').then((r) => r.data)
