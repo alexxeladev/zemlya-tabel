@@ -252,7 +252,7 @@ def _funding_company_names(db: Session, rows) -> dict[int, str]:
 
 
 def _load_adjustments(
-    db: Session, employees: list[Employee], year: int, month: int
+    db: Session, employees: list[Employee], year: int, month: int, actor: Employee,
 ) -> list[AdjustmentRead]:
     emp_ids = [e.id for e in employees]
     if not emp_ids:
@@ -267,6 +267,17 @@ def _load_adjustments(
         .order_by(EmployeeAdjustment.created_at)
         .all()
     )
+    # Менеджеру — только начисления рабочих мест ЕГО отделов (task_stage2_access
+    # п.2.8): премия подработки в чужом отделе — не его данные. Позиция NULL —
+    # основная. Admin/accountant видят всё, включая снятые с учёта места.
+    if is_department_scoped(actor):
+        by_id = {e.id: e for e in employees}
+
+        def _visible(r: EmployeeAdjustment) -> bool:
+            position = by_id[r.employee_id].position_by_id(r.position_id)
+            return can_access_department(actor, position.department_id if position else None)
+
+        rows = [r for r in rows if _visible(r)]
     # Имя юрлица-источника (task_funding_source) — чтобы список премий
     # подписывался без отдельного запроса справочника на фронте.
     funding_names = _funding_company_names(db, rows)
@@ -409,7 +420,7 @@ def set_distribution_override(
     """Переопределить распределение по компаниям на конкретный месяц (правка в
     ведомости). Заменяет весь набор процентов сотрудника за этот период."""
     _require_finance_role(actor)
-    target = _check_cell_access(actor, payload.employee_id, db, payload.position_id)
+    target, _ = _check_position_access(actor, db, payload.employee_id, payload.position_id)
     if not (1 <= payload.month <= 12) or not (2000 <= payload.year <= 2100):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month")
     for s in payload.shares:
@@ -469,7 +480,7 @@ def delete_distribution_override(
     `position_id` у совместителя сбросились бы обе позиции разом.
     """
     _require_finance_role(actor)
-    target = _check_cell_access(actor, employee_id, db, position_id)
+    target, _ = _check_position_access(actor, db, employee_id, position_id)
     q = db.query(CompanyShareOverride).filter(
         CompanyShareOverride.employee_id == employee_id,
         CompanyShareOverride.year == year,
@@ -487,6 +498,12 @@ def delete_distribution_override(
                 else False,
             )
         )
+    else:
+        # Без position_id снимаются правки ВСЕХ рабочих мест — значит, нужен
+        # доступ к каждому из них (task_stage2_access п.2.8): иначе менеджер
+        # подработки сбрасывал бы распределение основной позиции в чужом отделе.
+        for (row_position_id,) in q.with_entities(CompanyShareOverride.position_id).distinct():
+            _check_position_access(actor, db, employee_id, row_position_id)
     deleted = q.delete(synchronize_session=False)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Переопределение не найдено")
@@ -718,7 +735,7 @@ def get_month(
         else []
     )
     if can_see_finances(actor):
-        adjustments = _load_adjustments(db, employees, year, month)
+        adjustments = _load_adjustments(db, employees, year, month, actor)
         if include_payroll:
             payroll = _build_payroll_summary(
                 db, employees, entries, year, month, actor, department_id
@@ -811,7 +828,7 @@ def save_cell(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    _check_cell_access(actor, payload.employee_id, db, payload.position_id)
+    _check_position_access(actor, db, payload.employee_id, payload.position_id)
     _check_company_exists(db, payload.company_id)
     try:
         result = upsert_cell(
@@ -847,7 +864,7 @@ def change_cell_company(
     Два отдельных `PUT /cell` (обнулить старую, записать новую) теряли часы при
     сбое второго. Здесь либо перенос выполнен целиком, либо не изменилось ничего.
     """
-    _check_cell_access(actor, payload.employee_id, db, payload.position_id)
+    _check_position_access(actor, db, payload.employee_id, payload.position_id)
     if payload.old_company_id == payload.new_company_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -889,7 +906,7 @@ def save_cells_batch(
     actor: Employee = Depends(get_current_user),
 ):
     for cell in payload.entries:
-        _check_cell_access(actor, cell.employee_id, db, cell.position_id)
+        _check_position_access(actor, db, cell.employee_id, cell.position_id)
         _check_company_exists(db, cell.company_id)
 
     cells = [
@@ -1015,7 +1032,7 @@ def save_night_shift(
     авторитетная проверка здесь, фронт лишь показывает остаток заранее.
     """
     _require_timesheet_role(actor)
-    _check_cell_access(actor, payload.employee_id, db, payload.position_id)
+    _check_position_access(actor, db, payload.employee_id, payload.position_id)
     try:
         result = set_night_shift(
             db, actor, payload.employee_id, payload.position_id,
@@ -1263,7 +1280,7 @@ def list_adjustments(
         )
     _require_dept_access(actor, department_id)
     employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
-    return _load_adjustments(db, employees, year, month)
+    return _load_adjustments(db, employees, year, month, actor)
 
 
 @router.post("/adjustments", response_model=AdjustmentRead, status_code=status.HTTP_201_CREATED)
