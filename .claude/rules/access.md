@@ -176,3 +176,20 @@
   `_require_vahta`.
 - Тесты — `backend/tests/test_vahta.py::TestAccountantReadOnly` (все мутации под
   бухгалтером → 403 и данные не изменились; admin/manager/табельщик смену ставят).
+
+### Премии и заём — отдел рабочего места (п.2.8)
+
+- **`_check_position_access` в `routers/timesheet.py`** — доступ к КОНКРЕТНОМУ
+  рабочему месту записи: премия/KPI/аванс — к своей позиции (`position_id IS
+  NULL` — основная), заём — к месту удержания (`guard_staff.loan_position`:
+  `loan_position_id`, иначе основная). Проверяется отдел ЭТОЙ позиции.
+- Было: `_check_cell_access` без позиции пускает при доступе к ЛЮБОМУ месту
+  сотрудника. Менеджер отдела, где у человека совместительство, удалял премию
+  основной позиции, правил и отменял ручное удержание займа из чужого отдела и
+  создавал премию на основную позицию, просто не передав `position_id`.
+- Закрыто: `POST /timesheet/adjustments`, `DELETE /timesheet/adjustments/{id}`,
+  `POST /timesheet/loan-override`, `DELETE /timesheet/loan-override/{emp}/{y}/{m}`.
+- **Не тронуто (чтение, в задаче не заявлено):** `GET /timesheet/{y}/{m}/adjustments`
+  отдаёт менеджеру премии ВСЕХ рабочих мест видимого ему сотрудника, включая
+  подработку в чужом отделе.
+- Тесты — `backend/tests/test_bonus_loan_access.py`.

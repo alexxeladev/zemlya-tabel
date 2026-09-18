@@ -203,6 +203,25 @@ def _check_cell_access(
     return target
 
 
+def _check_position_access(
+    actor: Employee, db: Session, employee_id: int, position_id: int | None,
+    loan: bool = False,
+) -> tuple[Employee, EmployeePosition | None]:
+    """Доступ к КОНКРЕТНОМУ рабочему месту, к которому относится запись
+    (task_stage2_access п.2.8): премия/KPI/аванс — к своей позиции
+    (`position_id IS NULL` — основная), заём — к месту удержания
+    (`loan_position`). Проверяется отдел ЭТОЙ позиции.
+
+    `_check_cell_access` без позиции пускает при доступе к ЛЮБОМУ месту
+    сотрудника — так менеджер отдела, где у человека совместительство, удалял
+    премию основной позиции и правил заём из чужого отдела.
+    """
+    target = _check_cell_access(actor, employee_id, db)
+    position = loan_position(target) if loan else target.position_by_id(position_id)
+    _check_cell_access(actor, employee_id, db, position.id if position is not None else None)
+    return target, position
+
+
 def _check_company_exists(db: Session, company_id: int) -> None:
     if not db.get(Company, company_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found")
@@ -1254,12 +1273,11 @@ def create_adjustment(
     actor: Employee = Depends(get_current_user),
 ):
     _require_finance_role(actor)
-    # _check_cell_access проверяет видимость сотрудника по роли (manager — свой отдел)
-    target = _check_cell_access(actor, payload.employee_id, db, payload.position_id)
+    # Отдел рабочего места, на которое ляжет начисление (без position_id — основное).
+    target, position = _check_position_access(actor, db, payload.employee_id, payload.position_id)
     if not (2000 <= payload.year <= 2100):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year")
 
-    position = target.position_by_id(payload.position_id)
     # Охранной позиции премии, KPI и аванс основной системы не начисляются: у
     # вахты свои премия, штраф и официальная выплата, а расчёт строки вахты эти
     # записи игнорирует (аудит 2-Г). Удаление уже введённого — разрешено.
@@ -1327,7 +1345,7 @@ def delete_adjustment(
     adj = db.get(EmployeeAdjustment, adjustment_id)
     if not adj:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Не найдено")
-    _check_cell_access(actor, adj.employee_id, db)
+    _check_position_access(actor, db, adj.employee_id, adj.position_id)
     log_action(
         db, actor, "employee_adjustment", adj.id, "delete",
         before={"employee_id": adj.employee_id, "year": adj.year, "month": adj.month,
@@ -1347,7 +1365,7 @@ def set_loan_override(
 ):
     """Скорректировать сумму удержания по займу за конкретный месяц."""
     _require_finance_role(actor)
-    target = _check_cell_access(actor, payload.employee_id, db)
+    target, _ = _check_position_access(actor, db, payload.employee_id, None, loan=True)
     try:
         ensure_no_guard_accrual(db, loan_position(target), "Удержание по займу", "правится")
     except GuardAccrualError as exc:
@@ -1418,7 +1436,7 @@ def delete_loan_override(
 ):
     """Убрать ручную правку — вернуть плановое удержание за месяц."""
     _require_finance_role(actor)
-    _check_cell_access(actor, employee_id, db)
+    _check_position_access(actor, db, employee_id, None, loan=True)
     row = (
         db.query(LoanDeduction)
         .filter(
