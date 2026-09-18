@@ -372,3 +372,48 @@ def test_absence_racing_with_an_hours_edit_is_409_not_500(
     assert edit.finish().status_code == 200
     assert absence.finish().status_code == 409
     assert _state(pg_sessions, world, "dept")[1] == [6]
+
+
+# ── Лимит попыток входа под параллельной пачкой (task_stage2_access п.2.6) ────
+
+def test_parallel_login_burst_does_not_bypass_limit(pg_client, pg_sessions):
+    """Счётчик читается ДО bcrypt, неудача пишется ПОСЛЕ: без сериализации по
+    учётке вся пачка проходила проверку до первой записи, и за окно пролезало
+    5 + размер пачки попыток. Засчитанных неудач должно быть ровно LIMIT."""
+    from app.config import settings
+    from app.models.login_failures import LoginFailure
+
+    with pg_sessions() as db:
+        db.add(Employee(full_name="Жертва перебора", email="burst@example.com",
+                        role="accountant", hashed_password=hash_password(PASSWORD),
+                        is_active=True))
+        db.commit()
+
+    burst = settings.LOGIN_MAX_FAILURES * 3
+    codes: list[int] = []
+    lock = threading.Lock()
+    start = threading.Barrier(burst)
+
+    def attempt():
+        start.wait(timeout=GIVE_UP)
+        resp = pg_client.post(
+            "/api/auth/login", json={"email": "burst@example.com", "password": "wrong-pass"},
+        )
+        with lock:
+            codes.append(resp.status_code)
+
+    threads = [threading.Thread(target=attempt) for _ in range(burst)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=GIVE_UP * 3)
+
+    assert len(codes) == burst
+    assert codes.count(401) == settings.LOGIN_MAX_FAILURES
+    assert codes.count(429) == burst - settings.LOGIN_MAX_FAILURES
+    with pg_sessions() as db:
+        counted = db.query(LoginFailure).filter(
+            LoginFailure.email == "burst@example.com",
+            LoginFailure.reason == "wrong_password",
+        ).count()
+    assert counted == settings.LOGIN_MAX_FAILURES

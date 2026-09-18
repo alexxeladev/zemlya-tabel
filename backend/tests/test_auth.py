@@ -101,7 +101,9 @@ def test_change_password_rejects_bad(client: TestClient, admin_user: Employee, d
 
 
 @pytest.mark.parametrize("bad", BAD_PASSWORDS)
-def test_create_employee_with_access_rejects_bad(client: TestClient, admin_user: Employee, db_session, bad):
+def test_create_employee_with_access_rejects_bad(
+    client: TestClient, admin_user: Employee, db_session, bad,
+):
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.post(
         "/api/employees",
@@ -256,7 +258,8 @@ def test_admin_reset_puts_user_into_restricted_session(
     db_session.add(emp)
     db_session.commit()
     adm = get_token(client, "admin@example.com", "admin123")
-    temp = client.post(f"/api/employees/{emp.id}/reset-password", headers=_auth(adm)).json()["temp_password"]
+    resp = client.post(f"/api/employees/{emp.id}/reset-password", headers=_auth(adm))
+    temp = resp.json()["temp_password"]
     tok = get_token(client, "plain@example.com", temp)
     resp = client.get("/api/timesheet/2026/5", headers=_auth(tok))
     assert resp.status_code == 403
@@ -291,7 +294,9 @@ def test_old_token_dies_after_own_password_change(client: TestClient, admin_user
     assert _me(client, new) == 200
 
 
-def test_token_from_other_device_dies_after_password_change(client: TestClient, admin_user: Employee):
+def test_token_from_other_device_dies_after_password_change(
+    client: TestClient, admin_user: Employee,
+):
     laptop = get_token(client, "admin@example.com", "admin123")
     phone = get_token(client, "admin@example.com", "admin123")
     client.post(
@@ -332,7 +337,9 @@ def test_old_token_dies_after_access_revoked_and_regranted(
     assert _me(client, before) == 401
 
 
-def test_old_token_dies_after_dismiss_and_rehire(client: TestClient, admin_user: Employee, db_session):
+def test_old_token_dies_after_dismiss_and_rehire(
+    client: TestClient, admin_user: Employee, db_session,
+):
     emp = Employee(full_name="Ушёл-пришёл", email="rehire@example.com", role="accountant",
                    hashed_password=hash_password("rehire123"), is_active=True)
     db_session.add(emp)
@@ -345,7 +352,9 @@ def test_old_token_dies_after_dismiss_and_rehire(client: TestClient, admin_user:
     assert _me(client, before) == 401
 
 
-def test_cli_reset_revokes_tokens(client: TestClient, admin_user: Employee, db_session, monkeypatch):
+def test_cli_reset_revokes_tokens(
+    client: TestClient, admin_user: Employee, db_session, monkeypatch,
+):
     from app import cli
 
     old = get_token(client, "admin@example.com", "admin123")

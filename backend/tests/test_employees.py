@@ -572,5 +572,7 @@ def test_patch_cannot_reactivate_dismissed(client: TestClient, admin_user: Emplo
     db_session.refresh(target)
     assert target.is_active is False
     # И войти он по-прежнему не может.
-    login = client.post("/api/auth/login", json={"email": "gone@example.com", "password": "password123"})
+    login = client.post(
+        "/api/auth/login", json={"email": "gone@example.com", "password": "password123"},
+    )
     assert login.status_code == 403

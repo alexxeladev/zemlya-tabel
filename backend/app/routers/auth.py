@@ -23,7 +23,12 @@ from app.models.login_failures import (
 from app.schemas.auth import ChangePasswordRequest, LoginRequest, TokenResponse
 from app.schemas.employee import EmployeeRead
 from app.services.finance_masking import employee_for
-from app.services.login_guard import client_ip, login_locked_until, record_failure
+from app.services.login_guard import (
+    client_ip,
+    login_locked_until,
+    record_failure,
+    serialize_attempts,
+)
 
 router = APIRouter()
 
@@ -35,6 +40,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     (task_stage2_access п.2.6). Блокировка проверяется ДО пароля: во время неё
     даже верный пароль не пускает, иначе перебор продолжался бы."""
     ip = client_ip(request)
+    serialize_attempts(db, payload.email)
     emp: Employee | None = db.query(Employee).filter(Employee.email == payload.email).first()
 
     def reject(reason: str, status_code: int, detail: str, headers: dict | None = None):
@@ -44,7 +50,8 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
 
     locked_until = login_locked_until(db, payload.email, emp)
     if locked_until is not None:
-        retry = max(1, int((locked_until - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()))
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        retry = max(1, int((locked_until - now).total_seconds()))
         minutes = (retry + 59) // 60
         reject(
             REASON_LOCKED, status.HTTP_429_TOO_MANY_REQUESTS,
@@ -61,7 +68,9 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     if emp.role is None:
         reject(REASON_NO_ACCESS, status.HTTP_401_UNAUTHORIZED, "Account has no system access")
 
-    emp.last_login_at = datetime.now(timezone.utc)
+    # Naive UTC, как и колонка: aware-время в колонку без пояса Postgres
+    # переводит по TimeZone сессии, и точка сброса счётчика неудач уехала бы.
+    emp.last_login_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
 
     token = create_access_token(subject=emp.id, extra={TOKEN_VERSION_CLAIM: emp.token_version})

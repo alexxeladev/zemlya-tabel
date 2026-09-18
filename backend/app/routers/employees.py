@@ -588,7 +588,9 @@ def unlock_employee_login(
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     if emp.email is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Employee has no system access")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Employee has no system access"
+        )
     before = locked_until_by_employee(db, [emp]).get(emp.id)
     unlock_login(emp)
     db.flush()

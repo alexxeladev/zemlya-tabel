@@ -1000,7 +1000,9 @@ class TestAccountantReadOnly:
         assert resp.status_code == 200
         assert resp.json()["can_edit"] is False
 
-    def test_every_mutation_is_forbidden(self, client, db_session, users, filled, gbr_place, rodionov):
+    def test_every_mutation_is_forbidden(
+        self, client, db_session, users, filled, gbr_place, rodionov,
+    ):
         headers = _auth(client, "accountant")
         before = self._state(db_session, filled.id)
         calls = [
@@ -1012,7 +1014,8 @@ class TestAccountantReadOnly:
                 "year": YEAR, "month": MONTH, "crew_id": gbr_place.id,
                 "position_id": rodionov.primary_position.id,
             }),
-            ("post", "/api/vahta/assignments", {"year": YEAR, "month": MONTH, "crew_id": gbr_place.id}),
+            ("post", "/api/vahta/assignments",
+             {"year": YEAR, "month": MONTH, "crew_id": gbr_place.id}),
             ("post", "/api/vahta/replace", {
                 "assignment_id": filled.id, "from_day": 10, "employee_id": rodionov.id,
             }),
@@ -1048,13 +1051,18 @@ class TestTimekeeperCreatesNoPositions:
     @pytest.fixture
     def places(self, db_session, zone, companies):
         gw = _make_site(db_session, zone, "Green Wood", "5000", {companies["SEC"].id: "100"})
-        return _make_post(db_session, gw, "GW 1", "5000"), _make_post(db_session, gw, "GW 2", "3500")
+        return (
+            _make_post(db_session, gw, "GW 1", "5000"),
+            _make_post(db_session, gw, "GW 2", "3500"),
+        )
 
     def _positions(self, db_session):
         db_session.expire_all()
         return db_session.query(EmployeePosition).count()
 
-    def test_busy_person_needs_new_position_forbidden(self, client, db_session, users, places, rodionov):
+    def test_busy_person_needs_new_position_forbidden(
+        self, client, db_session, users, places, rodionov,
+    ):
         first, second = places
         create_assignment(db_session, year=YEAR, month=MONTH, place=first,
                           position=rodionov.primary_position, days=FIRST_HALF)
@@ -1067,7 +1075,9 @@ class TestTimekeeperCreatesNoPositions:
         assert "рабочего места" in resp.json()["detail"]
         assert self._positions(db_session) == before
 
-    def test_person_from_other_department_forbidden(self, client, db_session, users, places, other_dept):
+    def test_person_from_other_department_forbidden(
+        self, client, db_session, users, places, other_dept,
+    ):
         stranger = _employee(db_session, "Посторонний", other_dept, "T-7777")
         before = self._positions(db_session)
         resp = client.post("/api/vahta/assignments", headers=_auth(client, "timekeeper"), json={
@@ -1076,7 +1086,9 @@ class TestTimekeeperCreatesNoPositions:
         assert resp.status_code == 403
         assert self._positions(db_session) == before
 
-    def test_batch_with_one_new_position_rejected_whole(self, client, db_session, users, places, rodionov, other_dept, guard_dept):
+    def test_batch_with_one_new_position_rejected_whole(
+        self, client, db_session, users, places, rodionov, other_dept, guard_dept,
+    ):
         free = _employee(db_session, "Свободный", guard_dept, "T-5555")
         stranger = _employee(db_session, "Посторонний", other_dept, "T-7777")
         before = self._positions(db_session)
@@ -1091,7 +1103,9 @@ class TestTimekeeperCreatesNoPositions:
         assert self._positions(db_session) == before
         assert db_session.query(GuardAssignment).count() == 0
 
-    def test_replace_needing_new_position_forbidden(self, client, db_session, users, places, rodionov, other_dept):
+    def test_replace_needing_new_position_forbidden(
+        self, client, db_session, users, places, rodionov, other_dept,
+    ):
         row = create_assignment(db_session, year=YEAR, month=MONTH, place=places[0],
                                 position=rodionov.primary_position, days=FIRST_HALF)
         db_session.commit()
@@ -1103,7 +1117,9 @@ class TestTimekeeperCreatesNoPositions:
         assert resp.status_code == 403
         assert self._positions(db_session) == before
 
-    def test_timekeeper_still_assigns_person_with_free_position(self, client, db_session, users, places, rodionov):
+    def test_timekeeper_still_assigns_person_with_free_position(
+        self, client, db_session, users, places, rodionov,
+    ):
         before = self._positions(db_session)
         resp = client.post("/api/vahta/assignments", headers=_auth(client, "timekeeper"), json={
             "year": YEAR, "month": MONTH, "post_id": places[0].id, "employee_id": rodionov.id,

@@ -10,8 +10,8 @@ from app.services.reference_audit import set_audit_actor
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
-# Отказ ограниченной сессии (task_stage2_access п.2.2). Текст — признак для
-# фронта (`api/client.ts` уводит на смену пароля), менять вместе с ним.
+# Отказ ограниченной сессии (task_stage2_access п.2.2). Фронт до него в норме
+# не доходит: `PrivateRoute` уводит на смену пароля до первого запроса страницы.
 PASSWORD_CHANGE_REQUIRED = "Требуется сменить пароль"
 
 

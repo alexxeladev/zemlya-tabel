@@ -116,7 +116,8 @@ ensure_secret_key() {  # $1 = файл окружения
   case "${cur,,}" in ""|change-me|changeme|secret|secret-key|dev|test) cur="" ;; esac
   if [[ ${#cur} -ge 32 ]]; then return 0; fi
   local new
-  new="$(python3 -c 'import secrets;print(secrets.token_hex(32))')"
+  if command -v openssl >/dev/null 2>&1; then new="$(openssl rand -hex 32)"
+  else new="$(python3 -c 'import secrets;print(secrets.token_hex(32))')"; fi
   if grep -qE '^SECRET_KEY=' "$file" 2>/dev/null; then
     sed -i -E "s|^SECRET_KEY=.*$|SECRET_KEY=${new}|" "$file"
   else

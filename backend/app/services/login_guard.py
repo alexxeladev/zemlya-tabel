@@ -19,6 +19,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 
 from fastapi import Request
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -38,6 +39,23 @@ def _naive_utc(value: datetime.datetime | None) -> datetime.datetime | None:
     if value.tzinfo is not None:
         value = value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
     return value
+
+
+def serialize_attempts(db: Session, email: str) -> None:
+    """Попытки входа в ОДНУ учётку — строго по очереди (Postgres).
+
+    Счётчик читается до проверки пароля, а неудача пишется после bcrypt (сотни
+    миллисекунд): пачка параллельных запросов прошла бы проверку целиком до
+    первой записи, и за окно пролезало бы не 5 попыток, а 5 + размер пачки.
+    Транзакционная advisory-блокировка по email держится до коммита отказа или
+    входа. Разные учётки друг друга не ждут. SQLite (тесты) — без блокировки.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": "login:" + email_key(email)},
+    )
 
 
 def email_key(email: str) -> str:
