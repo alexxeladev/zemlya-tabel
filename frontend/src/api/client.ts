@@ -42,10 +42,20 @@ apiClient.interceptors.response.use(
     }
 
     const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined
+    // 422 от pydantic — список ошибок полей. Показываем их тексты (например,
+    // причину отказа политики паролей), а не склеенный JSON.
+    const validationMessages = Array.isArray(detail)
+      ? detail
+          .map((d) => (d && typeof d === 'object' && 'msg' in d ? String(d.msg) : ''))
+          .filter(Boolean)
+          .map((m) => m.replace(/^Value error, /, ''))
+      : []
     const message =
       typeof detail === 'string'
         ? detail
-        : detail != null
+        : validationMessages.length > 0
+          ? validationMessages.join('; ')
+          : detail != null
           ? JSON.stringify(detail)
           : axios.isAxiosError(error)
             ? error.message

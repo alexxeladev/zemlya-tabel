@@ -7,6 +7,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_validator
 
 
+from app.core.security import validate_password
 from app.schemas.company import CompanyRead
 from app.schemas.department import DepartmentRead
 from app.schemas.position import EmployeePositionRead
@@ -28,10 +29,8 @@ class EmployeeAccessCreate(BaseModel):
 
     @field_validator("initial_password")
     @classmethod
-    def _pwd_length(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        return v
+    def _pwd_policy(cls, v: str) -> str:
+        return validate_password(v)
 
 
 class EmployeeBase(BaseModel):
@@ -152,10 +151,8 @@ class EmployeeAccessGrant(BaseModel):
 
     @field_validator("initial_password")
     @classmethod
-    def _pwd_length(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        return v
+    def _pwd_policy(cls, v: str) -> str:
+        return validate_password(v)
 
 
 class EmployeeAccessUpdate(BaseModel):

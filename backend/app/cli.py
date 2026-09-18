@@ -11,11 +11,22 @@ import argparse
 import sys
 
 
+def _require_password_policy(password: str) -> None:
+    """Та же политика, что у API (task_stage2_access п.2.3)."""
+    from app.core.security import password_policy_error
+
+    error = password_policy_error(password)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+
+
 def create_admin(email: str, password: str, full_name: str) -> None:
     from app.core.security import hash_password
     from app.database import SessionLocal
     from app.models.employees import Employee
 
+    _require_password_policy(password)
     db = SessionLocal()
     try:
         existing = db.query(Employee).filter(Employee.is_system_admin.is_(True)).first()
@@ -52,6 +63,7 @@ def reset_password(email: str, new_password: str) -> None:
     from app.database import SessionLocal
     from app.models.employees import Employee
 
+    _require_password_policy(new_password)
     db = SessionLocal()
     try:
         emp = db.query(Employee).filter(Employee.email == email).first()

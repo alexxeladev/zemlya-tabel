@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
+import { passwordPolicyError } from '../../utils/password'
 import {
   listEmployees, createEmployee, updateEmployee,
   grantAccess, updateRole, resetPassword, revokeAccess,
@@ -245,6 +246,14 @@ export function EmployeesPage() {
   }, [employees, searchParams])
 
   const onSubmit = async (data: FormData) => {
+    // Пароль нового доступа — та же политика, что на сервере (utils/password):
+    // причина видна у поля, а не сырой ошибкой 422.
+    const grantsAccess = data.has_access && (!editTarget || !editTarget.has_access)
+    const pwdError = grantsAccess ? passwordPolicyError(data.initial_password) : null
+    if (pwdError) {
+      form.setError('initial_password', { message: pwdError })
+      return
+    }
     try {
       // Поля рабочего места (отдел/график/компания/оплата) при СОЗДАНИИ уходят
       // в основную позицию через compat-аксессоры бэка. При редактировании их
@@ -930,6 +939,9 @@ export function EmployeesPage() {
                       placeholder={editTarget && !editTarget.has_access ? 'Обязательно для нового доступа' : ''}
                       className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
+                    {form.formState.errors.initial_password?.message && (
+                      <p className="text-xs text-red-600">{form.formState.errors.initial_password.message}</p>
+                    )}
                   </div>
                 )}
                 {editTarget && editTarget.has_access && (

@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useNavigate } from 'react-router-dom'
 import { z } from 'zod'
+import { passwordPolicyError } from '../utils/password'
 import { changePassword } from '../api/auth'
 import { useAuthStore } from '../store/auth'
 import { Button } from '../components/Button'
@@ -13,7 +14,11 @@ import { ErrorBox } from '../components/ErrorBox'
 const schema = z
   .object({
     currentPassword: z.string().min(1, { message: 'Введите текущий пароль' }),
-    newPassword: z.string().min(8, { message: 'Минимум 8 символов' }),
+    // Политика — зеркало серверной (utils/password, task_stage2_access п.2.3).
+    newPassword: z.string().superRefine((v, ctx) => {
+      const error = passwordPolicyError(v)
+      if (error) ctx.addIssue({ code: 'custom', message: error })
+    }),
     confirmPassword: z.string().min(1, { message: 'Подтвердите пароль' }),
   })
   .refine((d) => d.newPassword !== d.currentPassword, {

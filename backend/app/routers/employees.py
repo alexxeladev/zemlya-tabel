@@ -209,6 +209,9 @@ def _to_dict(emp: Employee) -> dict:
 
 def _gen_temp_password() -> str:
     alphabet = string.ascii_letters + string.digits
+    # Сброс админом — тоже место, где задаётся пароль: 12 символов латиницы и
+    # цифр политике (`core.security.password_policy_error`) удовлетворяют
+    # всегда, это держит тест (task_stage2_access п.2.3).
     return "".join(secrets.choice(alphabet) for _ in range(12))
 
 
