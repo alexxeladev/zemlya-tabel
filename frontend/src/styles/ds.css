@@ -1,0 +1,132 @@
+/* ═══════════════════════════════════════════════════════════════
+   Дизайн-система редизайна (task_ui_redesign, этап 0) — ОБЩИЙ слой.
+
+   Токены сняты с макетов `docs/design/*.html` — это одна система, её
+   источник правды. Отступления от макета помечены «AA»: значения макета
+   не проходили WCAG 2.1 AA, решение по вахте требует 4,5:1 для текста и
+   3:1 для элементов управления.
+
+   ИЗОЛЯЦИЯ. Остальные экраны на старом стиле, перекрашивать их нельзя:
+   - переменные носят префикс `--ds-` и никем, кроме слоя, не читаются;
+   - утилиты Tailwind (`bg-ds-surface`, `text-ds-muted`, `rounded-ds-md`…)
+     генерируются только там, где их пишут;
+   - базовые правила (шрифт, фокус, цифры) действуют ТОЛЬКО внутри `.ds`.
+   Экран переходит на редизайн, когда его корень получает класс `ds`.
+
+   Тёмной темы пока нет: у приложения её нет вовсе, и тёмный экран внутри
+   светлой оболочки был бы хуже любого из вариантов. Ветки из макета
+   добавятся вместе с темой оболочки (этап 8).
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  --ds-ground: #F2F5F3;
+  --ds-surface: #FFFFFF;
+  --ds-surface-2: #F8FAF9;
+  --ds-surface-3: #EFF3F1;
+  --ds-line: #DFE5E2;
+  --ds-line-strong: #C7D1CC;
+  /* AA: рамка поля ввода — граница элемента управления, нужна 3:1.
+     line-strong макета даёт 1,56:1 и годится только для разделителей. */
+  --ds-control-line: #7D8A84;
+  --ds-ink: #131C1A;
+  --ds-ink-2: #3B4844;
+  /* AA: у макета #69766F — 4,33:1 на фоне страницы. */
+  --ds-muted: #5F6C66;
+  /* AA: у макета #94A19B — 2,68:1. Только для НЕтекстового: иконки,
+     маркеры. Текст — не светлее muted. */
+  --ds-faint: #7D8A84;
+  --ds-accent: #0E5C55;
+  --ds-accent-hi: #0A4A44;
+  --ds-accent-soft: #E1EFEB;
+  --ds-on-accent: #FFFFFF;
+  --ds-warn: #845007;
+  --ds-warn-soft: #FAF0DC;
+  --ds-warn-line: #E7D2AB;
+  --ds-ok: #1C6B3F;
+  --ds-ok-soft: #E3F0E7;
+  --ds-ok-line: #BEDCC9;
+  --ds-danger: #9B2C2C;
+  --ds-danger-soft: #F7E6E6;
+  --ds-danger-line: #E5C1C1;
+  --ds-focus: #1B8B80;
+
+  /* Палитра юрлиц редизайна. Пока НЕ используется: цвет юрлица общий у
+     табеля, дашборда и вахты (`utils/colors.ts`), и сменить его в одном
+     экране значило бы раскрасить одно юрлицо по-разному. Переключается
+     глобально, когда на редизайн переходит табель. */
+  --ds-co-1: #0E6157;
+  --ds-co-2: #4340A6;
+  --ds-co-3: #AC4E18;
+  --ds-co-4: #8A3A72;
+  --ds-co-5: #2C6E8F;
+  --ds-co-6: #66600F;
+
+  --ds-r-lg: 12px;
+  --ds-r-md: 8px;
+  --ds-r-sm: 5px;
+  --ds-shadow: 0 1px 2px rgba(19, 28, 26, .05), 0 10px 28px -18px rgba(19, 28, 26, .35);
+  --ds-shadow-pop: 0 2px 6px rgba(19, 28, 26, .08), 0 18px 40px -16px rgba(19, 28, 26, .30);
+  --ds-font: 'Golos Text', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --ds-font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+/* `inline`: утилита подставляет var(--ds-…), а не копию значения, —
+   поэтому тема (когда появится) переключится одной правкой переменных. */
+@theme inline {
+  --color-ds-ground: var(--ds-ground);
+  --color-ds-surface: var(--ds-surface);
+  --color-ds-surface-2: var(--ds-surface-2);
+  --color-ds-surface-3: var(--ds-surface-3);
+  --color-ds-line: var(--ds-line);
+  --color-ds-line-strong: var(--ds-line-strong);
+  --color-ds-control-line: var(--ds-control-line);
+  --color-ds-ink: var(--ds-ink);
+  --color-ds-ink-2: var(--ds-ink-2);
+  --color-ds-muted: var(--ds-muted);
+  --color-ds-faint: var(--ds-faint);
+  --color-ds-accent: var(--ds-accent);
+  --color-ds-accent-hi: var(--ds-accent-hi);
+  --color-ds-accent-soft: var(--ds-accent-soft);
+  --color-ds-on-accent: var(--ds-on-accent);
+  --color-ds-warn: var(--ds-warn);
+  --color-ds-warn-soft: var(--ds-warn-soft);
+  --color-ds-warn-line: var(--ds-warn-line);
+  --color-ds-ok: var(--ds-ok);
+  --color-ds-ok-soft: var(--ds-ok-soft);
+  --color-ds-ok-line: var(--ds-ok-line);
+  --color-ds-danger: var(--ds-danger);
+  --color-ds-danger-soft: var(--ds-danger-soft);
+  --color-ds-danger-line: var(--ds-danger-line);
+  --color-ds-focus: var(--ds-focus);
+  --radius-ds-lg: var(--ds-r-lg);
+  --radius-ds-md: var(--ds-r-md);
+  --radius-ds-sm: var(--ds-r-sm);
+  --shadow-ds: var(--ds-shadow);
+  --shadow-ds-pop: var(--ds-shadow-pop);
+  --font-ds: var(--ds-font);
+  --font-ds-mono: var(--ds-font-mono);
+}
+
+/* ── База внутри области редизайна ─────────────────────────── */
+.ds {
+  font-family: var(--ds-font);
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--ds-ink);
+  -webkit-font-smoothing: antialiased;
+}
+/* Одно кольцо фокуса вместо семи цветов. */
+.ds :focus-visible {
+  outline: 2px solid var(--ds-focus);
+  outline-offset: 2px;
+}
+/* Колонки чисел не «дышат» при пересчёте. */
+.ds table,
+.ds .ds-num {
+  font-variant-numeric: tabular-nums;
+}
+/* display:flex из класса сильнее браузерного [hidden] — без этого скрытие
+   атрибутом молча не работает (грабли блока показателя и макета IA). */
+.ds [hidden] {
+  display: none !important;
+}
