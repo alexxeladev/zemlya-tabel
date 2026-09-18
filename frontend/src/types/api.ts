@@ -825,6 +825,9 @@ export interface Employee {
   must_change_password: boolean
   last_login_at: string | null
   is_system_admin: boolean
+  /** До какого момента вход закрыт после неудачных попыток (ISO, UTC).
+   *  Приходит только админу (task_stage2_access п.2.6). */
+  login_locked_until?: string | null
   // nested
   department: Department | null
   schedule: Schedule | null

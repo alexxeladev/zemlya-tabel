@@ -3,6 +3,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Сервер не стартует с дефолтным SECRET_KEY (task_stage2_access п.2.6), а
+# TestClient поднимает lifespan. Ставится ДО импорта приложения: Settings
+# читает окружение при импорте app.config.
+os.environ.setdefault("SECRET_KEY", "test-only-secret-" + "0" * 32)
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text

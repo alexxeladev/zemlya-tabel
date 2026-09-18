@@ -7,7 +7,7 @@ import { passwordPolicyError } from '../../utils/password'
 import {
   listEmployees, createEmployee, updateEmployee,
   grantAccess, updateRole, resetPassword, revokeAccess,
-  dismissEmployee, rehireEmployee,
+  dismissEmployee, rehireEmployee, unlockLogin,
   getCompanyShares, setCompanyShares,
 } from '../../api/employees'
 import { listDepartments } from '../../api/departments'
@@ -362,6 +362,16 @@ export function EmployeesPage() {
     }
   }
 
+  const onUnlock = async (emp: Employee) => {
+    try {
+      await unlockLogin(emp.id)
+      toast.success(`Вход для ${emp.full_name} разблокирован`)
+      refetch()
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : 'Ошибка')
+    }
+  }
+
   const onReset = async () => {
     if (!resetTarget) return
     try {
@@ -494,6 +504,15 @@ export function EmployeesPage() {
                     ? <Badge variant="green">{ROLE_LABELS[e.role] ?? e.role}</Badge>
                     : <Badge variant="gray">Нет</Badge>
                 }
+                {/* Блокировка после неудачных попыток входа (task_stage2_access
+                    п.2.6) — приходит только админу. */}
+                {e.login_locked_until && (
+                  <div className="mt-1">
+                    <Badge variant="red">
+                      Вход закрыт до {new Date(e.login_locked_until).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                    </Badge>
+                  </div>
+                )}
               </Td>
               <Td>
                 {e.is_active
@@ -507,6 +526,9 @@ export function EmployeesPage() {
                     <Button size="sm" variant="secondary" onClick={() => openEdit(e)}>{readOnly ? 'Просмотр' : 'Изменить'}</Button>
                     {canAdmin() && (
                       <Button size="sm" variant="ghost" onClick={() => setHistoryTarget(e)} title="Кто и когда менял карточку и рабочие места">История</Button>
+                    )}
+                    {canAdmin() && e.login_locked_until && (
+                      <Button size="sm" variant="secondary" onClick={() => onUnlock(e)} title="Сбросить счётчик неудачных попыток входа">Снять блокировку</Button>
                     )}
                     {canAdmin() && !e.is_system_admin && e.is_active && (
                       <Button size="sm" variant="danger" onClick={() => { setDismissTarget(e); setDismissDate(new Date().toISOString().slice(0, 10)) }}>Уволить</Button>

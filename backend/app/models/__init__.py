@@ -37,6 +37,7 @@ from app.models.guard_posts import (
 )
 from app.models.guard_settings import DEFAULT_EMPLOYER_TAX_PERCENT, GuardSettings
 from app.models.loan_deductions import LoanDeduction
+from app.models.login_failures import LoginFailure
 from app.models.night_shifts import NightShift
 from app.models.positions import (
     PAY_TYPE_HOURLY,
@@ -92,6 +93,7 @@ __all__ = [
     "HALF_SECOND",
     "half_of_day",
     "LoanDeduction",
+    "LoginFailure",
     "NightShift",
     "PAY_TYPES",
     "PAY_TYPE_HOURLY",

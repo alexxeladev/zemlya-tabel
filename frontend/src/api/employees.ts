@@ -83,6 +83,10 @@ export const updateRole = (id: number, data: { role: UserRole }) =>
 export const resetPassword = (id: number) =>
   apiClient.post<{ temp_password: string }>(`/api/employees/${id}/reset-password`).then((r) => r.data)
 
+/** Снять блокировку входа после неудачных попыток (только admin). */
+export const unlockLogin = (id: number) =>
+  apiClient.post<Employee>(`/api/employees/${id}/unlock-login`).then((r) => r.data)
+
 export const revokeAccess = (id: number) =>
   apiClient.delete(`/api/employees/${id}/access`)
 

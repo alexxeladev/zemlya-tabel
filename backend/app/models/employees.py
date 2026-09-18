@@ -98,6 +98,9 @@ class Employee(Base):
     token_version: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
+    # Когда админ снял блокировку входа (task_stage2_access п.2.6): неудачи до
+    # этого момента в порог больше не считаются. Naive UTC.
+    login_unlocked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Timestamps
     created_at: Mapped[str] = mapped_column(server_default=func.now())

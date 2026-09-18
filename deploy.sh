@@ -51,6 +51,29 @@ if [[ "$DO_PULL" == "1" ]]; then
   git -C "$ROOT" pull --ff-only
 fi
 
+# SECRET_KEY: сервер НЕ стартует с пустым, дефолтным или коротким (<32)
+# секретом (task_stage2_access п.2.6). Нет годного — генерируем и прописываем
+# в файл окружения, иначе после выкатки проверки стенд просто не поднимется.
+# Новый секрет обесценивает все выданные токены — все войдут заново.
+ensure_secret_key() {  # $1 = файл окружения
+  local file="$1" cur
+  cur="$(grep -E '^SECRET_KEY=' "$file" 2>/dev/null | head -n1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]]+|[[:space:]]+$//g' || true)"
+  case "${cur,,}" in ""|change-me|changeme|secret|secret-key|dev|test) cur="" ;; esac
+  if [[ ${#cur} -ge 32 ]]; then return 0; fi
+  local new
+  new="$(python3 -c 'import secrets;print(secrets.token_hex(32))')"
+  if grep -qE '^SECRET_KEY=' "$file" 2>/dev/null; then
+    sed -i -E "s|^SECRET_KEY=.*$|SECRET_KEY=${new}|" "$file"
+  else
+    printf 'SECRET_KEY=%s\n' "$new" >> "$file"
+  fi
+  chmod 600 "$file" 2>/dev/null || true
+  echo "  ⚠ SECRET_KEY в $(basename "$file") был пуст/дефолтный/короткий — сгенерирован новый. Все текущие сессии сброшены, пользователи войдут заново."
+}
+
+say "Проверка SECRET_KEY…"
+ensure_secret_key "$ENV_FILE"
+
 POSTGRES_USER="$(getenv POSTGRES_USER)"
 POSTGRES_DB="$(getenv POSTGRES_DB)"
 PREPROD_HTTP_PORT="$(getenv PREPROD_HTTP_PORT)"; PREPROD_HTTP_PORT="${PREPROD_HTTP_PORT:-8080}"

@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.config import settings
+from app.config import MIN_SECRET_KEY_LENGTH, secret_key_problem, settings
 from app.database import SessionLocal
 from app.models.production_calendars import ProductionCalendar
 from app.routers.audit import router as audit_router
@@ -33,6 +33,16 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Отказ запуска с предсказуемой подписью токенов (task_stage2_access п.2.6).
+    # Проверка здесь, а не в Settings: alembic и CLI подпись не используют и
+    # должны работать и без секрета.
+    problem = secret_key_problem(settings.SECRET_KEY)
+    if problem:
+        raise RuntimeError(
+            f"Запуск отклонён: {problem}. Задайте случайный SECRET_KEY не короче "
+            f"{MIN_SECRET_KEY_LENGTH} символов в .env (dev) или .env.preprod — "
+            "например: python3 -c 'import secrets; print(secrets.token_hex(32))'"
+        )
     current_year = datetime.now().year
     for year in [current_year, current_year + 1]:
         try:

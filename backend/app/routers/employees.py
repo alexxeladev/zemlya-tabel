@@ -1,3 +1,4 @@
+import datetime
 import secrets
 import string
 from decimal import Decimal
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_action
 from app.core.deps import get_current_user, require_role
 from app.core.security import hash_password, revoke_sessions
+from app.services.login_guard import locked_until_by_employee, unlock_login
 from app.database import get_db
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
@@ -265,7 +267,10 @@ def list_employees(
 
     rows = q.all()
     # Табельщику — без окладов, сотруднику — без денег отдела (finance_masking).
-    return employees_for(current_user, [EmployeeRead.model_validate(e) for e in rows])
+    return _with_login_locks(
+        db, current_user, rows,
+        employees_for(current_user, [EmployeeRead.model_validate(e) for e in rows]),
+    )
 
 
 @router.get("/{emp_id}", response_model=EmployeeRead)
@@ -286,7 +291,24 @@ def get_employee(
         if not can_access_department(current_user, emp.department_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
-    return employee_for(current_user, EmployeeRead.model_validate(emp))
+    return _with_login_locks(
+        db, current_user, [emp], [employee_for(current_user, EmployeeRead.model_validate(emp))],
+    )[0]
+
+
+def _with_login_locks(
+    db: Session, actor: Employee, rows: list[Employee], reads: list[EmployeeRead],
+) -> list[EmployeeRead]:
+    """Пометка «вход заблокирован до …» — только админу (снять может только он),
+    одним запросом на весь список."""
+    if actor.role != "admin":
+        return reads
+    locks = locked_until_by_employee(db, rows)
+    for read in reads:
+        until = locks.get(read.id)
+        # Внутри naive UTC; наружу — с поясом, иначе браузер прочтёт как местное.
+        read.login_locked_until = until.replace(tzinfo=datetime.timezone.utc) if until else None
+    return reads
 
 
 # ── Create ─────────────────────────────────────────────────────────────────────
@@ -544,10 +566,37 @@ def reset_password(
     emp.must_change_password = True
     # Сброс — это и есть «отозвать доступ»: сессии со старым паролем гаснут.
     revoke_sessions(emp)
+    # С новым паролем человек должен войти сразу, а не ждать конца блокировки,
+    # набранной старым (task_stage2_access п.2.6).
+    unlock_login(emp)
     db.flush()
     log_action(db, actor, "employee", emp.id, "reset_password")
     db.commit()
     return {"temp_password": temp_password}
+
+
+@router.post("/{emp_id}/unlock-login", response_model=EmployeeRead)
+def unlock_employee_login(
+    emp_id: int,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Снять блокировку входа после неудачных попыток (task_stage2_access п.2.6).
+    Журнал попыток не трогается — неудачи до этого момента просто перестают
+    считаться в порог."""
+    emp = db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    if emp.email is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Employee has no system access")
+    before = locked_until_by_employee(db, [emp]).get(emp.id)
+    unlock_login(emp)
+    db.flush()
+    log_action(db, actor, "employee", emp.id, "login_unlocked",
+               before={"login_locked_until": before.isoformat() if before else None})
+    db.commit()
+    db.refresh(emp)
+    return _with_login_locks(db, actor, [emp], [EmployeeRead.model_validate(emp)])[0]
 
 
 @router.delete("/{emp_id}/access", status_code=status.HTTP_204_NO_CONTENT)

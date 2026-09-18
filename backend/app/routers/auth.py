@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user_allow_password_change
@@ -13,22 +13,53 @@ from app.core.security import (
 )
 from app.database import get_db
 from app.models.employees import Employee
+from app.models.login_failures import (
+    REASON_INACTIVE,
+    REASON_LOCKED,
+    REASON_NO_ACCESS,
+    REASON_UNKNOWN_EMAIL,
+    REASON_WRONG_PASSWORD,
+)
 from app.schemas.auth import ChangePasswordRequest, LoginRequest, TokenResponse
 from app.schemas.employee import EmployeeRead
 from app.services.finance_masking import employee_for
+from app.services.login_guard import client_ip, login_locked_until, record_failure
 
 router = APIRouter()
 
 
 @router.post("/auth/login", response_model=TokenResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    """Вход. Неудачи пишутся в журнал `login_failures`, после
+    `LOGIN_MAX_FAILURES` неудач за окно учётка закрыта до его конца — 429
+    (task_stage2_access п.2.6). Блокировка проверяется ДО пароля: во время неё
+    даже верный пароль не пускает, иначе перебор продолжался бы."""
+    ip = client_ip(request)
     emp: Employee | None = db.query(Employee).filter(Employee.email == payload.email).first()
-    if not emp or emp.hashed_password is None or not verify_password(payload.password, emp.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    def reject(reason: str, status_code: int, detail: str, headers: dict | None = None):
+        record_failure(db, payload.email, ip, reason, emp)
+        db.commit()
+        raise HTTPException(status_code=status_code, detail=detail, headers=headers)
+
+    locked_until = login_locked_until(db, payload.email, emp)
+    if locked_until is not None:
+        retry = max(1, int((locked_until - datetime.now(timezone.utc).replace(tzinfo=None)).total_seconds()))
+        minutes = (retry + 59) // 60
+        reject(
+            REASON_LOCKED, status.HTTP_429_TOO_MANY_REQUESTS,
+            f"Слишком много неудачных попыток входа. Вход в учётную запись закрыт "
+            f"ещё на {minutes} мин. Снять блокировку раньше может администратор.",
+            {"Retry-After": str(retry)},
+        )
+    if not emp:
+        reject(REASON_UNKNOWN_EMAIL, status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
+    if emp.hashed_password is None or not verify_password(payload.password, emp.hashed_password):
+        reject(REASON_WRONG_PASSWORD, status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
     if not emp.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive")
+        reject(REASON_INACTIVE, status.HTTP_403_FORBIDDEN, "Account is inactive")
     if emp.role is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Account has no system access")
+        reject(REASON_NO_ACCESS, status.HTTP_401_UNAUTHORIZED, "Account has no system access")
 
     emp.last_login_at = datetime.now(timezone.utc)
     db.commit()

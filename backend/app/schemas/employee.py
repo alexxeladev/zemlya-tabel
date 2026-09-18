@@ -98,6 +98,11 @@ class EmployeeRead(EmployeeBase):
     # по ТОМУ ЖЕ месту, что и бэк, а не всегда по основному.
     loan_position_id: Optional[int] = None
 
+    # До какого момента (UTC) вход закрыт после неудачных попыток
+    # (task_stage2_access п.2.6). Заполняется только для админа — снять
+    # блокировку может только он; у прочих всегда None.
+    login_locked_until: Optional[datetime.datetime] = None
+
     @model_validator(mode="after")
     def _compute_fields(self) -> "EmployeeRead":
         self.has_access = self.email is not None
