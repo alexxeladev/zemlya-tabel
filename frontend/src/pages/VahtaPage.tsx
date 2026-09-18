@@ -17,6 +17,12 @@ import {
 import { listCompanies } from '../api/companies'
 import { apiClient } from '../api/client'
 import { Button } from '../components/Button'
+import { DsButton } from '../components/ds/Button'
+import { EmptyState } from '../components/ds/EmptyState'
+import { SearchField, SelectField } from '../components/ds/fields'
+import { Icon } from '../components/ds/Icon'
+import { MonthPicker } from '../components/ds/MonthPicker'
+import { Pill } from '../components/ds/Pill'
 import { Modal } from '../components/Modal'
 import { QuickHireModal } from '../components/vahta/QuickHireModal'
 import { usePersistentState } from '../hooks/usePersistentState'
@@ -41,35 +47,29 @@ import { companyLabel } from '../utils/companies'
 import { defaultJobTitleId, useGuardJobTitles } from '../hooks/useGuardJobTitles'
 import { ConfirmDialog } from '../components/ds/ConfirmDialog'
 import { RowMenu, type MenuItem } from '../components/ds/Menu'
-import { MONTHS_RU_PREP } from '../utils/ruDate'
+import { MONTHS_RU, MONTHS_RU_GEN, MONTHS_RU_PREP } from '../utils/ruDate'
+import { companyColorByIndex } from '../utils/colors'
 import { vahtaSettingsPath } from '../utils/vahtaSettings'
 
 // Должности — справочник вахты (настройки → «Должности»), а не константа
 // экрана: грузятся хуком useGuardJobTitles и передаются строкам и окнам.
 
-/** Родительный падеж — «1–15 сентября». */
-const MONTHS_GEN = [
-  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
-]
-
 const isVahtaView = (v: unknown): boolean => v === 'month' || v === 1 || v === 2
 
-const MONTHS = [
-  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
-  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
-]
 
 /**
  * Ширины липких левых колонок. Фиксированные, потому что смещение каждой
  * следующей считается от суммы предыдущих — «по содержимому» они разъедутся с
  * шапкой (та же причина, что в основном табеле).
  */
-const COL_NAME_W = 200
-const COL_ROLE_W = 112
-const COL_RATE_W = 76
-/** Ширина ячейки дня. 31 × 20 = 620 px — вместе с остальным влезает в ноутбук. */
-const DAY_W = 20
+const COL_NAME_W = 230
+const COL_ROLE_W = 156
+const COL_RATE_W = 104
+/**
+ * Ширина ячейки дня. 24 px — мишень клика не меньше 24×24 (редизайн §4.3);
+ * сама отметка 20×20, месяц по-прежнему целиком на экране.
+ */
+const DAY_W = 24
 const LEFT_ROLE = COL_NAME_W
 const LEFT_RATE = COL_NAME_W + COL_ROLE_W
 
@@ -229,12 +229,12 @@ const PersonRow = memo(
     return (
       <tr
         data-row-id={row.id}
-        className="group border-b border-slate-100 hover:bg-slate-50"
+        className="group hover:bg-ds-surface-2"
       >
         {/* Одна строка с многоточием: перенос ФИО ломал высоту строки и
             разъезжался с сеткой дней. Полное имя — в подсказке. */}
         <td
-          className="sticky left-0 z-10 overflow-hidden text-ellipsis whitespace-nowrap bg-[#FBFBF9] px-2 py-1 group-hover:bg-slate-50"
+          className="sticky left-0 z-10 overflow-hidden text-ellipsis whitespace-nowrap border-b border-ds-line bg-ds-surface px-2 py-1 group-hover:bg-ds-surface-2"
           style={{ width: COL_NAME_W, minWidth: COL_NAME_W, maxWidth: COL_NAME_W }}
           title={row.employee_name ?? 'вакансия'}
         >
@@ -242,19 +242,19 @@ const PersonRow = memo(
             <Link
               to={`/admin/employees?employee_id=${row.employee_id}`}
               title="Открыть карточку сотрудника"
-              className="font-medium text-slate-800 hover:text-blue-700 hover:underline"
+              className="font-medium text-ds-ink hover:text-ds-accent hover:underline"
             >
               {highlight(row.employee_name, query)}
             </Link>
           ) : row.employee_name ? (
-            <span className="font-medium text-slate-800">
+            <span className="font-medium text-ds-ink">
               {highlight(row.employee_name, query)}
             </span>
           ) : (
-            <span className="italic text-slate-400">вакансия</span>
+            <span className="italic text-ds-muted">Вакансия — место свободно</span>
           )}
           {row.tab_number && (
-            <span className="ml-1.5 font-mono text-[10px] text-slate-400">
+            <span className="ml-1.5 font-ds-mono text-[11px] text-ds-muted">
               {highlight(row.tab_number, query)}
             </span>
           )}
@@ -263,37 +263,53 @@ const PersonRow = memo(
         {/* Должность — свойство ЧЕЛОВЕКА на месте, а не места: на одном посту
             стоят и ГБР, и охранник. Поэтому правится прямо в строке. */}
         <td
-          className="sticky z-10 bg-[#FBFBF9] px-1 py-1 text-[11.5px] text-slate-500 group-hover:bg-slate-50"
+          className="sticky z-10 border-b border-ds-line bg-ds-surface px-1 py-1 text-[12.5px] text-ds-ink-2 group-hover:bg-ds-surface-2"
           style={{ left: LEFT_ROLE, width: COL_ROLE_W, minWidth: COL_ROLE_W, maxWidth: COL_ROLE_W }}
         >
-          {canEdit ? (
-            <select
-              value={row.job_title_id}
-              onChange={(e) => onKind(row, Number(e.target.value))}
-              className="w-full cursor-pointer truncate rounded border border-transparent bg-transparent px-1 py-0.5 text-[11.5px] hover:border-slate-300 hover:bg-white"
-            >
-              {/* Снятая должность строки остаётся в списке, иначе select показал бы пустоту. */}
-              {!jobTitles.some((t) => t.id === row.job_title_id) && (
-                <option value={row.job_title_id}>{row.job_title_name}</option>
-              )}
-              {jobTitles.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            row.job_title_name
-          )}
-          {postLabel && (
-            <span className="block truncate px-1 text-[11px] text-slate-500" title={`Пост: ${postLabel}`}>
-              пост {postLabel}
-            </span>
-          )}
+          {/* Видимая подпись «Должность · пост ˅» со стрелкой В КОНЦЕ (как в
+              макете), а поверх — прозрачный select: клики и клавиатура уходят в
+              него, кольцо фокуса рисуется на подписи. Системная стрелка select
+              вставала между должностью и постом. */}
+          <div
+            className={`relative flex h-[26px] min-w-0 items-center gap-1 rounded-ds-sm border border-transparent px-1.5 ${
+              canEdit
+                ? 'hover:border-ds-control-line hover:bg-ds-surface has-[select:focus-visible]:outline-2 has-[select:focus-visible]:outline-ds-focus has-[select:focus-visible]:outline-offset-1'
+                : ''
+            }`}
+          >
+            <span className="min-w-0 truncate">{row.job_title_name}</span>
+            {/* Пост — в той же строке: подписью ниже строка становилась вдвое выше. */}
+            {postLabel && (
+              <span className="flex-none whitespace-nowrap text-[12px] text-ds-muted" title={`Пост: ${postLabel}`}>
+                · {postLabel}
+              </span>
+            )}
+            {canEdit && (
+              <>
+                <Icon name="chevronDown" size={10} className="ml-auto text-ds-faint" />
+                <select
+                  value={row.job_title_id}
+                  onChange={(e) => onKind(row, Number(e.target.value))}
+                  aria-label={`Должность: ${row.employee_name ?? 'свободное место'}`}
+                  className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0 focus:outline-none"
+                >
+                  {/* Снятая должность строки остаётся в списке, иначе select показал бы пустоту. */}
+                  {!jobTitles.some((t) => t.id === row.job_title_id) && (
+                    <option value={row.job_title_id}>{row.job_title_name}</option>
+                  )}
+                  {jobTitles.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
         </td>
 
         <td
-          className="sticky z-10 border-r border-slate-200 bg-[#FBFBF9] px-2 py-1 text-right tabular-nums group-hover:bg-slate-50"
+          className="sticky z-10 whitespace-nowrap border-b border-r border-b-ds-line border-r-ds-line-strong bg-ds-surface px-1.5 py-1 text-right tabular-nums group-hover:bg-ds-surface-2"
           style={{ left: LEFT_RATE, width: COL_RATE_W, minWidth: COL_RATE_W }}
         >
           {!showMoney ? (
@@ -309,7 +325,7 @@ const PersonRow = memo(
                 if (e.key === 'Enter') void saveRate()
                 if (e.key === 'Escape') setRateDraft(null)
               }}
-              className="w-[84px] rounded border border-sky-500 px-1.5 py-0.5 text-right tabular-nums"
+              className="h-[26px] w-[88px] rounded-ds-sm border border-ds-accent px-1.5 text-right font-ds-mono text-[12.5px] shadow-[0_0_0_3px_color-mix(in_srgb,var(--ds-accent)_16%,transparent)] outline-none"
             />
           ) : canManage ? (
             <button
@@ -320,14 +336,14 @@ const PersonRow = memo(
                   ? `Своя ставка строки; у места ${money(placeRate)}. Клик — изменить`
                   : 'Ставка этой строки. Клик — изменить'
               }
-              className="cursor-pointer rounded border border-dashed border-transparent px-1 py-0.5 tabular-nums hover:border-slate-400 hover:bg-white"
+              className="inline-flex h-[26px] cursor-pointer items-center gap-1 rounded-ds-sm border border-dashed border-transparent px-1.5 tabular-nums hover:border-ds-control-line hover:bg-ds-surface"
             >
-              {ownRate && <span className="mr-1 text-[10.5px] font-medium text-teal-800">своя</span>}
+              {ownRate && <span className="text-[10.5px] font-medium text-ds-accent">своя</span>}
               {money(row.rate)}
             </button>
           ) : (
             <>
-              {ownRate && <span className="mr-1 text-[10.5px] font-medium text-teal-800">своя</span>}
+              {ownRate && <span className="mr-1 text-[10.5px] font-medium text-ds-accent">своя</span>}
               {money(row.rate)}
             </>
           )}
@@ -336,8 +352,8 @@ const PersonRow = memo(
         {days.map((day) => (
           <td
             key={day}
-            className={`p-0 text-center ${
-              day === midDay + 1 && day !== firstDay ? 'border-l-2 border-slate-800' : ''
+            className={`border-b border-ds-line p-0 text-center ${
+              day === midDay + 1 && day !== firstDay ? 'border-l-2 border-l-ds-ink-2' : ''
             }`}
             style={{ width: DAY_W, minWidth: DAY_W }}
           >
@@ -349,30 +365,32 @@ const PersonRow = memo(
                 onPaintStart(row, day)
               }}
               onMouseEnter={() => onPaintOver(row, day)}
-              className={`m-px h-[18px] w-[18px] rounded-[3px] text-[10.5px] leading-none tabular-nums ${
+              aria-label={`${day} число: ${marked.has(day) ? 'смена' : 'нет смены'}`}
+              aria-pressed={marked.has(day)}
+              className={`h-5 w-5 rounded-[4px] text-[10.5px] leading-none tabular-nums ${
                 marked.has(day)
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-slate-200 text-slate-400'
-              } ${canEdit ? 'cursor-pointer hover:outline hover:outline-2 hover:outline-sky-400' : ''}`}
+                  ? 'bg-ds-accent text-ds-on-accent'
+                  : 'bg-ds-surface-3 text-ds-muted'
+              } ${canEdit ? 'cursor-pointer hover:outline hover:outline-2 hover:outline-ds-focus' : ''}`}
             >
               {day}
             </button>
           </td>
         ))}
 
-        <td className="px-1.5 py-1 text-center font-bold tabular-nums" style={{ width: 40 }}>
-          {row.shifts || ''}
+        <td className="border-b border-ds-line px-1.5 py-1 text-right font-semibold tabular-nums" style={{ width: 44 }}>
+          {row.shifts || '—'}
         </td>
 
         {showMoney && (
           <>
-            <td className="px-2 py-1 text-right font-bold tabular-nums text-emerald-800">
+            <td className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right font-semibold tabular-nums text-ds-ok">
               {parseFloat(row.accrued ?? '0') ? money(row.accrued) : '—'}
             </td>
             {/* Налог на официальную часть: сверх начисленного, но входит в
                 разнесение по юрлицам — отсюда и разница сумм в подвале. */}
             <td
-              className="px-2 py-1 text-right tabular-nums text-slate-600"
+              className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right tabular-nums text-ds-ink-2"
               title={
                 parseFloat(row.tax ?? '0')
                   ? `Налог с официальной выплаты ${money(row.official_payout)}. ` +
@@ -383,7 +401,7 @@ const PersonRow = memo(
             >
               {parseFloat(row.tax ?? '0') ? money(row.tax) : '—'}
             </td>
-            <td className="px-2 py-1 text-right" style={{ width: 150 }}>
+            <td className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right" style={{ width: 170 }}>
               {/* Премия и штраф вводятся отсюда: пустая ячейка прямо предлагает
                   их завести, заполненная показывает суммы словами. */}
               {canManage ? (
@@ -392,19 +410,19 @@ const PersonRow = memo(
                   onClick={(e) =>
                     onMoney(row, (e.currentTarget as HTMLElement).getBoundingClientRect())
                   }
-                  className={`cursor-pointer rounded px-1.5 py-0.5 text-[11.5px] ${
+                  className={`inline-flex h-[26px] cursor-pointer items-center rounded-ds-sm border px-2 text-[12px] ${
                     hasAdjustments
-                      ? 'text-slate-600 hover:bg-white hover:outline hover:outline-1 hover:outline-slate-300'
-                      : 'text-slate-400 outline outline-1 outline-dashed outline-slate-300 hover:bg-white'
+                      ? 'border-transparent text-ds-ink-2 hover:border-ds-control-line hover:bg-ds-surface'
+                      : 'border-dashed border-ds-control-line text-ds-muted hover:bg-ds-surface'
                   }`}
                 >
                   {hasAdjustments ? (
                     <>
                       {parseFloat(row.premium ?? '0') > 0 && (
-                        <span className="text-emerald-700">+{money(row.premium)} </span>
+                        <span className="text-ds-ok">+{money(row.premium)}&nbsp;</span>
                       )}
                       {parseFloat(row.penalty ?? '0') > 0 && (
-                        <span className="text-red-700">−{money(row.penalty)} </span>
+                        <span className="text-ds-danger">−{money(row.penalty)}&nbsp;</span>
                       )}
                       {parseFloat(row.official_payout ?? '0') > 0 && (
                         <span>оф. {money(row.official_payout)}</span>
@@ -415,14 +433,14 @@ const PersonRow = memo(
                   )}
                 </button>
               ) : (
-                <span className="text-[11.5px] text-slate-500">
-                  {hasAdjustments ? money(row.accrued) : '—'}
+                <span className="text-[12px] text-ds-muted">
+                  {hasAdjustments ? money(row.accrued) : 'нет'}
                 </span>
               )}
             </td>
             {/* К выплате = начислено − оф. выплата, вверх до 500 ₽ по половинам. */}
             <td
-              className="px-2 py-1 text-right font-bold tabular-nums text-slate-800"
+              className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right font-semibold tabular-nums text-ds-ink"
               title={
                 `Начислено минус официальная выплата — остаток из кассы. ` +
                 `Точно ${money(row.net_payout_exact)}, округлено вверх до 500 ₽ ` +
@@ -434,7 +452,7 @@ const PersonRow = memo(
           </>
         )}
 
-        <td className="px-1 py-1 text-right whitespace-nowrap" style={{ width: 48 }}>
+        <td className="whitespace-nowrap border-b border-ds-line px-1 py-1 text-center" style={{ width: 44 }}>
           <RowMenu items={menuItems} label={`Действия: ${row.employee_name ?? 'свободное место'}`} />
         </td>
       </tr>
@@ -754,12 +772,16 @@ export function VahtaPage() {
     },
     [companies],
   )
+  const companyColor = useCallback(
+    (id: number) => companyColorByIndex(companies.findIndex((c) => c.id === id)).color,
+    [companies],
+  )
 
-  if (loading) return <p className="text-sm text-gray-500">Загрузка…</p>
+  if (loading) return <p className="ds text-[13px] text-ds-muted">Загрузка…</p>
 
   if (!data || (zones.length === 0 && data.departments.length === 0)) {
     return (
-      <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+      <div className="ds rounded-ds-md border border-ds-warn-line bg-ds-warn-soft p-4 text-[13px] text-ds-warn">
         Подразделений охраны не найдено. Отметьте отдел как «подразделение охраны» в{' '}
         <Link to="/admin/org" className="underline">
           оргструктуре
@@ -778,107 +800,39 @@ export function VahtaPage() {
     (_, i) => data.first_day + i,
   )
   const mid = data.first_half_last_day
-  const periodLabel =
+  const halfLabel =
     data.view_half === null
-      ? `${MONTHS[month - 1]} ${year}, периоды 1–${mid} и ${mid + 1}–${data.days_in_month}`
+      ? ''
       : `${data.view_half === 1 ? 'Первая' : 'Вторая'} половина: ` +
-        `${data.first_day}–${data.last_day} ${MONTHS_GEN[month - 1]} ${year}`
+        `${data.first_day}–${data.last_day} ${MONTHS_RU_GEN[month - 1]}`
   const viewOptions: { value: VahtaView; label: string }[] = [
     { value: 'month', label: 'Месяц' },
     { value: 1, label: `1–${mid}` },
     { value: 2, label: `${mid + 1}–${data.days_in_month}` },
   ]
 
+  // Период — заголовок, а не плашка (редизайн, артборд 02): статус рядом с
+  // месяцем, а что из него следует — строкой под заголовком.
+  const lockPill =
+    periodLock === 'closed'
+      ? { tone: 'ok' as const, label: 'Закрыт' }
+      : periodLock === 'pending_review'
+        ? { tone: 'warn' as const, label: 'На проверке у бухгалтера' }
+        : { tone: 'neutral' as const, label: 'Черновик' }
+
   return (
-    <div className="-m-6 flex h-[calc(100vh-3.5rem)] flex-col bg-[#FBFBF9] text-[#12263A]">
-      {/* ── Шапка ─────────────────────────────────────────────────────────── */}
-      <div className="border-b-2 border-slate-800 px-5 pb-2.5 pt-3.5">
-        <div className="flex flex-wrap items-baseline gap-3.5">
-          <h1 className="text-[19px] font-bold tracking-tight">Вахта</h1>
-          <span
-            className={
-              data.view_half === null
-                ? 'text-slate-500'
-                : 'rounded bg-amber-100 px-2 py-0.5 font-semibold text-amber-900'
-            }
-          >
-            {periodLabel}
-          </span>
-          {data.view_half !== null && (
-            <span className="text-xs text-slate-500">
-              смены, начисления и итоги — только за эту половину
-            </span>
-          )}
-        </div>
-
-        <div className="mt-2.5 flex flex-wrap items-center gap-2">
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Найти человека, пост или объект"
-            className="w-[280px] rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm"
-          />
-          <select
-            value={zoneFilter}
-            onChange={(e) => setZoneFilter(e.target.value)}
-            className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
-          >
-            <option value="">Все зоны</option>
-            {zones.map((z) => (
-              <option key={z.zone_id} value={z.zone_name}>
-                {z.zone_name}
-              </option>
-            ))}
-          </select>
-          <select
-            value={kindFilter}
-            onChange={(e) => setKindFilter(e.target.value)}
-            className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
-          >
-            <option value="">Все должности</option>
-            {kinds.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-          {filtering && (
-            <button
-              type="button"
-              onClick={() => {
-                setQuery('')
-                setZoneFilter('')
-                setKindFilter('')
-              }}
-              className="cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-100"
-            >
-              Сбросить
-            </button>
-          )}
-
-          <select
-            value={month}
-            onChange={(e) => setPeriod(year, Number(e.target.value))}
-            className="ml-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
-          >
-            {MONTHS.map((name, i) => (
-              <option key={name} value={i + 1}>
-                {name}
-              </option>
-            ))}
-          </select>
-          <input
-            type="number"
-            value={year}
-            onChange={(e) => setPeriod(Number(e.target.value), month)}
-            className="w-20 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm"
-          />
-
+    <div className="ds -m-6 flex h-[calc(100vh-3.5rem)] flex-col bg-ds-ground px-6 pb-4 pt-5 text-ds-ink">
+      {/* ── Шапка, строка 1: период одним блоком и действия над ним ──────────
+          Блок периода на этапе 5 редизайна уедет в глобальную строку целиком. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+        <h1 className="m-0 text-[23px] font-semibold tracking-[-0.025em]">Вахта</h1>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <MonthPicker year={year} month={month} onChange={setPeriod} />
           {/* Режим отображения: месяц — общая картина, половины — сверка выплат. */}
           <div
             role="group"
-            aria-label="Период отображения"
-            className="flex overflow-hidden rounded-md border border-slate-200 bg-white text-sm"
+            aria-label="Отрезок месяца"
+            className="flex h-8 overflow-hidden rounded-ds-md border border-ds-control-line bg-ds-surface text-[13px]"
           >
             {viewOptions.map((opt) => (
               <button
@@ -886,77 +840,133 @@ export function VahtaPage() {
                 type="button"
                 aria-pressed={view === opt.value}
                 onClick={() => setView(opt.value)}
-                className={`cursor-pointer border-l border-slate-200 px-3 py-1.5 first:border-l-0 ${
+                className={`cursor-pointer border-l border-ds-line px-3 first:border-l-0 ${
                   view === opt.value
-                    ? 'bg-slate-800 font-semibold text-white'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-ds-ink-2 font-medium text-white'
+                    : 'text-ds-ink-2 hover:bg-ds-surface-3'
                 }`}
               >
                 {opt.label}
               </button>
             ))}
           </div>
-
+          <Pill tone={lockPill.tone} dot>
+            {lockPill.label}
+          </Pill>
+          {data.view_half !== null && (
+            <Pill tone="accent">{halfLabel}: итоги только за неё</Pill>
+          )}
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           {canManage && (
-            <Button variant="secondary" size="sm" onClick={handleCopy}>
+            <DsButton icon="copy" onClick={handleCopy}>
               Скопировать прошлый период
-            </Button>
+            </DsButton>
           )}
           {showMoney && (
-            <Button variant="secondary" size="sm" onClick={handleExport}>
+            <DsButton icon="download" onClick={handleExport}>
               Выгрузить в Excel
-            </Button>
+            </DsButton>
           )}
           {canManage && (
             <Link
               to={vahtaSettingsPath('staff', { year, month })}
-              className="rounded-md bg-slate-100 px-3 py-1.5 text-sm text-slate-800 hover:bg-slate-200"
+              className="inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-ds-md border border-ds-line bg-ds-surface-3 px-3.5 text-[13px] font-medium text-ds-ink-2 transition-colors hover:bg-ds-line hover:text-ds-ink"
             >
+              <Icon name="settings" />
               Настройки
             </Link>
           )}
-
-          <span className="ml-auto text-xs text-slate-500">
-            {plural(shownPeople, 'человек', 'человека', 'человек')},{' '}
-            {plural(shownRows.length, 'строка', 'строки', 'строк')}
-          </span>
         </div>
       </div>
 
       {periodLock && (
-        <p className="border-b border-amber-200 bg-amber-50 px-5 py-1.5 text-[12px] text-amber-800">
-          {periodLock === 'closed' ? 'Период закрыт' : 'Период на проверке у бухгалтера'} —
-          назначения, смены и суммы вахты за этот месяц не меняются. Чтобы внести правку,
-          период нужно вернуть в черновик.
+        <p className="m-0 mt-1.5 max-w-[80ch] text-[13px] text-ds-muted">
+          <b className="font-medium text-ds-warn">
+            {periodLock === 'closed' ? 'Период закрыт.' : 'Период на проверке у бухгалтера.'}
+          </b>{' '}
+          Назначения, смены и суммы вахты за {MONTHS_RU[month - 1].toLowerCase()}{' '}
+          не меняются — чтобы внести правку, период нужно вернуть в черновик.
         </p>
       )}
 
-      {canEdit && (
-        <p className="border-b border-slate-200 px-5 py-1.5 text-[11.5px] text-slate-500">
-          Клик по дню ставит и снимает смену. Зажмите и проведите, чтобы отметить
-          сразу несколько дней.
-        </p>
-      )}
+      {/* ── Шапка, строка 2: только сужение выдачи и счётчик ──────────────── */}
+      <div className="mb-3 mt-3.5 flex flex-wrap items-center gap-2">
+        <SearchField
+          aria-label="Поиск по табелю вахты"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Человек, таб. №, пост или объект"
+          className="w-[280px]"
+        />
+        <SelectField
+          aria-label="Зона"
+          value={zoneFilter}
+          onChange={(e) => setZoneFilter(e.target.value)}
+          className="w-[150px]"
+        >
+          <option value="">Все зоны</option>
+          {zones.map((z) => (
+            <option key={z.zone_id} value={z.zone_name}>
+              {z.zone_name}
+            </option>
+          ))}
+        </SelectField>
+        <SelectField
+          aria-label="Должность"
+          value={kindFilter}
+          onChange={(e) => setKindFilter(e.target.value)}
+          className="w-[170px]"
+        >
+          <option value="">Все должности</option>
+          {kinds.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </SelectField>
+        {filtering && (
+          <DsButton
+            variant="ghost"
+            onClick={() => {
+              setQuery('')
+              setZoneFilter('')
+              setKindFilter('')
+            }}
+          >
+            Сбросить
+          </DsButton>
+        )}
+        <div className="ml-auto flex items-center gap-3.5 text-[12.5px] text-ds-muted">
+          {canEdit && <span>Клик по дню — смена, протяжка — несколько дней</span>}
+          <span>
+            <b className="font-medium text-ds-ink-2">
+              {plural(shownPeople, 'человек', 'человека', 'человек')}
+            </b>{' '}
+            · {plural(shownRows.length, 'строка', 'строки', 'строк')}
+          </span>
+        </div>
+      </div>
 
       {/* ── Таблица ───────────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-max min-w-full border-separate border-spacing-0 text-[13px]">
+      <div className="min-h-0 flex-1 overflow-auto rounded-ds-lg border border-ds-line bg-ds-surface shadow-ds">
+        <table className="w-max min-w-full border-separate border-spacing-0 text-[12.5px]">
           <thead>
             <tr>
               <th
-                className="sticky left-0 top-0 z-30 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-left text-[11px] font-semibold text-slate-500"
+                className="sticky left-0 top-0 z-30 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-left"
                 style={{ width: COL_NAME_W, minWidth: COL_NAME_W }}
               >
                 Сотрудник
               </th>
               <th
-                className="sticky top-0 z-30 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-left text-[11px] font-semibold text-slate-500"
+                className="sticky top-0 z-30 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-left"
                 style={{ left: LEFT_ROLE, width: COL_ROLE_W, minWidth: COL_ROLE_W }}
               >
                 Должность
               </th>
               <th
-                className="sticky top-0 z-30 border-b border-r border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-right text-[11px] font-semibold text-slate-500"
+                className="sticky top-0 z-30 border-r border-r-ds-line-strong border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right"
                 style={{ left: LEFT_RATE, width: COL_RATE_W, minWidth: COL_RATE_W }}
               >
                 {showMoney ? 'Ставка' : ''}
@@ -964,9 +974,9 @@ export function VahtaPage() {
               {days.map((day) => (
                 <th
                   key={day}
-                  className={`sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] py-1.5 text-center text-[11px] font-semibold text-slate-500 ${
+                  className={`sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted text-center ${
                     day === mid + 1 && day !== data.first_day
-                      ? 'border-l-2 border-l-slate-800'
+                      ? 'border-l-2 border-l-ds-ink-2'
                       : ''
                   }`}
                   style={{ width: DAY_W, minWidth: DAY_W }}
@@ -974,29 +984,31 @@ export function VahtaPage() {
                   {day}
                 </th>
               ))}
-              <th className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-center text-[11px] font-semibold text-slate-500">
+              <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right">
                 Смен
               </th>
               {showMoney && (
                 <>
-                  <th className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-right text-[11px] font-semibold text-slate-500">
+                  <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right">
                     Начислено
                   </th>
                   <th
-                    className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-right text-[11px] font-semibold text-slate-500"
+                    className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right"
                     title="Налог на официальную выплату. Входит в разнесение по юрлицам сверх начисленного."
                   >
                     Налог{data.employer_tax_percent ? ` ${Number(data.employer_tax_percent)} %` : ''}
                   </th>
-                  <th className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-right text-[11px] font-semibold text-slate-500">
+                  <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right">
                     Премия и штраф
                   </th>
-                  <th className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9] px-2 py-1.5 text-right text-[11px] font-semibold text-slate-500">
+                  <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right">
                     К выплате
                   </th>
                 </>
               )}
-              <th className="sticky top-0 z-20 border-b border-slate-200 bg-[#FBFBF9]" />
+              <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted">
+                <span className="sr-only">Действия</span>
+              </th>
             </tr>
           </thead>
 
@@ -1005,32 +1017,35 @@ export function VahtaPage() {
               const zoneRows = cards.flatMap((c) => c.rows)
               const crewCount = cards.filter((c) => c.card.kind === 'crew').length
               const siteCount = cards.filter((c) => c.card.kind === 'site').length
-              const totalCols = 4 + days.length + (showMoney ? 4 : 0)
+              // ФИО, должность, ставка · дни · смен · 4 денежные · меню «⋯».
+              // Было 4 + дни: колонку «Смен» не считали, и строки зоны и места
+              // обрывались на одну колонку раньше таблицы.
+              const totalCols = 5 + days.length + (showMoney ? 4 : 0)
               return (
                 <ZoneGroup key={zone.zone_id}>
                   {/* Спина зоны: верхний уровень группировки, без карточек. */}
                   <tr>
                     <td
-                      className="sticky left-0 z-10 border-b-2 border-slate-800 bg-[#FBFBF9] px-2 pb-1.5 pt-4"
+                      className="sticky left-0 z-10 border-b-2 border-ds-ink-2 bg-ds-surface px-2 pb-1.5 pt-4"
                       style={{ width: COL_NAME_W }}
                     >
-                      <span className="text-[15px] font-bold tracking-tight">
+                      <span className="text-[15px] font-semibold tracking-tight">
                         {zone.zone_name}
                       </span>
                     </td>
                     <td
-                      className="sticky z-10 border-b-2 border-slate-800 bg-[#FBFBF9]"
+                      className="sticky z-10 border-b-2 border-ds-ink-2 bg-ds-surface"
                       style={{ left: LEFT_ROLE }}
                     />
                     <td
-                      className="sticky z-10 border-b-2 border-r border-slate-800 bg-[#FBFBF9]"
+                      className="sticky z-10 border-r border-r-ds-line-strong border-b-2 border-ds-ink-2 bg-ds-surface"
                       style={{ left: LEFT_RATE }}
                     />
                     <td
-                      className="border-b-2 border-slate-800 px-2 pb-1.5 pt-4"
+                      className="border-b-2 border-ds-ink-2 bg-ds-surface px-2 pb-1.5 pt-4"
                       colSpan={totalCols - 3}
                     >
-                      <span className="text-xs text-slate-500">
+                      <span className="text-[12px] text-ds-muted">
                         {filtering
                           ? `${plural(zoneRows.length, 'строка', 'строки', 'строк')} найдено`
                           : [
@@ -1040,7 +1055,7 @@ export function VahtaPage() {
                             ].join(', ')}
                       </span>
                       {showMoney && (
-                        <span className="float-right font-bold">
+                        <span className="float-right font-semibold tabular-nums">
                           {money(zone.total_accrued)}
                         </span>
                       )}
@@ -1050,19 +1065,19 @@ export function VahtaPage() {
                   {cards.map(({ card, rows }) => (
                     <ZoneGroup key={`${card.kind}-${card.id}`}>
                       {/* Подстрока места работы: экипаж ГБР или объект. */}
-                      <tr className="bg-slate-100/70">
+                      <tr>
                         {/* Название места — в одну строку: «SH - RIVER SH -
                             FOREST» переносилось и ломало высоту подстроки. */}
                         <td
-                          className="sticky left-0 z-10 overflow-hidden text-ellipsis whitespace-nowrap border-b border-slate-200 bg-slate-100/70 px-2 py-1"
+                          className="sticky left-0 z-10 overflow-hidden text-ellipsis whitespace-nowrap border-b border-ds-line bg-ds-surface-2 px-2 py-1"
                           style={{ width: COL_NAME_W, minWidth: COL_NAME_W, maxWidth: COL_NAME_W }}
                           title={card.name}
                         >
                           <span
-                            className={`mr-1.5 rounded px-1 py-px text-[9.5px] font-bold tracking-wide ${
+                            className={`mr-1.5 rounded border px-1.5 py-px text-[10.5px] font-semibold ${
                               card.kind === 'crew'
-                                ? 'bg-amber-200 text-amber-900'
-                                : 'bg-slate-300 text-slate-700'
+                                ? 'border-ds-warn-line bg-ds-warn-soft text-ds-warn'
+                                : 'border-ds-line bg-ds-surface-3 text-ds-ink-2'
                             }`}
                           >
                             {card.kind === 'crew' ? 'Экипаж ГБР' : 'Объект'}
@@ -1074,40 +1089,40 @@ export function VahtaPage() {
                         {/* Сколько ЛЮДЕЙ на месте и сколько строк: у человека на
                             двух половинах месяца строк две, а человек один. */}
                         <td
-                          className="sticky z-10 whitespace-nowrap border-b border-slate-200 bg-slate-100/70 px-2 text-[11.5px] text-slate-600"
+                          className="sticky z-10 whitespace-nowrap border-b border-ds-line bg-ds-surface-2 px-2 text-[12px] text-ds-muted"
                           style={{ left: LEFT_ROLE }}
                         >
                           {placeCount(card)}
                         </td>
                         <td
-                          className="sticky z-10 border-b border-r border-slate-200 bg-slate-100/70"
+                          className="sticky z-10 border-r border-r-ds-line-strong border-b border-ds-line bg-ds-surface-2"
                           style={{ left: LEFT_RATE }}
                         />
                         <td
-                          className="border-b border-slate-200 px-2 py-1"
+                          className="border-b border-ds-line bg-ds-surface-2 px-2 py-1"
                           colSpan={totalCols - 3}
                         >
-                          <span className="text-[11.5px] text-slate-500">
+                          <span className="text-[12px] text-ds-muted">
                             {card.objects.length > 0 &&
                               (card.kind === 'crew'
                                 ? `выезжает на ${card.objects.join(', ')}`
                                 : `посты: ${card.objects.join(', ')}`)}
                           </span>
                           {canManage && (
-                            <span className="float-right flex gap-3 text-[11.5px]">
+                            <span className="float-right flex gap-1">
                               <button
                                 type="button"
                                 onClick={() => setAddTo(card)}
-                                className="cursor-pointer text-blue-700 hover:underline"
+                                className="h-7 cursor-pointer rounded-ds-sm px-2 text-[12.5px] font-medium text-ds-accent hover:bg-ds-accent-soft hover:text-ds-accent-hi"
                               >
-                                + поставить
+                                + Поставить
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setHireAt(card)}
-                                className="cursor-pointer text-blue-700 hover:underline"
+                                className="h-7 cursor-pointer rounded-ds-sm px-2 text-[12.5px] font-medium text-ds-accent hover:bg-ds-accent-soft hover:text-ds-accent-hi"
                               >
-                                оформить нового
+                                Оформить нового
                               </button>
                             </span>
                           )}
@@ -1157,52 +1172,53 @@ export function VahtaPage() {
         </table>
 
         {shownRows.length === 0 && (
-          <p className="p-8 text-center text-sm text-slate-400">
-            {filtering
-              ? 'Никого не нашлось. Сбросьте фильтры или измените запрос.'
-              : 'За этот месяц состав не заведён. Поставьте людей на посты или скопируйте прошлый период.'}
-          </p>
+          <div className="p-6">
+            {filtering ? (
+              <EmptyState title="Никого не нашлось" compact>
+                Сбросьте фильтры или измените запрос.
+              </EmptyState>
+            ) : (
+              <EmptyState title={`За ${MONTHS_RU[month - 1].toLowerCase()} состав не заведён`} compact>
+                Поставьте людей на посты в строках мест или скопируйте прошлый период.
+              </EmptyState>
+            )}
+          </div>
         )}
       </div>
 
-      {/* ── Подвал ────────────────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-baseline gap-6 border-t-2 border-slate-800 px-5 py-2 text-[12.5px]">
+      {/* ── Подвал: итоги карточкой ─────────────────────────────────────────── */}
+      <div className="mt-3 flex flex-wrap items-baseline gap-x-6 gap-y-2 rounded-ds-lg border border-ds-line bg-ds-surface px-4 py-3 text-[12.5px] text-ds-muted">
         <span>
-          <span className="mr-1.5 text-slate-500">Смен</span>
-          <b className="text-[15px]">{data.total_shifts}</b>
+          Смен<b className="ml-1.5 text-[15px] font-semibold tabular-nums text-ds-ink">{data.total_shifts}</b>
         </span>
         {showMoney && (
           <>
             <span>
-              <span className="mr-1.5 text-slate-500">Начислено</span>
-              <b className="text-[15px]">{money(data.total_accrued)}</b>
+              Начислено
+              <b className="ml-1.5 text-[15px] font-semibold tabular-nums text-ds-ink">{money(data.total_accrued)}</b>
             </span>
             <span>
-              <span className="mr-1.5 text-slate-500">К выплате</span>
-              <b className="text-[15px]">{money(data.total_net_payout)}</b>
+              К выплате
+              <b className="ml-1.5 text-[15px] font-semibold tabular-nums text-ds-ink">{money(data.total_net_payout)}</b>
             </span>
             {/* Налоги объясняют, почему разнесение больше начисленного. */}
             <span title="Налог на официальную часть выплаты. Затрата компании: входит в разнесение по юрлицам, но не в начислено и не в выплату.">
-              <span className="mr-1.5 text-slate-500">
-                Налоги{data.employer_tax_percent ? ` (${Number(data.employer_tax_percent)} % от оф. выплаты)` : ''}
-              </span>
-              <b className="text-[15px]">{money(data.total_tax)}</b>
+              Налог{data.employer_tax_percent ? ` ${Number(data.employer_tax_percent)} % от оф. выплаты` : ''}
+              <b className="ml-1.5 text-[15px] font-semibold tabular-nums text-ds-ink">{money(data.total_tax)}</b>
             </span>
           </>
         )}
         {data.view_half === null && data.halves.map((half) => (
           <span key={half.half}>
-            <span className="mr-1.5 text-slate-500">
-              {half.half === 1 ? `1–${mid}` : `${mid + 1}–${data.days_in_month}`}
-            </span>
-            <b className="text-[15px]">
+            {half.half === 1 ? `1–${mid}` : `${mid + 1}–${data.days_in_month}`}
+            <b className="ml-1.5 text-[15px] font-semibold tabular-nums text-ds-ink">
               {showMoney ? money(half.accrued) : plural(half.shifts, 'смена', 'смены', 'смен')}
             </b>
           </span>
         ))}
         {showMoney && data.company_totals.length > 0 && (
-          <span className="text-slate-500">
-            <span className="mr-1.5">
+          <div className="flex basis-full flex-wrap items-center gap-2">
+            <span>
               Разнесено по юрлицам {money(data.total_distribution)}
               {/* Равенство пишем, только когда оно верно: строка без процентов
                   места работы в разнесение не попадает вовсе. */}
@@ -1211,13 +1227,25 @@ export function VahtaPage() {
                   parseFloat(data.total_distribution ?? '0') -
                     parseFloat(data.total_distribution_base ?? '0'),
                 ) < 0.005 &&
-                ` = начислено ${money(data.total_accrued)} + налоги ${money(data.total_tax)}`}
+                ` = начислено ${money(data.total_accrued)} + налог ${money(data.total_tax)}`}
               :
             </span>
-            {data.company_totals
-              .map((t) => `${companyName(t.company_id)} ${money(t.amount)}`)
-              .join(' · ')}
-          </span>
+            {data.company_totals.map((t) => (
+              <span
+                key={t.company_id}
+                className="inline-flex items-center gap-1.5 rounded-full border border-ds-line bg-ds-surface-2 px-2.5 py-0.5 text-[12px] text-ds-ink-2"
+              >
+                {/* Цвет юрлица — общая палитра приложения, как в табеле и дашборде. */}
+                <i
+                  className="h-2 w-2 flex-none rounded-[2px]"
+                  style={{ background: companyColor(t.company_id) }}
+                  aria-hidden="true"
+                />
+                {companyName(t.company_id)}
+                <span className="tabular-nums">{money(t.amount)}</span>
+              </span>
+            ))}
+          </div>
         )}
       </div>
 

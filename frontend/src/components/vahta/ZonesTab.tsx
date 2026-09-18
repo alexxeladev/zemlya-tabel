@@ -23,6 +23,11 @@ import {
 import type { VahtaShare } from '../../types/api'
 import { Button } from '../Button'
 import { Modal } from '../Modal'
+import { DsButton } from '../ds/Button'
+import { EmptyState } from '../ds/EmptyState'
+import { RowMenu, type MenuItem } from '../ds/Menu'
+import { SearchField } from '../ds/fields'
+import { MONTHS_RU, MONTHS_RU_PREP } from '../../utils/ruDate'
 import { useAuthStore } from '../../store/auth'
 import { toast } from '../../store/toasts'
 import type {
@@ -37,11 +42,6 @@ import type {
 import { companyLabel } from '../../utils/companies'
 import { companyColorByIndex } from '../../utils/colors'
 import { formatMoney } from '../../utils/money'
-
-const MONTH_GENITIVE = [
-  'январе', 'феврале', 'марте', 'апреле', 'мае', 'июне',
-  'июле', 'августе', 'сентябре', 'октябре', 'ноябре', 'декабре',
-]
 
 /** Подсветка найденного — иначе в трёх десятках строк совпадение не заметить. */
 function highlight(text: string, query: string) {
@@ -73,8 +73,7 @@ function Companies({
   shares: VahtaShare[]
   companies: Company[]
 }) {
-  if (shares.length === 0)
-    return <span className="text-slate-400">не задано</span>
+  if (shares.length === 0) return <span className="text-ds-muted">не задано</span>
 
   const colorOf = (id: number) => {
     const idx = companies.findIndex((c) => c.id === id)
@@ -84,17 +83,21 @@ function Companies({
   if (shares.length === 1) {
     const only = shares[0]
     return (
-      <span className="inline-flex items-center gap-2">
+      <span className="inline-flex items-center gap-2 text-[12.5px]">
         <span
-          className="inline-block h-3.5 w-[3px] rounded-sm"
+          className="inline-block h-4 w-[3px] rounded-sm"
           style={{ background: colorOf(only.company_id) }}
+          title="Юрлицо объекта: все затраты на него"
         />
         {only.company_display_name ?? only.company_name}
       </span>
     )
   }
   return (
-    <span className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-900">
+    <span
+      className="whitespace-nowrap rounded-ds-sm border border-ds-warn-line bg-ds-warn-soft px-2 py-px text-[12px] text-ds-warn"
+      title="Делёный расклад — исключение: затраты делятся между юрлицами"
+    >
       {shares
         .map((s) => `${s.company_display_name ?? s.company_name} ${parseFloat(s.percent)}`)
         .join(' · ')}
@@ -102,13 +105,13 @@ function Companies({
   )
 }
 
-/** Сколько человек стоит на месте в этом месяце. Ноль — это дыра. */
+/** Сколько человек стоит на месте в этом месяце. Ноль — это дыра: словом, красным. */
 function People({ n }: { n: number }) {
   return n > 0 ? (
     <span>{n}</span>
   ) : (
-    <span className="font-semibold text-red-700" title="Место заведено, а людей нет">
-      0
+    <span className="font-medium text-ds-danger" title="Место заведено, а людей нет">
+      никого
     </span>
   )
 }
@@ -143,7 +146,8 @@ function RateCell({
             setEditing(false)
           }
         }}
-        className="w-[92px] rounded border border-sky-400 px-1.5 py-0.5 text-right tabular-nums"
+        aria-label="Ставка за смену"
+        className="h-[26px] w-[96px] rounded-ds-sm border border-ds-accent px-1.5 text-right font-ds-mono text-[12.5px] tabular-nums shadow-[0_0_0_3px_color-mix(in_srgb,var(--ds-accent)_16%,transparent)] focus:outline-none"
       />
     )
   }
@@ -154,7 +158,8 @@ function RateCell({
         setDraft(String(parseFloat(value ?? '0')))
         setEditing(true)
       }}
-      className="cursor-pointer rounded border border-transparent px-1.5 py-0.5 tabular-nums hover:border-slate-300 hover:bg-white"
+      title="Изменить ставку"
+      className="inline-flex h-[26px] cursor-pointer items-center rounded-ds-sm border border-dashed border-transparent px-1.5 tabular-nums hover:border-ds-control-line hover:bg-ds-surface"
     >
       {formatMoney(value, { showZero: true })}
     </button>
@@ -233,7 +238,8 @@ export function ZonesTab({ year, month }: { year: number; month: number }) {
       for (const z of monthView?.zones ?? [])
         for (const c of z.cards)
           if (c.kind === 'site' && c.id === siteId)
-            return c.rows.filter((r) => r.employee_id).length
+            // ЛЮДИ, а не строки: человек на двух половинах месяца — две строки.
+            return new Set(c.rows.filter((r) => r.employee_id).map((r) => r.employee_id)).size
       return 0
     },
     [monthView],
@@ -243,7 +249,7 @@ export function ZonesTab({ year, month }: { year: number; month: number }) {
       for (const z of monthView?.zones ?? [])
         for (const c of z.cards)
           if (c.kind === 'crew' && c.id === crewId)
-            return c.rows.filter((r) => r.employee_id).length
+            return new Set(c.rows.filter((r) => r.employee_id).map((r) => r.employee_id)).size
       return 0
     },
     [monthView],
@@ -307,270 +313,213 @@ export function ZonesTab({ year, month }: { year: number; month: number }) {
     [reload],
   )
 
-  if (loading) return <p className="text-sm text-gray-500">Загрузка…</p>
+  if (loading) return <p className="text-[13px] text-ds-muted">Загрузка…</p>
+
+  const postCount = (list: VahtaSite[]) => list.reduce((a, s) => a + s.posts.length, 0)
+  const td = 'border-b border-ds-line px-2.5 py-1.5 align-middle'
+  const th = 'border-b border-ds-line-strong bg-ds-surface-2 px-2.5 py-2 text-[11px] font-semibold text-ds-muted'
+
+  // Действия строки — в меню «⋯», видимом всегда: ссылки по наведению были
+  // недостижимы с клавиатуры (WCAG 2.1.1) и читались кашей в 60 строках.
+  const zoneMenu = (zone: VahtaZone): MenuItem[] =>
+    canManage
+      ? [
+          { label: 'Добавить объект…', onSelect: () => setEditSite({ zone, site: null }) },
+          { label: 'Добавить экипаж ГБР…', onSelect: () => setEditCrew({ zone, crew: null }) },
+          { label: 'Изменить зону…', onSelect: () => setEditZone(zone) },
+        ]
+      : []
 
   return (
     <div>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <SearchField
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Зона, объект или пост"
+          aria-label="Поиск по зонам, объектам и постам"
+          className="w-[280px]"
+        />
+        {canManage && (
+          <DsButton variant="primary" icon="plus" onClick={() => setEditZone('new')}>
+            Добавить зону
+          </DsButton>
+        )}
+        <span className="ml-auto text-[12.5px] text-ds-muted">
+          {plural(zones.length, 'зона', 'зоны', 'зон')},{' '}
+          {plural(sites.length, 'объект', 'объекта', 'объектов')},{' '}
+          {plural(postCount(sites), 'пост', 'поста', 'постов')}
+        </span>
+      </div>
 
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Найти зону, объект или пост"
-              className="w-[300px] rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm"
-            />
-            {query && (
-              <button
-                type="button"
-                onClick={() => setQuery('')}
-                className="cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-100"
-              >
-                Сбросить
-              </button>
-            )}
-            {canManage && (
-              <Button size="sm" onClick={() => setEditZone('new')}>
+      <p className="mb-3 text-[12.5px] text-ds-muted">
+        Ставка правится по клику. «Людей» — сколько стоит на месте в {MONTHS_RU_PREP[month - 1]}.
+      </p>
+
+      {zones.length === 0 ? (
+        <EmptyState
+          title="Зон пока нет"
+          action={
+            canManage && (
+              <DsButton variant="primary" icon="plus" onClick={() => setEditZone('new')}>
                 Добавить зону
-              </Button>
-            )}
-            <span className="ml-auto text-xs text-slate-500">
-              {plural(zones.length, 'зона', 'зоны', 'зон')},{' '}
-              {plural(sites.length, 'объект', 'объекта', 'объектов')},{' '}
-              {plural(
-                sites.reduce((a, s) => a + s.posts.length, 0),
-                'пост', 'поста', 'постов',
-              )}
-            </span>
-          </div>
-
-          <p className="mb-3 max-w-4xl text-xs text-slate-500">
-            Зона — группа географически близких объектов. В зоне заводятся её
-            экипажи ГБР (за пределы зоны они не выезжают) и охраняемые объекты, а
-            внутри объекта — посты. Ставка правится по клику. Цветная засечка —
-            юрлицо объекта; делённый расклад выделен, потому что он исключение.
-            «Людей» — сколько стоит в {MONTH_GENITIVE[month - 1]}.
-            Должности здесь нет: точка не бывает «охранником», должность у
-            человека — она в табеле, в строке.
-          </p>
-
-          {zones.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-slate-300 p-8 text-center text-sm text-slate-400">
-              Зон пока нет. Начните с зоны обслуживания — объекты заводятся внутри неё.
-            </p>
-          ) : (
-            <table className="w-full border-separate border-spacing-0 text-[13px]">
-              <thead>
-                <tr className="text-[11px] font-semibold text-slate-500">
-                  <th className="border-b border-slate-200 px-2 py-1.5 text-left">
-                    Зона, объект и пост
-                  </th>
-                  <th className="w-[150px] border-b border-slate-200 px-2 py-1.5 text-right">
-                    Ставка за смену
-                  </th>
-                  <th className="w-[300px] border-b border-slate-200 px-2 py-1.5 text-left">
-                    Юрлицо
-                  </th>
-                  <th className="w-[70px] border-b border-slate-200 px-2 py-1.5 text-right">
-                    Людей
-                  </th>
-                  <th className="w-[230px] border-b border-slate-200" />
+              </DsButton>
+            )
+          }
+        >
+          Начните с зоны обслуживания — объекты, посты и экипажи ГБР заводятся внутри неё.
+        </EmptyState>
+      ) : shownZones.length === 0 ? (
+        <EmptyState title="Ничего не нашлось" compact>
+          Измените запрос — поиск идёт по зонам, объектам и постам.
+        </EmptyState>
+      ) : (
+        <table className="w-full max-w-[1180px] border-separate border-spacing-0 overflow-hidden rounded-ds-lg border border-ds-line bg-ds-surface text-[13px]">
+          <thead>
+            <tr>
+              <th className={`${th} text-left`}>Зона, объект и пост</th>
+              <th className={`${th} w-[170px] text-right`}>Ставка за смену</th>
+              <th className={`${th} w-[300px] text-left`}>Юрлицо</th>
+              <th className={`${th} w-[120px] text-right`}>Людей ({MONTHS_RU[month - 1].toLowerCase()})</th>
+              <th className={`${th} w-12`}>
+                <span className="sr-only">Действия</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {shownZones.map(({ zone, zoneCrews, zoneSites }) => (
+              <Fragment key={zone.id}>
+                <tr>
+                  <td className="border-b-2 border-ds-ink-2 px-2.5 pb-1.5 pt-4" colSpan={4}>
+                    <span className="text-[15px] font-semibold tracking-tight">
+                      {highlight(zone.name, query)}
+                    </span>
+                    <span className="ml-2.5 text-[12px] text-ds-muted">
+                      {plural(zoneCrews.length, 'экипаж', 'экипажа', 'экипажей')},{' '}
+                      {plural(zoneSites.length, 'объект', 'объекта', 'объектов')},{' '}
+                      {plural(postCount(zoneSites), 'пост', 'поста', 'постов')}
+                    </span>
+                  </td>
+                  <td className="border-b-2 border-ds-ink-2 px-2.5 pb-1 pt-4 text-right">
+                    <RowMenu items={zoneMenu(zone)} label={`Действия: ${zone.name}`} />
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {shownZones.map(({ zone, zoneCrews, zoneSites }) => (
-                  <Fragment key={zone.id}>
-                    <tr className="group">
-                      <td className="border-b-2 border-slate-800 px-2 pb-1.5 pt-5">
-                        <span className="text-[15px] font-bold tracking-tight">
-                          {highlight(zone.name, query)}
-                        </span>
-                        <span className="ml-2.5 text-xs text-slate-500">
-                          {plural(zoneCrews.length, 'экипаж', 'экипажа', 'экипажей')},{' '}
-                          {plural(zoneSites.length, 'объект', 'объекта', 'объектов')},{' '}
-                          {plural(
-                            zoneSites.reduce((a, s) => a + s.posts.length, 0),
-                            'пост', 'поста', 'постов',
-                          )}
-                        </span>
-                      </td>
-                      <td className="border-b-2 border-slate-800" colSpan={3} />
-                      <td className="border-b-2 border-slate-800 px-2 pb-1.5 pt-5 text-right">
-                        {canManage && (
-                          <span className="invisible flex justify-end gap-3 whitespace-nowrap text-[11.5px] group-hover:visible">
-                            <button
-                              type="button"
-                              onClick={() => setEditSite({ zone, site: null })}
-                              className="cursor-pointer text-blue-700 hover:underline"
-                            >
-                              Добавить объект
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditCrew({ zone, crew: null })}
-                              className="cursor-pointer text-blue-700 hover:underline"
-                            >
-                              Добавить экипаж
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditZone(zone)}
-                              className="cursor-pointer text-blue-700 hover:underline"
-                            >
-                              Изменить
-                            </button>
-                          </span>
-                        )}
-                      </td>
-                    </tr>
 
-                    {zoneCrews.map((crew) => (
-                      <tr key={`crew-${crew.id}`} className="group hover:bg-slate-50">
-                        <td className="border-b border-slate-100 px-2 py-[3px]">
-                          <span className="mr-2 rounded bg-amber-100 px-1.5 py-px text-[9.5px] font-bold text-amber-900">
-                            ГБР
-                          </span>
-                          <span className="font-semibold">
-                            {highlight(crew.name, query)}
-                          </span>
+                {zoneCrews.map((crew) => (
+                  <tr key={`crew-${crew.id}`} className="hover:bg-ds-surface-2">
+                    <td className={td}>
+                      <span className="mr-2 rounded-[4px] border border-ds-warn-line bg-ds-warn-soft px-1.5 py-px text-[10.5px] font-semibold text-ds-warn">
+                        ГБР
+                      </span>
+                      <span className="font-semibold">{highlight(crew.name, query)}</span>
+                    </td>
+                    <td className={`${td} text-right`}>
+                      <RateCell
+                        value={crew.shift_rate}
+                        editable={canManage}
+                        onSave={(v) => saveCrewRate(crew, v)}
+                      />
+                    </td>
+                    <td className={td}>
+                      <Companies shares={crew.shares} companies={companies} />
+                    </td>
+                    <td className={`${td} text-right tabular-nums`}>
+                      <People n={peopleOnCrew(crew.id)} />
+                    </td>
+                    <td className={`${td} text-right`}>
+                      <RowMenu
+                        items={canManage ? [{ label: 'Изменить экипаж…', onSelect: () => setEditCrew({ zone, crew }) }] : []}
+                        label={`Действия: ${crew.name}`}
+                      />
+                    </td>
+                  </tr>
+                ))}
+
+                {zoneSites.map((site) => {
+                  // Один пост, названный как объект и без своей ставки, — это
+                  // тот же объект другими словами: отдельной строки не рисуем.
+                  const only =
+                    site.posts.length === 1 &&
+                    site.posts[0].name === site.name &&
+                    site.posts[0].shift_rate === null
+                  return (
+                    <Fragment key={`site-${site.id}`}>
+                      <tr className="hover:bg-ds-surface-2">
+                        <td className={td}>
+                          <span className="font-semibold">{highlight(site.name, query)}</span>
                         </td>
-                        <td className="border-b border-slate-100 px-2 py-[3px] text-right">
+                        <td className={`${td} text-right`}>
                           <RateCell
-                            value={crew.shift_rate}
+                            value={site.shift_rate}
                             editable={canManage}
-                            onSave={(v) => saveCrewRate(crew, v)}
+                            onSave={(v) => saveSiteRate(site, v)}
                           />
                         </td>
-                        <td className="border-b border-slate-100 px-2 py-[3px]">
-                          <Companies shares={crew.shares} companies={companies} />
+                        <td className={td}>
+                          <Companies shares={site.shares} companies={companies} />
                         </td>
-                        <td className="border-b border-slate-100 px-2 py-[3px] text-right tabular-nums">
-                          <People n={peopleOnCrew(crew.id)} />
+                        <td className={`${td} text-right tabular-nums`}>
+                          <People n={peopleOnSite(site.id)} />
                         </td>
-                        <td className="border-b border-slate-100 px-2 py-[3px] text-right">
-                          {canManage && (
-                            <button
-                              type="button"
-                              onClick={() => setEditCrew({ zone, crew })}
-                              className="invisible cursor-pointer text-[11.5px] text-blue-700 hover:underline group-hover:visible"
-                            >
-                              Изменить
-                            </button>
-                          )}
+                        <td className={`${td} text-right`}>
+                          <RowMenu
+                            items={
+                              canManage
+                                ? [
+                                    { label: 'Добавить пост…', onSelect: () => setEditPost({ site, post: null }) },
+                                    { label: 'Изменить объект…', onSelect: () => setEditSite({ zone, site }) },
+                                  ]
+                                : []
+                            }
+                            label={`Действия: ${site.name}`}
+                          />
                         </td>
                       </tr>
-                    ))}
 
-                    {zoneSites.map((site) => {
-                      // Один пост, названный как объект и без своей ставки, — это
-                      // тот же объект другими словами: отдельной строки не рисуем.
-                      const only =
-                        site.posts.length === 1 &&
-                        site.posts[0].name === site.name &&
-                        site.posts[0].shift_rate === null
-                      return (
-                        <Fragment key={`site-${site.id}`}>
-                          <tr className="group hover:bg-slate-50">
-                            <td className="border-b border-slate-100 px-2 py-[3px]">
-                              <span className="font-semibold">
-                                {highlight(site.name, query)}
-                              </span>
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-[3px] text-right">
+                      {site.posts.length === 0 && (
+                        <tr>
+                          <td className={`${td} pl-9 text-[12.5px] text-ds-danger`} colSpan={5}>
+                            Постов нет — на объект никого не поставить
+                          </td>
+                        </tr>
+                      )}
+
+                      {!only &&
+                        site.posts.map((post) => (
+                          <tr key={post.id} className="hover:bg-ds-surface-2">
+                            <td className={`${td} pl-9 text-ds-ink-2`}>{highlight(post.name, query)}</td>
+                            <td className={`${td} text-right text-ds-ink-2`}>
                               <RateCell
-                                value={site.shift_rate}
+                                value={post.effective_rate}
                                 editable={canManage}
-                                onSave={(v) => saveSiteRate(site, v)}
+                                onSave={(v) => savePostRate(post, v)}
                               />
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-[3px]">
-                              <Companies shares={site.shares} companies={companies} />
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-[3px] text-right tabular-nums">
-                              <People n={peopleOnSite(site.id)} />
-                            </td>
-                            <td className="border-b border-slate-100 px-2 py-[3px] text-right">
-                              {canManage && (
-                                <span className="invisible flex justify-end gap-3 whitespace-nowrap text-[11.5px] group-hover:visible">
-                                  <button
-                                    type="button"
-                                    onClick={() => setEditPost({ site, post: null })}
-                                    className="cursor-pointer text-blue-700 hover:underline"
-                                  >
-                                    Добавить пост
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setEditSite({ zone, site })}
-                                    className="cursor-pointer text-blue-700 hover:underline"
-                                  >
-                                    Изменить
-                                  </button>
+                              {post.shift_rate === null && (
+                                <span
+                                  className="ml-1.5 text-[11.5px] text-ds-muted"
+                                  title="Своей ставки нет — применяется ставка объекта"
+                                >
+                                  от объекта
                                 </span>
                               )}
                             </td>
+                            <td className={td} colSpan={2} />
+                            <td className={`${td} text-right`}>
+                              <RowMenu
+                                items={canManage ? [{ label: 'Изменить пост…', onSelect: () => setEditPost({ site, post }) }] : []}
+                                label={`Действия: ${post.name}`}
+                              />
+                            </td>
                           </tr>
-
-                          {site.posts.length === 0 && (
-                            <tr>
-                              <td
-                                className="border-b border-slate-100 py-[3px] pl-8 text-[12px] text-red-700"
-                                colSpan={5}
-                              >
-                                Постов нет — на объект никого не поставить
-                              </td>
-                            </tr>
-                          )}
-
-                          {!only &&
-                            site.posts.map((post) => (
-                              <tr key={post.id} className="group hover:bg-slate-50">
-                                <td className="border-b border-slate-100 py-[3px] pl-8 text-slate-600">
-                                  <span className="mr-2 text-slate-300">└</span>
-                                  {highlight(post.name, query)}
-                                </td>
-                                <td className="border-b border-slate-100 px-2 py-[3px] text-right text-slate-600">
-                                  <RateCell
-                                    value={post.effective_rate}
-                                    editable={canManage}
-                                    onSave={(v) => savePostRate(post, v)}
-                                  />
-                                  {post.shift_rate === null && (
-                                    <span
-                                      className="ml-1 text-[11px] text-slate-400"
-                                      title="Своей ставки нет — применяется ставка объекта"
-                                    >
-                                      от объекта
-                                    </span>
-                                  )}
-                                </td>
-                                <td className="border-b border-slate-100" colSpan={2} />
-                                <td className="border-b border-slate-100 px-2 py-[3px] text-right">
-                                  {canManage && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setEditPost({ site, post })}
-                                      className="invisible cursor-pointer text-[11.5px] text-blue-700 hover:underline group-hover:visible"
-                                    >
-                                      Изменить
-                                    </button>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                        </Fragment>
-                      )
-                    })}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          {zones.length > 0 && shownZones.length === 0 && (
-            <p className="p-8 text-center text-sm text-slate-400">
-              Ничего не нашлось. Измените запрос.
-            </p>
-          )}
+                        ))}
+                    </Fragment>
+                  )
+                })}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       {editZone && (
         <ZoneModal

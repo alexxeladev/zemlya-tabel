@@ -11,8 +11,12 @@
 // Тип оплаты не выбирается: он следует из должности (начальник охраны — оклад,
 // остальные — смена). Пост в карточке не хранится: на пост ставят помесячно в
 // табеле, и в списке он показан за выбранный месяц.
+//
+// Вёрстка — по артборду 02 макета `docs/design/vahta-mock.html`: список слева,
+// форма рабочего места — боковая панель справа, а не модалка (редизайн,
+// артборд 05): список остаётся виден, открытое место — в адресе.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { listDepartments } from '../../api/departments'
@@ -20,11 +24,14 @@ import {
   createVahtaStaff,
   findSimilarEmployees,
   getVahtaDepartments,
+  getVahtaMonth,
   listVahtaStaff,
   updateVahtaStaff,
 } from '../../api/vahta'
-import { Button } from '../Button'
-import { Modal } from '../Modal'
+import { DsButton } from '../ds/Button'
+import { DateField, FieldRow, SearchField, SelectField, TextField } from '../ds/fields'
+import { Pill } from '../ds/Pill'
+import { SidePanel } from '../ds/SidePanel'
 import { useAuthStore } from '../../store/auth'
 import { toast } from '../../store/toasts'
 import type {
@@ -41,15 +48,18 @@ import {
   withGuardConfirm,
 } from '../../utils/guardStaff'
 import { formatMoney } from '../../utils/money'
+import { MONTHS_RU, MONTHS_RU_PREP } from '../../utils/ruDate'
 import { useGuardJobTitles } from '../../hooks/useGuardJobTitles'
-
-const MONTHS = [
-  'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
-  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
-]
-
-const fmtDate = (v: string | null) =>
-  v ? v.split('-').reverse().join('.') : '—'
+import {
+  amountUnit,
+  changedFields,
+  monthFactHint,
+  monthFactsByPosition,
+  officialLabel,
+  placePeriod,
+  plural,
+  type MonthFact,
+} from './staffFormat'
 
 type Draft = {
   full_name: string
@@ -83,6 +93,15 @@ const toDraft = (s: VahtaStaff): Draft => ({
 
 const orNull = (v: string) => (v.trim() === '' ? null : v.trim())
 
+/** Подписи полей для «Изменено: …» в подвале панели. */
+const FIELD_LABELS: Partial<Record<keyof Draft, string>> = {
+  department_id: 'подразделение',
+  job_title_id: 'должность',
+  amount: 'ставка',
+  hire_date: 'дата приёма',
+  dismissal_date: 'дата увольнения',
+}
+
 export function StaffTab({
   year,
   month,
@@ -100,6 +119,14 @@ export function StaffTab({
   const [rows, setRows] = useState<VahtaStaff[]>([])
   const [guardDepts, setGuardDepts] = useState<VahtaDepartment[]>([])
   const [allDepts, setAllDepts] = useState<Department[]>([])
+  // Смены месяца по рабочему месту — для подсказки-формулы под ставкой.
+  // Факт месяца по рабочему месту из табеля вахты: смены и зарплата за них ПО
+  // СТАВКАМ СТРОК (у строки своя ставка — от поста или правленая, не ставка
+  // рабочего места). `null` — ещё грузится, 'error' — не загрузилось: «смен нет»
+  // тогда было бы неправдой.
+  const [monthFacts, setMonthFacts] = useState<Map<number, MonthFact> | null | 'error'>(null)
+  // Ответ за прежний месяц, пришедший позже нового, отбрасывается.
+  const monthRequest = useRef(0)
   const [loading, setLoading] = useState(true)
   // Список загружен без ошибки: только тогда «места нет в списке» — правда.
   const [loaded, setLoaded] = useState(false)
@@ -117,6 +144,16 @@ export function StaffTab({
       })
       .catch((e) => toast.error(e instanceof Error ? e.message : 'Не удалось загрузить'))
       .finally(() => setLoading(false))
+    const request = ++monthRequest.current
+    setMonthFacts(null)
+    getVahtaMonth(year, month)
+      .then((data) => {
+        if (request !== monthRequest.current) return
+        setMonthFacts(monthFactsByPosition(data.zones.flatMap((z) => z.cards.flatMap((c) => c.rows))))
+      })
+      .catch(() => {
+        if (request === monthRequest.current) setMonthFacts('error')
+      })
   }, [year, month])
 
   useEffect(load, [load])
@@ -136,8 +173,10 @@ export function StaffTab({
     )
   }, [rows, query])
 
-  const people = new Set(shown.map((r) => r.employee_id)).size
+  const people = new Set(rows.map((r) => r.employee_id)).size
   const editRow = typeof editing === 'number' ? rows.find((r) => r.position_id === editing) : null
+  const panelOpen = editing === 'new' || Boolean(editRow)
+  const monthName = MONTHS_RU[month - 1].toLowerCase()
 
   // Ссылка на рабочее место, которого в списке нет (снято с учёта, чужое
   // подразделение, опечатка в адресе): сказать словами и убрать из адреса, а не
@@ -150,7 +189,7 @@ export function StaffTab({
 
   if (!loading && guardDepts.length === 0) {
     return (
-      <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+      <div className="rounded-ds-md border border-ds-warn-line bg-ds-warn-soft p-4 text-[13px] text-ds-warn">
         Нет доступных подразделений охраны. Отметьте отдел галочкой «подразделение
         охраны» в{' '}
         <Link to="/admin/org" className="underline">оргструктуре</Link>.
@@ -158,141 +197,201 @@ export function StaffTab({
     )
   }
 
+  const close = () => {
+    setCreating(false)
+    onOpen(null)
+  }
+
   return (
     <div>
-      <p className="mb-3 text-sm text-slate-500">
-        ФИО, табельный номер и доступ в систему правятся в карточке сотрудника.
-        Здесь — его рабочее место в охране.
-      </p>
-
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        <Button size="sm" onClick={() => setCreating(true)}>
-          + Оформить сотрудника
-        </Button>
-        <input
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <SearchField
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Поиск: ФИО, таб. №, пост"
-          className="w-64 rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+          placeholder="ФИО, таб. № или пост"
+          aria-label="Поиск сотрудников охраны"
+          className="w-[280px]"
         />
-        <span className="ml-auto text-xs text-slate-500">
-          {people} чел. · {shown.length} рабочих мест
+        <DsButton
+          variant="primary"
+          icon="plus"
+          onClick={() => {
+            onOpen(null)
+            setCreating(true)
+          }}
+        >
+          Оформить сотрудника
+        </DsButton>
+        <span className="ml-auto text-[12.5px] text-ds-muted">
+          <b className="font-medium text-ds-ink-2">
+            {plural(people, 'человек', 'человека', 'человек')}
+          </b>{' '}
+          · {plural(rows.length, 'рабочее место', 'рабочих места', 'рабочих мест')}
+          {query && ` · найдено ${shown.length}`}
         </span>
       </div>
-
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs text-slate-500">
-            <tr>
-              <th className="px-3 py-2">ФИО</th>
-              <th className="px-3 py-2">Таб. №</th>
-              <th className="px-3 py-2">Должность</th>
-              <th className="px-3 py-2">Пост ({MONTHS[month - 1]})</th>
-              <th className="px-3 py-2">Оплата</th>
-              <th className="px-3 py-2 text-right">Сумма</th>
-              <th className="px-3 py-2">Работает на месте</th>
-              <th className="px-3 py-2">Официально</th>
-              <th className="px-3 py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((r) => (
-              <tr key={r.position_id} className="group border-t border-slate-100 hover:bg-slate-50">
-                <td className="px-3 py-2">
-                  <span className={r.employee_is_active ? 'text-slate-800' : 'text-slate-400'}>
-                    {r.full_name}
-                  </span>
-                  {!r.employee_is_active && (
-                    <span className="ml-2 text-xs text-slate-400">уволен</span>
-                  )}
-                  {guardDepts.length > 1 && (
-                    <div className="text-[11px] text-slate-400">{r.department_name}</div>
-                  )}
-                </td>
-                <td className="px-3 py-2 font-mono text-xs text-slate-600">{r.tab_number ?? '—'}</td>
-                <td className="px-3 py-2">{r.job_title_name}</td>
-                <td className="px-3 py-2 text-slate-600">
-                  {r.places.length ? r.places.join(', ') : (
-                    <span className="text-slate-400">не стоит на посту</span>
-                  )}
-                </td>
-                <td className="px-3 py-2 text-slate-600">
-                  {r.pay_type === 'salary' ? 'оклад' : 'посменно'}
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 text-right font-mono">
-                  {r.amount != null ? (
-                    <>
-                      {formatMoney(r.amount)}
-                      <span className="ml-1 text-xs text-slate-400">
-                        {r.pay_type === 'salary' ? '₽/мес' : '₽/смена'}
-                      </span>
-                    </>
-                  ) : (
-                    <span className="text-slate-400">не задана</span>
-                  )}
-                </td>
-                <td className="px-3 py-2 text-slate-600">
-                  {r.hire_date || r.dismissal_date
-                    ? `${fmtDate(r.hire_date)} — ${r.dismissal_date ? fmtDate(r.dismissal_date) : 'по н. в.'}`
-                    : <span className="text-slate-400">без ограничений</span>}
-                </td>
-                <td className="px-3 py-2">
-                  {r.is_official == null ? (
-                    <span className="text-slate-400" title="В этом месяце не стоит на посту">—</span>
-                  ) : r.is_official ? 'да' : 'нет'}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  <button
-                    type="button"
-                    onClick={() => onOpen(r.position_id)}
-                    className="invisible cursor-pointer text-sm text-blue-700 hover:underline group-hover:visible"
-                  >
-                    Изменить
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {!loading && shown.length === 0 && (
-              <tr>
-                <td colSpan={9} className="px-3 py-6 text-center text-slate-400">
-                  {query ? 'Никого не нашлось' : 'Сотрудников охраны пока нет'}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      <p className="mt-2 text-xs text-slate-500">
-        «Официально» и пост — за выбранный месяц: они задаются в строке табеля
-        вахты, человека ставят на пост помесячно.
+      <p className="mb-3 text-[12.5px] text-ds-muted">
+        ФИО, табельный номер и доступ в систему правятся в карточке сотрудника. Здесь — его
+        рабочее место в охране.
       </p>
 
-      {(editing === 'new' || editRow) && (
-        <StaffModal
-          row={editRow ?? null}
-          guardDepts={guardDepts}
-          otherDepts={allDepts.filter((d) => d.is_active && !isGuardDepartment(d))}
-          canOpenDirectory={role === 'admin' || role === 'manager' || role === 'accountant'}
-          onClose={() => {
-            setCreating(false)
-            onOpen(null)
-          }}
-          onSaved={() => {
-            setCreating(false)
-            onOpen(null)
-            load()
-          }}
-        />
-      )}
+      <div
+        className="grid items-start gap-4"
+        style={{ gridTemplateColumns: panelOpen ? 'minmax(0,1fr) 520px' : 'minmax(0,1fr)' }}
+      >
+        <div className="min-w-0 overflow-hidden rounded-ds-lg border border-ds-line bg-ds-surface">
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="text-left text-[11px] font-semibold text-ds-muted">
+                <th className="w-[92px] border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2">Таб. №</th>
+                <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2">Сотрудник</th>
+                {!panelOpen && (
+                  <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2">
+                    Пост ({monthName})
+                  </th>
+                )}
+                <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2 text-right">Ставка</th>
+                {!panelOpen && (
+                  <>
+                    <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2">На месте</th>
+                    <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2">
+                      Официально ({monthName})
+                    </th>
+                  </>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r) => {
+                const selected = typeof editing === 'number' && editing === r.position_id
+                const place = r.places.length ? r.places.join(', ') : 'не на посту'
+                return (
+                  <tr
+                    key={r.position_id}
+                    aria-selected={selected}
+                    onClick={() => {
+                      setCreating(false)
+                      onOpen(r.position_id)
+                    }}
+                    className={`cursor-pointer ${
+                      selected
+                        ? 'bg-ds-accent-soft [&>td:first-child]:shadow-[inset_3px_0_0_var(--ds-accent)]'
+                        : 'hover:bg-ds-surface-2'
+                    }`}
+                  >
+                    <td className="whitespace-nowrap border-b border-ds-line px-3 py-2 font-ds-mono text-[12px] text-ds-muted">
+                      {r.tab_number ?? 'нет номера'}
+                    </td>
+                    <td className="border-b border-ds-line px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setCreating(false)
+                          onOpen(r.position_id)
+                        }}
+                        className={`cursor-pointer text-left font-medium ${
+                          r.employee_is_active ? 'text-ds-ink' : 'text-ds-muted'
+                        }`}
+                      >
+                        {r.full_name}
+                      </button>
+                      {!r.employee_is_active && <Pill className="ml-2">уволен</Pill>}
+                      <span className="block text-[11.5px] text-ds-muted">
+                        {r.job_title_name}
+                        {panelOpen && ` · ${place}`}
+                        {guardDepts.length > 1 && ` · ${r.department_name}`}
+                      </span>
+                    </td>
+                    {!panelOpen && (
+                      <td className={`border-b border-ds-line px-3 py-2 ${r.places.length ? '' : 'text-ds-muted'}`}>
+                        {place}
+                      </td>
+                    )}
+                    <td className="whitespace-nowrap border-b border-ds-line px-3 py-2 text-right">
+                      {r.amount != null ? (
+                        <>
+                          <span className="tabular-nums">{formatMoney(r.amount)}</span>{' '}
+                          <span className="text-[11.5px] text-ds-muted">{amountUnit(r.pay_type)}</span>
+                        </>
+                      ) : (
+                        <span className="text-ds-muted">не задана</span>
+                      )}
+                    </td>
+                    {!panelOpen && (
+                      <>
+                        <td
+                          className={`whitespace-nowrap border-b border-ds-line px-3 py-2 ${
+                            r.hire_date || r.dismissal_date ? '' : 'text-ds-muted'
+                          }`}
+                        >
+                          {placePeriod(r.hire_date, r.dismissal_date)}
+                        </td>
+                        <td
+                          className={`whitespace-nowrap border-b border-ds-line px-3 py-2 ${
+                            r.is_official === null ? 'text-ds-muted' : ''
+                          }`}
+                        >
+                          {officialLabel(r.is_official)}
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                )
+              })}
+              {!loading && shown.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-3 py-8 text-center text-ds-muted">
+                    {query
+                      ? 'Никого не нашлось. Измените запрос.'
+                      : 'Сотрудников охраны пока нет. Оформите первого кнопкой «Оформить сотрудника».'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Панель — только когда подразделения охраны уже пришли: от них
+            зависит подразделение по умолчанию в форме оформления. */}
+        {panelOpen && guardDepts.length > 0 && (
+          // Своя рамка и тень: SidePanel рисует только левую границу (он
+          // рассчитан стоять у края экрана), а здесь он карточкой рядом со списком.
+          <div className="sticky top-3 h-[calc(100vh-9rem)] min-h-[420px] overflow-hidden rounded-ds-lg border border-ds-line shadow-ds-pop">
+            <StaffPanel
+              key={editRow ? editRow.position_id : 'new'}
+              row={editRow ?? null}
+              guardDepts={guardDepts}
+              otherDepts={allDepts.filter((d) => d.is_active && !isGuardDepartment(d))}
+              canOpenDirectory={role === 'admin' || role === 'manager' || role === 'accountant'}
+              month={month}
+              fact={
+                !editRow || monthFacts === null
+                  ? null
+                  : monthFacts === 'error'
+                    ? 'error'
+                    : monthFacts.get(editRow.position_id) ?? { shifts: 0, pay: 0 }
+              }
+              onClose={close}
+              onSaved={() => {
+                close()
+                load()
+              }}
+            />
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
-function StaffModal({
+function StaffPanel({
   row,
   guardDepts,
   otherDepts,
   canOpenDirectory,
+  month,
+  fact,
   onClose,
   onSaved,
 }: {
@@ -300,10 +399,17 @@ function StaffModal({
   guardDepts: VahtaDepartment[]
   otherDepts: Department[]
   canOpenDirectory: boolean
+  month: number
+  /** Факт месяца из табеля; `null` — грузится, 'error' — не загрузилось. */
+  fact: MonthFact | null | 'error'
   onClose: () => void
   onSaved: () => void
 }) {
-  const [draft, setDraft] = useState<Draft>(row ? toDraft(row) : emptyDraft(guardDepts[0]?.id))
+  const initial = useMemo(
+    () => (row ? toDraft(row) : emptyDraft(guardDepts[0]?.id)),
+    [row, guardDepts],
+  )
+  const [draft, setDraft] = useState<Draft>(initial)
   const jobTitles = useGuardJobTitles()
   const [similar, setSimilar] = useState<VahtaSimilarEmployee[]>([])
   const [saving, setSaving] = useState(false)
@@ -322,6 +428,8 @@ function StaffModal({
 
   const transferOut =
     row != null && otherDepts.some((d) => String(d.id) === draft.department_id)
+  const payType = jobTitles.find((t) => String(t.id) === draft.job_title_id)?.pay_type
+  const monthPrep = MONTHS_RU_PREP[month - 1]
 
   const save = async () => {
     setSaving(true)
@@ -351,7 +459,7 @@ function StaffModal({
           full_name: draft.full_name.trim(),
           tab_number: orNull(draft.tab_number),
         })
-        toast.success(`Оформлен, табельный номер ${created.tab_number ?? '—'}`)
+        toast.success(`Оформлен, табельный номер ${created.tab_number ?? 'не присвоен'}`)
       }
       onSaved()
     } catch (e) {
@@ -361,88 +469,106 @@ function StaffModal({
     }
   }
 
-  const inputCls = 'w-full rounded-md border border-gray-300 px-3 py-2 text-sm'
   const canSave =
     (row != null || draft.full_name.trim().length >= 3) &&
     draft.department_id !== '' &&
     (transferOut || draft.job_title_id !== '')
+  const changed = row ? changedFields(initial, draft, FIELD_LABELS) : []
+
+  const group = (title: string) => (
+    <p className="mb-2.5 mt-0 flex items-center gap-2 text-[12px] font-semibold text-ds-ink-2 after:h-px after:flex-1 after:bg-ds-line">
+      {title}
+    </p>
+  )
 
   return (
-    <Modal
-      isOpen
+    <SidePanel
+      title={row ? row.full_name : 'Оформить сотрудника охраны'}
+      subtitle={
+        row
+          ? [row.tab_number, row.job_title_name, row.department_name].filter(Boolean).join(' · ')
+          : 'Новый сотрудник и его рабочее место в охране'
+      }
       onClose={onClose}
-      title={row ? `Сотрудник охраны: ${row.full_name}` : 'Оформить сотрудника охраны'}
-      actions={
+      footer={
         <>
-          <Button variant="ghost" onClick={onClose}>Отмена</Button>
-          <Button onClick={save} loading={saving} disabled={!canSave}>
+          <p className="m-0 text-[12px] text-ds-muted">
+            {changed.length > 0 && `Изменено: ${changed.join(', ')}`}
+          </p>
+          <DsButton variant="ghost" className="ml-auto" onClick={onClose}>
+            Отменить
+          </DsButton>
+          <DsButton variant="primary" onClick={() => void save()} loading={saving} disabled={!canSave}>
             {row ? (transferOut ? 'Перевести' : 'Сохранить') : 'Оформить'}
-          </Button>
+          </DsButton>
         </>
       }
     >
-      <div className="flex flex-col gap-3">
-        <label className="block text-sm">
-          <span className="mb-1 block text-gray-600">ФИО</span>
-          {row ? (
-            <div className="rounded-md bg-gray-50 px-3 py-2 text-gray-700">{row.full_name}</div>
-          ) : (
-            <input
-              autoFocus
-              value={draft.full_name}
-              onChange={(e) => set('full_name', e.target.value)}
-              className={inputCls}
-            />
-          )}
-        </label>
-
-        {shownSimilar.length > 0 && (
-          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-            Похожие уже есть в справочнике — проверьте, не он ли это:
-            <ul className="mt-1 list-disc pl-4">
-              {shownSimilar.map((s) => (
-                <li key={s.id}>
-                  {s.full_name} {s.tab_number ? `(${s.tab_number})` : ''}
-                  {s.department_name ? ` — ${s.department_name}` : ''}
-                  {!s.is_active ? ', уволен' : ''}
-                </li>
-              ))}
-            </ul>
-            Действующего сотрудника на пост ставят в табеле вахты — нового заводить не нужно.
-          </div>
+      <div className="mb-5">
+        {group('Человек')}
+        {row ? (
+          <>
+            <dl className="m-0 grid grid-cols-[140px_1fr] gap-x-3 gap-y-1 text-[12.5px]">
+              <dt className="text-ds-muted">ФИО</dt>
+              <dd className="m-0 text-ds-ink">{row.full_name}</dd>
+              <dt className="text-ds-muted">Табельный номер</dt>
+              <dd className="m-0 font-ds-mono text-ds-ink">{row.tab_number ?? 'не присвоен'}</dd>
+            </dl>
+            {canOpenDirectory && (
+              <Link
+                to={`/admin/employees?employee_id=${row.employee_id}`}
+                className="mt-2 inline-block text-[12.5px] text-ds-accent hover:underline"
+              >
+                ФИО, таб. № и доступ — в карточке сотрудника
+              </Link>
+            )}
+          </>
+        ) : (
+          <>
+            <FieldRow label="ФИО" htmlFor="staff-fio">
+              <TextField
+                id="staff-fio"
+                autoFocus
+                value={draft.full_name}
+                onChange={(e) => set('full_name', e.target.value)}
+              />
+            </FieldRow>
+            {shownSimilar.length > 0 && (
+              <div className="mb-2.5 rounded-ds-md border border-ds-warn-line bg-ds-warn-soft p-3 text-[12px] text-ds-warn">
+                Похожие уже есть в справочнике — проверьте, не он ли это:
+                <ul className="mt-1 list-disc pl-4">
+                  {shownSimilar.map((s) => (
+                    <li key={s.id}>
+                      {s.full_name} {s.tab_number ? `(${s.tab_number})` : ''}
+                      {s.department_name ? ` — ${s.department_name}` : ''}
+                      {!s.is_active ? ', уволен' : ''}
+                    </li>
+                  ))}
+                </ul>
+                Действующего сотрудника на пост ставят в табеле вахты — нового заводить не нужно.
+              </div>
+            )}
+            <FieldRow label="Табельный номер" htmlFor="staff-tab" hint="Пусто — присвоится автоматически, по общей нумерации">
+              <TextField
+                id="staff-tab"
+                value={draft.tab_number}
+                onChange={(e) => set('tab_number', e.target.value)}
+                placeholder="присвоится автоматически"
+                className="max-w-[220px] font-ds-mono"
+              />
+            </FieldRow>
+          </>
         )}
+      </div>
 
-        <label className="block text-sm">
-          <span className="mb-1 block text-gray-600">Табельный номер</span>
-          {row ? (
-            <div className="rounded-md bg-gray-50 px-3 py-2 font-mono text-gray-700">
-              {row.tab_number ?? '—'}
-            </div>
-          ) : (
-            <input
-              value={draft.tab_number}
-              onChange={(e) => set('tab_number', e.target.value)}
-              placeholder="присвоится автоматически"
-              className={inputCls}
-            />
-          )}
-        </label>
-        {row && canOpenDirectory && (
-          <p className="-mt-2 text-[11px] text-gray-500">
-            ФИО, табельный номер и доступ в систему правятся в{' '}
-            <Link to={`/admin/employees?employee_id=${row.employee_id}`} className="underline">
-              карточке сотрудника
-            </Link>
-            .
-          </p>
-        )}
-
-        <label className="block text-sm">
-          <span className="mb-1 block text-gray-600">Подразделение</span>
-          <select
+      <div className="mb-5">
+        {group('Рабочее место в охране')}
+        <FieldRow label="Подразделение" htmlFor="staff-dept">
+          <SelectField
+            id="staff-dept"
             value={draft.department_id}
             onChange={(e) => set('department_id', e.target.value)}
-            className={inputCls}
+            className="w-full"
           >
             <optgroup label="Охрана">
               {guardDepts.map((d) => (
@@ -456,70 +582,96 @@ function StaffModal({
                 ))}
               </optgroup>
             )}
-          </select>
-        </label>
+          </SelectField>
+        </FieldRow>
         {transferOut && (
-          <p className="-mt-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            Перевод из охраны: рабочее место уйдёт в общий справочник. Если у него
-            нет графика или ставки, оно не войдёт в расчёт — при сохранении
-            покажем, чего не хватает.
+          <p className="mb-2.5 rounded-ds-md border border-ds-warn-line bg-ds-warn-soft px-3 py-2 text-[12px] text-ds-warn">
+            Перевод из охраны: рабочее место уйдёт в общий справочник. Если у него нет графика
+            или ставки, оно не войдёт в расчёт — при сохранении покажем, чего не хватает.
           </p>
         )}
-
         {!transferOut && (
           <>
-            <label className="block text-sm">
-              <span className="mb-1 block text-gray-600">Должность</span>
-              <select
+            <FieldRow
+              label="Должность"
+              htmlFor="staff-title"
+              hint={
+                payType
+                  ? `Способ оплаты — от должности: ${payType === 'salary' ? 'оклад за месяц' : 'ставка за смену'}`
+                  : undefined
+              }
+            >
+              <SelectField
+                id="staff-title"
                 value={draft.job_title_id}
                 onChange={(e) => set('job_title_id', e.target.value)}
-                className={inputCls}
+                className="w-full"
               >
-                <option value="">— выберите —</option>
+                <option value="">Выберите должность</option>
                 {jobTitles.map((t) => (
                   <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
-              </select>
-            </label>
-
-            <label className="block text-sm">
-              <span className="mb-1 block text-gray-600">
-                {guardAmountLabel(jobTitles.find((t) => String(t.id) === draft.job_title_id)?.pay_type)}
-              </span>
-              <input
+              </SelectField>
+            </FieldRow>
+            <FieldRow
+              label={guardAmountLabel(payType)}
+              htmlFor="staff-amount"
+              hint={
+                payType === 'salary'
+                  ? 'Половина оклада на каждую половину месяца'
+                  : row
+                    ? monthFactHint(fact, monthPrep)
+                    : undefined
+              }
+            >
+              <TextField
+                id="staff-amount"
                 value={draft.amount}
                 onChange={(e) => set('amount', e.target.value.replace(',', '.'))}
                 inputMode="decimal"
-                className={`${inputCls} text-right`}
+                className="max-w-[160px] text-right font-ds-mono"
               />
-            </label>
+            </FieldRow>
           </>
         )}
-
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block text-sm">
-            <span className="mb-1 block text-gray-600">Принят на место</span>
-            <input
-              type="date"
-              value={draft.hire_date}
-              onChange={(e) => set('hire_date', e.target.value)}
-              className={inputCls}
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-gray-600">Уволен с места</span>
-            <input
-              type="date"
-              value={draft.dismissal_date}
-              onChange={(e) => set('dismissal_date', e.target.value)}
-              className={inputCls}
-            />
-          </label>
-        </div>
-        <p className="text-[11px] text-gray-500">
-          Пустая дата — без ограничения. Пост назначается в табеле вахты помесячно.
-        </p>
       </div>
-    </Modal>
+
+      <div className="mb-5">
+        {group('Период на месте')}
+        <FieldRow label="Принят на место" htmlFor="staff-hire">
+          <DateField id="staff-hire" value={draft.hire_date} onChange={(v) => set('hire_date', v)} />
+        </FieldRow>
+        <FieldRow
+          label="Уволен с места"
+          htmlFor="staff-dismiss"
+          hint="Пустая дата — без ограничения. После даты увольнения дни в табеле закрыты."
+        >
+          <DateField
+            id="staff-dismiss"
+            value={draft.dismissal_date}
+            onChange={(v) => set('dismissal_date', v)}
+          />
+        </FieldRow>
+      </div>
+
+      {row && (
+        <div>
+          {group(`В ${monthPrep}`)}
+          <dl className="m-0 grid grid-cols-[140px_1fr] gap-x-3 gap-y-1 text-[12.5px]">
+            <dt className="text-ds-muted">Пост</dt>
+            <dd className="m-0 text-ds-ink-2">{row.places.length ? row.places.join(', ') : 'не на посту'}</dd>
+            <dt className="text-ds-muted">Официально</dt>
+            <dd className="m-0 text-ds-ink-2">{officialLabel(row.is_official)}</dd>
+            <dt className="text-ds-muted">Смен</dt>
+            <dd className="m-0 text-ds-ink-2">
+              {fact === null ? 'загружается…' : fact === 'error' ? 'не загрузились' : fact.shifts || 'нет'}
+            </dd>
+          </dl>
+          <p className="mb-0 mt-1.5 text-[11.5px] text-ds-muted">
+            Пост и «официально» задаются в строке табеля — помесячно.
+          </p>
+        </div>
+      )}
+    </SidePanel>
   )
 }

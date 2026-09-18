@@ -10,6 +10,8 @@ import { toast } from '../../store/toasts'
 import type { GuardJobTitle, GuardPayType } from '../../types/api'
 import { Button } from '../Button'
 import { Modal } from '../Modal'
+import { DsButton } from '../ds/Button'
+import { RowMenu, type MenuItem } from '../ds/Menu'
 
 /**
  * Справочник должностей охраны — вкладка настроек вахты.
@@ -75,104 +77,89 @@ export function JobTitlesTab({ canManage }: { canManage: boolean }) {
     }
   }
 
-  if (loading) return <p className="p-8 text-center text-sm text-slate-400">Загрузка…</p>
+  if (loading) return <p className="text-[13px] text-ds-muted">Загрузка…</p>
+
+  // Действия строки — в меню «⋯», видимом всегда (редизайн §4.3): красное
+  // «Снять» в каждой строке было самым заметным элементом списка.
+  const menuFor = (t: GuardJobTitle): MenuItem[] => {
+    if (!canManage) return []
+    const items: MenuItem[] = [{ label: 'Изменить…', onSelect: () => setEditing(t) }]
+    if (t.is_active && !t.default_for_post)
+      items.push({ label: 'Сделать по умолчанию для поста', onSelect: () => void setDefault(t, 'default_for_post') })
+    if (t.is_active && !t.default_for_crew)
+      items.push({
+        label: 'Сделать по умолчанию для экипажа ГБР',
+        onSelect: () => void setDefault(t, 'default_for_crew'),
+      })
+    if (t.is_active)
+      items.push({
+        label: t.usage_count + t.staff_count ? 'Снять…' : 'Удалить…',
+        hint: t.usage_count + t.staff_count ? 'пропадёт из выбора, в истории останется' : undefined,
+        danger: true,
+        onSelect: () => void remove(t),
+      })
+    else items.push({ label: 'Вернуть в выбор', onSelect: () => void toggleActive(t) })
+    return items
+  }
+
+  const defaults = (t: GuardJobTitle) =>
+    [t.default_for_post ? 'для поста' : '', t.default_for_crew ? 'для экипажа ГБР' : '']
+      .filter(Boolean)
+      .join(', ')
+
+  const th = 'border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2 text-[11px] font-semibold text-ds-muted'
+  const td = 'border-b border-ds-line px-3 py-2 align-middle'
 
   return (
-    <div className="max-w-4xl">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="text-xs text-slate-500">
-          Должность задаёт способ оплаты: ставка за смену или оклад за месяц. С должностью
-          «по умолчанию» человек встаёт на пост объекта или в экипаж ГБР, если её не выбрали.
-        </p>
-        {canManage && (
-          <Button size="sm" onClick={() => setEditing('new')}>
+    <div className="max-w-[980px]">
+      {canManage && (
+        <div className="mb-3">
+          <DsButton variant="primary" icon="plus" onClick={() => setEditing('new')}>
             Добавить должность
-          </Button>
-        )}
-      </div>
+          </DsButton>
+        </div>
+      )}
+      <p className="mb-3 text-[12.5px] text-ds-muted">
+        Должность задаёт способ оплаты. «По умолчанию» — какая должность подставляется, когда
+        человека ставят на пост или в экипаж.
+      </p>
 
-      <table className="w-full text-sm">
-        <thead className="text-left text-xs uppercase tracking-wide text-slate-400">
+      <table className="w-full border-separate border-spacing-0 overflow-hidden rounded-ds-lg border border-ds-line bg-ds-surface text-[13px]">
+        <thead>
           <tr>
-            <th className="px-3 py-2">Название</th>
-            <th className="px-3 py-2">Оплата</th>
-            <th className="px-3 py-2">По умолчанию</th>
-            <th className="px-3 py-2 text-right">Рабочих мест</th>
-            <th className="px-3 py-2 text-right">Строк табеля</th>
-            <th className="px-3 py-2" />
+            <th className={`${th} text-left`}>Название</th>
+            <th className={`${th} text-left`}>Оплата</th>
+            <th className={`${th} text-left`}>По умолчанию</th>
+            <th className={`${th} text-right`}>Рабочих мест</th>
+            <th className={`${th} text-right`}>Строк табеля</th>
+            <th className={`${th} w-12`}>
+              <span className="sr-only">Действия</span>
+            </th>
           </tr>
         </thead>
         <tbody>
           {titles.map((t) => (
-            <tr
-              key={t.id}
-              className={`border-t border-slate-100 ${t.is_active ? '' : 'text-slate-400'}`}
-            >
-              <td className="px-3 py-2">
-                {t.name}
-                {!t.is_active && <span className="ml-2 text-xs">снята</span>}
+            <tr key={t.id} className={t.is_active ? '' : 'text-ds-muted'}>
+              <td className={td}>
+                <b className={t.is_active ? 'font-semibold' : 'font-medium'}>{t.name}</b>
+                {!t.is_active && <span className="ml-2 text-[12px]">снята</span>}
               </td>
-              <td className="px-3 py-2">{t.pay_type_label}</td>
-              <td className="px-3 py-2 text-xs">
-                {t.default_for_post && <span className="mr-2 rounded bg-slate-100 px-1.5 py-0.5">пост</span>}
-                {t.default_for_crew && <span className="rounded bg-slate-100 px-1.5 py-0.5">экипаж ГБР</span>}
-                {canManage && t.is_active && !t.default_for_post && (
-                  <button
-                    type="button"
-                    onClick={() => void setDefault(t, 'default_for_post')}
-                    className="mr-2 cursor-pointer text-blue-700 hover:underline"
-                  >
-                    для поста
-                  </button>
-                )}
-                {canManage && t.is_active && !t.default_for_crew && (
-                  <button
-                    type="button"
-                    onClick={() => void setDefault(t, 'default_for_crew')}
-                    className="cursor-pointer text-blue-700 hover:underline"
-                  >
-                    для экипажа
-                  </button>
-                )}
-              </td>
-              <td className="px-3 py-2 text-right tabular-nums">{t.staff_count}</td>
-              <td className="px-3 py-2 text-right tabular-nums">
+              <td className={td}>{t.pay_type_label}</td>
+              <td className={td}>{defaults(t) || <span className="text-ds-muted">нет</span>}</td>
+              <td className={`${td} text-right tabular-nums`}>{t.staff_count}</td>
+              <td className={`${td} text-right tabular-nums`}>
                 {t.usage_count}
                 {t.closed_usage_count > 0 && (
-                  <span className="ml-1 text-xs text-slate-400" title="в закрытых месяцах — способ оплаты уже не сменить">
+                  <span
+                    className="ml-1 text-[12px] text-ds-muted"
+                    title="в закрытых месяцах — способ оплаты уже не сменить"
+                  >
                     ({t.closed_usage_count} закр.)
                   </span>
                 )}
               </td>
-              <td className="px-3 py-2 text-right text-xs">
-                {canManage && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setEditing(t)}
-                      className="mr-3 cursor-pointer text-blue-700 hover:underline"
-                    >
-                      Изменить
-                    </button>
-                    {t.is_active ? (
-                      <button
-                        type="button"
-                        onClick={() => void remove(t)}
-                        className="cursor-pointer text-red-600 hover:underline"
-                      >
-                        {t.usage_count + t.staff_count ? 'Снять' : 'Удалить'}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => void toggleActive(t)}
-                        className="cursor-pointer text-blue-700 hover:underline"
-                      >
-                        Вернуть
-                      </button>
-                    )}
-                  </>
-                )}
+              <td className={`${td} text-right`}>
+                <RowMenu items={menuFor(t)} label={`Действия: ${t.name}`} />
               </td>
             </tr>
           ))}
