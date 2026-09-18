@@ -1153,7 +1153,15 @@ def get_period_history(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    _get_period_or_404(db, period_id)
+    """История согласования периода (task_stage2_access п.2.1): кто и когда
+    переводил статус, тексты причин возврата. Видят роли с доступом к ОТДЕЛУ
+    периода — admin/accountant все, manager и табельщик свои (табельщику
+    адресованы причины возврата). Сотрудник — 403 до поиска периода: иначе по
+    404/403 перебирались бы существующие id."""
+    _require_timesheet_role(actor)
+    period = _get_period_or_404(db, period_id)
+    if not can_access_department(actor, period.department_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
     logs = (
         db.query(AuditLog)
         .filter(

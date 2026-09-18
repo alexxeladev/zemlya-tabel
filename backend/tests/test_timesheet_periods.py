@@ -694,3 +694,86 @@ def test_period_history(
     assert actions == [
         "period_submitted", "period_returned", "period_submitted", "period_closed"
     ]
+
+
+# ── History access (task_stage2_access п.2.1) ────────────────────────────────
+# Было: обработчик проверял только факт входа — сотрудник получал 200 с
+# событиями согласования чужого отдела, ФИО участников и текстами причин.
+
+@pytest.fixture
+def timekeeper_a(db_session: Session, dept_a: Department) -> Employee:
+    emp = Employee(
+        full_name="Timekeeper A",
+        email="tk_a@example.com",
+        hashed_password=hash_password("tk1234567"),
+        role="timekeeper",
+        is_active=True,
+        managed_departments=[dept_a],
+    )
+    db_session.add(emp)
+    db_session.commit()
+    db_session.refresh(emp)
+    return emp
+
+
+def _history(client: TestClient, period_id: int, token: str):
+    return client.get(
+        f"/api/timesheet/periods/{period_id}/history",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def test_history_forbidden_for_employee(
+    client: TestClient, employee_a: Employee, pending_period_a: TimesheetPeriod
+):
+    """Даже период СВОЕГО отдела сотруднику не отдаётся."""
+    tok = get_token(client, "emp_a@example.com", "emp123456")
+    resp = _history(client, pending_period_a.id, tok)
+    assert resp.status_code == 403
+
+
+def test_history_forbidden_for_employee_on_unknown_id(
+    client: TestClient, employee_a: Employee
+):
+    """Сотрудник получает 403, а не 404: по разнице нельзя перебирать id."""
+    tok = get_token(client, "emp_a@example.com", "emp123456")
+    assert _history(client, 999999, tok).status_code == 403
+
+
+def test_history_unknown_id_is_404_for_admin(client: TestClient, admin_user: Employee):
+    tok = get_token(client, "admin@example.com", "admin123")
+    assert _history(client, 999999, tok).status_code == 404
+
+
+def test_history_forbidden_for_foreign_manager(
+    client: TestClient, manager_b: Employee, pending_period_a: TimesheetPeriod
+):
+    tok = get_token(client, "manager_b@example.com", "mgr123456")
+    assert _history(client, pending_period_a.id, tok).status_code == 403
+
+
+def test_history_forbidden_for_manager_on_null_dept(
+    client: TestClient, manager_a: Employee, null_draft_period: TimesheetPeriod
+):
+    """Группой «Без отдела» никто не руководит — только admin/accountant."""
+    tok = get_token(client, "manager_a@example.com", "mgr123456")
+    assert _history(client, null_draft_period.id, tok).status_code == 403
+
+
+def test_history_forbidden_for_timekeeper_of_other_dept(
+    client: TestClient, db_session: Session, dept_b: Department,
+    timekeeper_a: Employee,
+):
+    p = TimesheetPeriod(department_id=dept_b.id, year=YEAR, month=MONTH, status="draft")
+    db_session.add(p)
+    db_session.commit()
+    tok = get_token(client, "tk_a@example.com", "tk1234567")
+    assert _history(client, p.id, tok).status_code == 403
+
+
+def test_history_allowed_for_timekeeper_of_own_dept(
+    client: TestClient, timekeeper_a: Employee, pending_period_a: TimesheetPeriod
+):
+    """Решение заказчика: табельщику адресованы причины возврата — свои отделы видит."""
+    tok = get_token(client, "tk_a@example.com", "tk1234567")
+    assert _history(client, pending_period_a.id, tok).status_code == 200
