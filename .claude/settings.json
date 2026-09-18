@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "ask": [
+      "Bash(git commit *)",
+      "Bash(git push)",
+      "Bash(git push *)",
+      "Bash(./deploy.sh)",
+      "Bash(./deploy.sh *)",
+      "Bash(./install.sh)",
+      "Bash(./install.sh *)",
+      "Bash(ssh *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/migration_reminder.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
