@@ -16,8 +16,9 @@ SOURCE_IMPORT = "import"  # импорт сотрудников из Excel
 SOURCE_BULK = "bulk"      # массовая операция (перенос отдела в другое юрлицо)
 SOURCE_CLI = "cli"        # команды app.cli и сиды
 SOURCE_SYSTEM = "system"  # изменение без пользователя (фон, тесты)
+SOURCE_LOGIN = "login"    # попытка входа: неудача и блокировка (task_stage2_access п.2.6)
 
-SOURCES = (SOURCE_UI, SOURCE_IMPORT, SOURCE_BULK, SOURCE_CLI, SOURCE_SYSTEM)
+SOURCES = (SOURCE_UI, SOURCE_IMPORT, SOURCE_BULK, SOURCE_CLI, SOURCE_SYSTEM, SOURCE_LOGIN)
 
 SOURCE_LABELS = {
     SOURCE_UI: "Интерфейс",
@@ -25,11 +26,14 @@ SOURCE_LABELS = {
     SOURCE_BULK: "Массовая операция",
     SOURCE_CLI: "Команда/сид",
     SOURCE_SYSTEM: "Система",
+    SOURCE_LOGIN: "Вход в систему",
 }
 
 ACTION_CREATE = "create"
 ACTION_UPDATE = "update"
 ACTION_DELETE = "delete"
+# Событие, а не правка данных: неудачный вход, блокировка входа.
+ACTION_EVENT = "event"
 
 
 class ReferenceChange(Base):

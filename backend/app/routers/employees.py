@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from app.core.audit import log_action
 from app.core.deps import get_current_user, require_role
 from app.core.security import hash_password, revoke_sessions
-from app.services.login_guard import locked_until_by_employee, unlock_login
 from app.database import get_db
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
@@ -72,6 +71,7 @@ from app.services.guard_staff import (
     pin_loan_before_primary_change,
     is_guard_position,
 )
+from app.services.login_guard import locked_until_by_employee, unlock_login
 from app.services.org_access import (
     accessible_department_ids,
     can_access_department,
@@ -568,7 +568,7 @@ def reset_password(
     revoke_sessions(emp)
     # С новым паролем человек должен войти сразу, а не ждать конца блокировки,
     # набранной старым (task_stage2_access п.2.6).
-    unlock_login(emp)
+    unlock_login(db, emp, "снята сбросом пароля")
     db.flush()
     log_action(db, actor, "employee", emp.id, "reset_password")
     db.commit()
@@ -592,7 +592,7 @@ def unlock_employee_login(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Employee has no system access"
         )
     before = locked_until_by_employee(db, [emp]).get(emp.id)
-    unlock_login(emp)
+    unlock_login(db, emp, "снята администратором")
     db.flush()
     log_action(db, actor, "employee", emp.id, "login_unlocked",
                before={"login_locked_until": before.isoformat() if before else None})

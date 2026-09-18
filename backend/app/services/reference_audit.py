@@ -59,7 +59,9 @@ from app.models.positions import EmployeePosition
 from app.models.reference_changes import (
     ACTION_CREATE,
     ACTION_DELETE,
+    ACTION_EVENT,
     ACTION_UPDATE,
+    SOURCE_LOGIN,
     SOURCE_SYSTEM,
     SOURCE_UI,
     ReferenceChange,
@@ -178,6 +180,11 @@ MANAGERS_ENTITY = "department_managers"
 EMPLOYEE_SHARES_ENTITY = "employee_shares"
 DEPARTMENT_SHARES_ENTITY = "department_shares"
 
+# События входа (task_stage2_access п.2.6) — в том же журнале, что и справочники.
+LOGIN_ENTITY = "login"
+LOGIN_FAILURE_FIELD = "login_failure"
+LOGIN_LOCK_FIELD = "login_lock"
+
 ENTITY_LABELS: dict[str, str] = {
     "employee": "Сотрудник",
     "employee_position": "Рабочее место",
@@ -188,10 +195,13 @@ ENTITY_LABELS: dict[str, str] = {
     EMPLOYEE_SHARES_ENTITY: "Распределение в карточке",
     DEPARTMENT_SHARES_ENTITY: "Распределение отдела",
     MANAGERS_ENTITY: "Ответственные отдела",
+    LOGIN_ENTITY: "Вход в систему",
 }
 
 # Подписи полей для экрана: «rate» ничего не говорит бухгалтеру.
 FIELD_LABELS: dict[str, str] = {
+    LOGIN_FAILURE_FIELD: "Неудачный вход",
+    LOGIN_LOCK_FIELD: "Блокировка входа",
     "full_name": "ФИО",
     "tab_number": "Табельный номер",
     "position": "Должность (карточка)",
@@ -613,6 +623,48 @@ def record_change(
         }],
     )
     return True
+
+
+def record_login_event(
+    db: Session,
+    *,
+    email: str,
+    employee: Any | None,
+    field: str,
+    old_value: str | None,
+    new_value: str,
+    actor_name: str | None = None,
+    source: str | None = None,
+) -> None:
+    """Событие входа в журнал изменений (task_stage2_access п.2.6): неудачная
+    попытка, начало и снятие блокировки. Экран у журнала один — «Журнал
+    изменений», отдельного для входов заказчик не захотел.
+
+    Это НЕ правка справочника, поэтому пишется явно, как `record_change`, а не
+    событиями сессии. Неудачный вход делает не пользователь системы: автора нет,
+    в «Кто» — адрес, с которого стучались (`actor_name`). Снятие блокировки
+    админом — обычный автор запроса из `Session.info`.
+    """
+    label = email
+    if employee is not None:
+        label = f"{employee.full_name} ({email})"
+    db.execute(
+        ReferenceChange.__table__.insert(),
+        [{
+            "actor_id": None if actor_name else db.info.get(_ACTOR_ID),
+            "actor_name": actor_name or db.info.get(_ACTOR_NAME),
+            "source": source or db.info.get(_SOURCE) or SOURCE_LOGIN,
+            "operation_id": None,
+            "entity_type": LOGIN_ENTITY,
+            "entity_id": employee.id if employee is not None else None,
+            "entity_label": label[:255],
+            "employee_id": employee.id if employee is not None else None,
+            "action": ACTION_EVENT,
+            "field": field,
+            "old_value": old_value,
+            "new_value": new_value,
+        }],
+    )
 
 
 def format_shares(rows: Iterable[tuple[str, Any]]) -> str:

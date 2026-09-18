@@ -25,6 +25,8 @@ const SOURCE_STYLES: Record<string, string> = {
   bulk: 'bg-amber-50 text-amber-800 border-amber-200',
   cli: 'bg-gray-100 text-gray-500 border-gray-200',
   system: 'bg-gray-100 text-gray-500 border-gray-200',
+  // Неудачные входы и блокировки (task_stage2_access п.2.6) — заметны сразу.
+  login: 'bg-rose-50 text-rose-700 border-rose-200',
 }
 
 export function formatMoment(iso: string): string {
@@ -106,7 +108,11 @@ export function AuditTable({
                 )}
               </td>
               <td className="px-3 py-2">
-                {r.field ? (
+                {r.field && r.action === 'event' && r.old_value === null ? (
+                  // Событие (неудачный вход), а не правка: «было» у него нет,
+                  // и «пусто → …» читалось бы как изменение данных.
+                  <span className="font-medium text-gray-900">{r.new_value}</span>
+                ) : r.field ? (
                   <span className="inline-flex flex-wrap items-center gap-1.5">
                     <Value text={r.old_value} tone="old" />
                     <span className="text-gray-400">→</span>

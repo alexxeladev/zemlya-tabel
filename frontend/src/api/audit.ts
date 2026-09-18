@@ -8,7 +8,8 @@ import { apiClient } from './client'
  * его копия здесь неминуемо разошлась бы с первой при добавлении поля.
  */
 
-export type AuditAction = 'create' | 'update' | 'delete'
+/** `event` — событие входа (неудача, блокировка), а не правка данных. */
+export type AuditAction = 'create' | 'update' | 'delete' | 'event'
 
 export interface ReferenceChange {
   id: number

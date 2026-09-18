@@ -62,6 +62,7 @@ def reset_password(email: str, new_password: str) -> None:
     from app.core.security import hash_password, revoke_sessions
     from app.database import SessionLocal
     from app.models.employees import Employee
+    from app.models.reference_changes import SOURCE_CLI
     from app.services.login_guard import unlock_login
 
     _require_password_policy(new_password)
@@ -77,7 +78,7 @@ def reset_password(email: str, new_password: str) -> None:
         revoke_sessions(emp)
         # Снять и блокировку входа (task_stage2_access п.2.6): лимит — на
         # учётку с любых адресов, и если админ один, CLI — единственный выход.
-        unlock_login(emp)
+        unlock_login(db, emp, "снята сбросом пароля (CLI)", source=SOURCE_CLI)
         db.commit()
         print(f"Password reset for '{email}'. must_change_password=True")
     finally:

@@ -7,8 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 
-# Причины неудачного входа — столбец `reason`. Подписи для людей не заводим:
-# журнал читает админ запросом, экрана у него пока нет.
+# Причины неудачного входа — столбец `reason`. Сама таблица — счётчик для
+# блокировки; админ видит эти события в «Журнале изменений» (`record_login_event`).
 REASON_UNKNOWN_EMAIL = "unknown_email"
 REASON_WRONG_PASSWORD = "wrong_password"
 REASON_NO_ACCESS = "no_access"
@@ -16,6 +16,15 @@ REASON_INACTIVE = "inactive"
 # Попытка во время блокировки: пишется в журнал, но в порог НЕ считается —
 # иначе блокировка продлевалась бы, пока кто-то стучится.
 REASON_LOCKED = "locked"
+
+# Подписи — для журнала изменений, где эти события видит админ.
+REASON_LABELS = {
+    REASON_UNKNOWN_EMAIL: "нет такой учётной записи",
+    REASON_WRONG_PASSWORD: "неверный пароль",
+    REASON_NO_ACCESS: "у сотрудника нет доступа в систему",
+    REASON_INACTIVE: "сотрудник уволен",
+    REASON_LOCKED: "отклонено: вход заблокирован",
+}
 
 
 class LoginFailure(Base):

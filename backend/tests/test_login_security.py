@@ -250,3 +250,67 @@ def test_cli_reset_password_unlocks(client: TestClient, victim: Employee, db_ses
     monkeypatch.setattr(db_session, "close", lambda: None)
     cli.reset_password("victim@example.com", "cli-reset-123")
     assert _login(client, "victim@example.com", "cli-reset-123").status_code == 200
+
+
+# ── События входа в «Журнале изменений» (решение заказчика: пишем туда, а не
+#    на отдельный экран) ─────────────────────────────────────────────────────────
+
+
+def _journal(client, admin_token, **params):
+    resp = client.get(
+        "/api/audit", params={"entity_type": "login", **params}, headers=_auth(admin_token)
+    )
+    assert resp.status_code == 200
+    return resp.json()["items"]
+
+
+def test_failed_login_in_journal(client: TestClient, victim: Employee, admin_user: Employee):
+    _login(client, "victim@example.com", "wrong-pass", ip="192.168.5.7")
+    _login(client, "nobody@example.com", "whatever1", ip="192.168.5.8")
+    adm = get_token(client, "admin@example.com", "admin123")
+    items = _journal(client, adm)
+    by_label = {i["entity_label"]: i for i in items}
+    mine = by_label["Бухгалтер (victim@example.com)"]
+    assert mine["field_label"] == "Неудачный вход"
+    assert mine["new_value"] == "неверный пароль"
+    assert mine["actor_name"] == "IP 192.168.5.7"
+    assert mine["source"] == "login" and mine["source_label"] == "Вход в систему"
+    assert mine["employee_id"] == victim.id
+    assert by_label["nobody@example.com"]["new_value"].startswith("нет такой учётной записи")
+    # Видно и в истории самого сотрудника.
+    assert any(i["field"] == "login_failure" for i in _journal(client, adm, employee_id=victim.id))
+
+
+def test_lock_and_unlock_in_journal(client: TestClient, victim: Employee, admin_user: Employee):
+    _lock(client)
+    adm = get_token(client, "admin@example.com", "admin123")
+    locks = [i for i in _journal(client, adm) if i["field"] == "login_lock"]
+    assert len(locks) == 1 and locks[0]["new_value"].startswith("закрыт на 15 мин")
+    client.post(f"/api/employees/{victim.id}/unlock-login", headers=_auth(adm))
+    locks = [i for i in _journal(client, adm) if i["field"] == "login_lock"]
+    assert locks[0]["new_value"] == "снята администратором"
+    assert locks[0]["actor_name"] == "Test Admin"
+
+
+def test_unlock_of_unlocked_account_writes_nothing(client, victim: Employee, admin_user: Employee):
+    adm = get_token(client, "admin@example.com", "admin123")
+    client.post(f"/api/employees/{victim.id}/reset-password", headers=_auth(adm))
+    assert [i for i in _journal(client, adm) if i["field"] == "login_lock"] == []
+
+
+def test_non_admin_cannot_read_login_journal(client: TestClient, victim: Employee, db_session):
+    acc = Employee(
+        full_name="Бух 3",
+        email="acc3@example.com",
+        role="accountant",
+        hashed_password=hash_password("acc3-pass-1"),
+        is_active=True,
+    )
+    db_session.add(acc)
+    db_session.commit()
+    _login(client, "victim@example.com", "wrong-pass")
+    tok = get_token(client, "acc3@example.com", "acc3-pass-1")
+    assert (
+        client.get("/api/audit", params={"entity_type": "login"}, headers=_auth(tok)).status_code
+        == 403
+    )

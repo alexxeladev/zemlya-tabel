@@ -24,7 +24,12 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.employees import Employee
-from app.models.login_failures import REASON_LOCKED, LoginFailure
+from app.models.login_failures import REASON_LABELS, REASON_LOCKED, LoginFailure
+from app.services.reference_audit import (
+    LOGIN_FAILURE_FIELD,
+    LOGIN_LOCK_FIELD,
+    record_login_event,
+)
 
 
 def _utcnow() -> datetime.datetime:
@@ -154,17 +159,48 @@ def record_failure(
     db: Session, email: str, ip: str | None, reason: str,
     employee: Employee | None = None,
 ) -> None:
-    """Запись в журнал. Коммит — снаружи (вход коммитит перед отказом)."""
+    """Неудача — в счётчик (`login_failures`) и в «Журнал изменений»; эта
+    неудача закрыла вход — туда же событие блокировки. Коммит — снаружи (вход
+    коммитит перед отказом)."""
+    key = email_key(email)
     db.add(LoginFailure(
-        email=email_key(email)[:255],
+        email=key[:255],
         ip=ip,
         reason=reason,
         employee_id=employee.id if employee is not None else None,
         created_at=_utcnow(),
     ))
+    where = f"IP {ip}" if ip else "адрес неизвестен"
+    record_login_event(
+        db, email=key, employee=employee, field=LOGIN_FAILURE_FIELD,
+        old_value=None, new_value=REASON_LABELS.get(reason, reason),
+        actor_name=where,
+    )
+    if reason != REASON_LOCKED:
+        db.flush()
+        if login_locked_until(db, key, employee) is not None:
+            record_login_event(
+                db, email=key, employee=employee, field=LOGIN_LOCK_FIELD,
+                old_value="вход открыт",
+                new_value=(
+                    f"закрыт на {settings.LOGIN_LOCK_MINUTES} мин: "
+                    f"{settings.LOGIN_MAX_FAILURES} неудачных попыток"
+                ),
+                actor_name=where,
+            )
 
 
-def unlock_login(employee: Employee) -> None:
+def unlock_login(
+    db: Session, employee: Employee, how: str, source: str | None = None,
+) -> None:
     """Снять блокировку: неудачи до этого момента в порог больше не идут.
-    Журнал не трогается — история попыток остаётся."""
+    Счётчик не трогается — история попыток остаётся. Была блокировка — в
+    «Журнал изменений» пишется, кто и как её снял (`how`)."""
+    was_locked = login_locked_until(db, employee.email or "", employee) is not None
     employee.login_unlocked_at = _utcnow()
+    if was_locked:
+        record_login_event(
+            db, email=email_key(employee.email or ""), employee=employee,
+            field=LOGIN_LOCK_FIELD, old_value="вход закрыт", new_value=how,
+            source=source,
+        )
