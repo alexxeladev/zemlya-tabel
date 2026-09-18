@@ -251,6 +251,9 @@ class TestDirectoryReadOnly:
         )
         assert resp.status_code == 403
         assert "Вахта" in resp.json()["detail"]
+        # Отказ ведёт туда, где рабочее место реально правится (task_vahta_settings_staff):
+        # отдельной страницы сотрудников охраны больше нет — это вкладка настроек.
+        assert "«Настройки» → «Сотрудники охраны»" in resp.json()["detail"]
         db_session.expire_all()
         assert db_session.get(EmployeePosition, pid).shift_rate == Decimal("3500")
 

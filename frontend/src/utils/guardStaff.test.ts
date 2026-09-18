@@ -36,16 +36,15 @@ test('подпись суммы — по способу оплаты должн�
 test('должности не захардкожены ни на одном экране — только справочник', () => {
   for (const file of [
     '../pages/VahtaPage.tsx',
-    '../pages/admin/VahtaStaffPage.tsx',
+    '../components/vahta/StaffTab.tsx',
     '../components/vahta/QuickHireModal.tsx',
-    '../components/vahta/CrewRoster.tsx',
   ]) {
     const src = read(file)
     assert.doesNotMatch(src, /'Начальник охраны'|'Охранник'|'ГБР'|'Диспетчер'/, file)
     assert.doesNotMatch(src, /'chief'|'gbr'|'dispatcher'/, file)
   }
   assert.match(read('../pages/VahtaPage.tsx'), /useGuardJobTitles\(\)/)
-  assert.match(read('../pages/admin/VahtaStaffPage.tsx'), /useGuardJobTitles\(\)/)
+  assert.match(read('../components/vahta/StaffTab.tsx'), /useGuardJobTitles\(\)/)
   assert.match(read('../components/vahta/QuickHireModal.tsx'), /useGuardJobTitles\(\)/)
 })
 
@@ -113,12 +112,12 @@ test('карточка: у охранной позиции нет «Измени
 })
 
 test('экран вахты не заводит своей проверки флага охраны', () => {
-  const staff = read('../pages/admin/VahtaStaffPage.tsx')
+  const staff = read('../components/vahta/StaffTab.tsx')
   // Отделы охраны приходят с бэка списком; флаг читается только для обычных
   // отделов перевода — отдельного правила «охранное или нет» нет.
   assert.doesNotMatch(staff, /pay_type_for_kind|kind === 'chief'/)
   // Флаг отдела читается только через isGuardDepartment — не по месту.
-  for (const file of ['../pages/admin/VahtaStaffPage.tsx', '../pages/admin/PositionsEditor.tsx', '../pages/admin/EmployeesPage.tsx']) {
+  for (const file of ['../components/vahta/StaffTab.tsx', '../pages/admin/PositionsEditor.tsx', '../pages/admin/EmployeesPage.tsx']) {
     assert.doesNotMatch(read(file), /\.is_guard_department/, file)
   }
 })

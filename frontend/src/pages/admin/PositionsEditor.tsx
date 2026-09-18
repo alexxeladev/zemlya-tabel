@@ -17,7 +17,14 @@ import {
 } from '../../api/employees'
 import { ApiError } from '../../api/client'
 import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
-import { GUARD_STAFF_PATH, isGuardDepartment, isGuardPosition } from '../../utils/guardStaff'
+import {
+  GUARD_STAFF_PATH,
+  canOpenGuardStaff,
+  guardStaffPositionPath,
+  isGuardDepartment,
+  isGuardPosition,
+} from '../../utils/guardStaff'
+import { useAuthStore } from '../../store/auth'
 import { toast } from '../../store/toasts'
 import type {
   Company, Department, EmployeePosition, EmployeePositionInput, PayType, Schedule, WeekendPayType,
@@ -156,6 +163,7 @@ type Props = {
 export function PositionsEditor({
   employeeId, departments, companies, schedules, readOnly, onChanged,
 }: Props) {
+  const role = useAuthStore((s) => s.user?.role)
   const [positions, setPositions] = useState<EmployeePosition[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -298,15 +306,26 @@ export function PositionsEditor({
               <span className="flex-1" />
               {/* Рабочее место охраны ведёт вахта (task_guard_ownership): здесь
                   только просмотр, бэк правку всё равно отклонит. */}
-              {isGuardPosition(p) && (
-                <Link
-                  to={GUARD_STAFF_PATH}
-                  className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-200"
-                  title="Рабочее место охранного подразделения правится только в модуле «Вахта»"
-                >
-                  ведётся в модуле «Вахта» →
-                </Link>
-              )}
+              {/* Ссылка ведёт сразу на ЭТО рабочее место во вкладке «Сотрудники
+                  охраны». Кому вкладка закрыта (бухгалтер), — текст без ссылки:
+                  иначе клик выкидывал на дашборд с «нет доступа». */}
+              {isGuardPosition(p) &&
+                (canOpenGuardStaff(role) ? (
+                  <Link
+                    to={guardStaffPositionPath(p.id)}
+                    className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-200"
+                    title="Рабочее место охранного подразделения правится в настройках вахты"
+                  >
+                    ведётся в модуле «Вахта» →
+                  </Link>
+                ) : (
+                  <span
+                    className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800"
+                    title="Правят администратор и руководитель охраны в настройках вахты"
+                  >
+                    ведётся в модуле «Вахта»
+                  </span>
+                ))}
               {!readOnly && editing === null && (
                 <div className="flex gap-1.5">
                   {!p.is_primary && p.is_active && (

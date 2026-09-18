@@ -6,9 +6,28 @@
 // какие кнопки прятать и куда вести. Признак берётся из пришедшего с бэка
 // `department.is_guard_department`, своего правила у фронта нет.
 
+// Расширение `.ts` — ради `npm test` (node:test без сборщика).
+import { vahtaSettingsPath } from './vahtaSettings.ts'
 
-/** Путь экрана «Сотрудники охраны». */
-export const GUARD_STAFF_PATH = '/vahta/staff'
+/**
+ * Где ведутся сотрудники охраны: вкладка настроек вахты
+ * (task_vahta_settings_staff; отдельной страницы `/vahta/staff` больше нет).
+ */
+export const GUARD_STAFF_PATH = vahtaSettingsPath('staff')
+
+/**
+ * Кто может открыть вкладку «Сотрудники охраны» — те же роли, что у маршрута
+ * настроек вахты (`AppRouter`, `_require_settings` бэка): admin и менеджер.
+ * Остальным ссылка вела бы на «нет доступа» — им показывается текст.
+ */
+export function canOpenGuardStaff(role: string | null | undefined): boolean {
+  return role === 'admin' || role === 'manager'
+}
+
+/** Ссылка сразу на рабочее место: вкладка откроется с его формой. */
+export function guardStaffPositionPath(positionId: number): string {
+  return vahtaSettingsPath('staff', { positionId })
+}
 
 export function isGuardDepartment(dept: { is_guard_department?: boolean } | null | undefined): boolean {
   return Boolean(dept?.is_guard_department)

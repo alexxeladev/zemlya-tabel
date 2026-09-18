@@ -49,10 +49,15 @@ from app.services.guard_duty import GuardError, next_tab_number
 from app.services.org_access import can_access_department
 from app.services.payroll import position_setup_issues
 
-#: Текст отказа общего справочника. Фронт показывает его как есть и ведёт в вахту.
+#: Где охранное рабочее место реально правится (task_vahta_settings_staff):
+#: отказ называет место, а не только модуль, — пользователь должен найти его
+#: без подсказки. Отдельной страницы сотрудников охраны больше нет.
+GUARD_STAFF_PLACE = "«Вахта» → «Настройки» → «Сотрудники охраны»"
+
+#: Текст отказа общего справочника. Фронт показывает его как есть.
 GUARD_OWNED_MESSAGE = (
     "Рабочее место охранного подразделения ведётся в модуле «Вахта» — "
-    "изменить его можно только там"
+    f"изменить его можно только там: {GUARD_STAFF_PLACE}"
 )
 
 
@@ -128,7 +133,7 @@ def ensure_position_create_allowed(db: Session, department_id: int | None) -> No
     if is_guard_department_id(db, department_id):
         raise GuardOwnedError(
             "Сотрудников охранного подразделения оформляют в модуле «Вахта» — "
-            "там же заводится их рабочее место"
+            f"там же заводится их рабочее место: {GUARD_STAFF_PLACE}"
         )
 
 

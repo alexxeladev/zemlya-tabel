@@ -42,6 +42,7 @@ import { defaultJobTitleId, useGuardJobTitles } from '../hooks/useGuardJobTitles
 import { ConfirmDialog } from '../components/ds/ConfirmDialog'
 import { RowMenu, type MenuItem } from '../components/ds/Menu'
 import { MONTHS_RU_PREP } from '../utils/ruDate'
+import { vahtaSettingsPath } from '../utils/vahtaSettings'
 
 // Должности — справочник вахты (настройки → «Должности»), а не константа
 // экрана: грузятся хуком useGuardJobTitles и передаются строкам и окнам.
@@ -764,7 +765,7 @@ export function VahtaPage() {
           оргструктуре
         </Link>
         , затем заведите зоны обслуживания, объекты с постами и экипажи ГБР в{' '}
-        <Link to="/vahta/posts" className="underline">
+        <Link to={vahtaSettingsPath('zones')} className="underline">
           настройках вахты
         </Link>
         .
@@ -908,15 +909,7 @@ export function VahtaPage() {
           )}
           {canManage && (
             <Link
-              to="/vahta/staff"
-              className="rounded-md bg-slate-100 px-3 py-1.5 text-sm text-slate-800 hover:bg-slate-200"
-            >
-              Сотрудники
-            </Link>
-          )}
-          {canManage && (
-            <Link
-              to="/vahta/posts"
+              to={vahtaSettingsPath('staff', { year, month })}
               className="rounded-md bg-slate-100 px-3 py-1.5 text-sm text-slate-800 hover:bg-slate-200"
             >
               Настройки

@@ -37,7 +37,7 @@ from app.schemas.employee import EmployeeCreate
 from app.schemas.employee_import import EmployeeImportResult, ImportRowRead
 from app.services.company_order import company_order_by
 from app.services.employees import build_employee
-from app.services.guard_staff import is_guard_department
+from app.services.guard_staff import GUARD_STAFF_PLACE, is_guard_department
 from app.services.reference_audit import audit_operation
 
 # Строка-пример помечается этим текстом в первой колонке; парсер такие строки
@@ -418,7 +418,7 @@ def _parse_row(
             # общего справочника охранные рабочие места не заводит.
             errors.append(
                 f"«{department.name}» — подразделение охраны, его сотрудников "
-                "оформляют в модуле «Вахта»"
+                f"оформляют в модуле «Вахта»: {GUARD_STAFF_PLACE}"
             )
 
     # График — необязателен, но если указан, должен существовать

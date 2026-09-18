@@ -1,5 +1,7 @@
 // «Сотрудники охраны» — штат охранных подразделений ведётся здесь
-// (task_guard_ownership).
+// (task_guard_ownership). Вкладка настроек вахты (task_vahta_settings_staff):
+// отдельной страницы и двух кнопок входа больше нет. Месяц и открытое рабочее
+// место приходят из адреса — их держит экран настроек.
 //
 // Таблица сотрудников одна на всю систему. Модуль вахты владеет только
 // РАБОЧИМ МЕСТОМ в охране: должность, сумма, подразделение, период работы на
@@ -21,10 +23,9 @@ import {
   listVahtaStaff,
   updateVahtaStaff,
 } from '../../api/vahta'
-import { Button } from '../../components/Button'
-import { Modal } from '../../components/Modal'
+import { Button } from '../Button'
+import { Modal } from '../Modal'
 import { useAuthStore } from '../../store/auth'
-import { usePeriodStore } from '../../store/period'
 import { toast } from '../../store/toasts'
 import type {
   Department,
@@ -82,21 +83,38 @@ const toDraft = (s: VahtaStaff): Draft => ({
 
 const orNull = (v: string) => (v.trim() === '' ? null : v.trim())
 
-export function VahtaStaffPage() {
-  const { year, month, setPeriod } = usePeriodStore()
+export function StaffTab({
+  year,
+  month,
+  positionId,
+  onOpen,
+}: {
+  year: number
+  month: number
+  /** Открытое рабочее место из адреса (`?position_id=`), `null` — ничего. */
+  positionId: number | null
+  /** Открыть/закрыть рабочее место — экран пишет это в адрес. */
+  onOpen: (positionId: number | null) => void
+}) {
   const role = useAuthStore((s) => s.user?.role)
   const [rows, setRows] = useState<VahtaStaff[]>([])
   const [guardDepts, setGuardDepts] = useState<VahtaDepartment[]>([])
   const [allDepts, setAllDepts] = useState<Department[]>([])
   const [loading, setLoading] = useState(true)
+  // Список загружен без ошибки: только тогда «места нет в списке» — правда.
+  const [loaded, setLoaded] = useState(false)
   const [query, setQuery] = useState('')
-  // null — окно закрыто, 'new' — оформление, число — правка рабочего места
-  const [editing, setEditing] = useState<number | 'new' | null>(null)
+  // Оформление нового — состояние вкладки; правка существующего — адрес.
+  const [creating, setCreating] = useState(false)
+  const editing: number | 'new' | null = creating ? 'new' : positionId
 
   const load = useCallback(() => {
     setLoading(true)
     listVahtaStaff(year, month)
-      .then(setRows)
+      .then((data) => {
+        setRows(data)
+        setLoaded(true)
+      })
       .catch((e) => toast.error(e instanceof Error ? e.message : 'Не удалось загрузить'))
       .finally(() => setLoading(false))
   }, [year, month])
@@ -121,6 +139,15 @@ export function VahtaStaffPage() {
   const people = new Set(shown.map((r) => r.employee_id)).size
   const editRow = typeof editing === 'number' ? rows.find((r) => r.position_id === editing) : null
 
+  // Ссылка на рабочее место, которого в списке нет (снято с учёта, чужое
+  // подразделение, опечатка в адресе): сказать словами и убрать из адреса, а не
+  // показывать пустую форму оформления.
+  useEffect(() => {
+    if (loading || !loaded || positionId === null || editRow) return
+    toast.error('Такого рабочего места среди сотрудников охраны нет')
+    onOpen(null)
+  }, [loading, loaded, positionId, editRow, onOpen])
+
   if (!loading && guardDepts.length === 0) {
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
@@ -133,32 +160,13 @@ export function VahtaStaffPage() {
 
   return (
     <div>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-slate-800">Сотрудники охраны</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Рабочие места охранных подразделений: оформление и правка ведутся
-            здесь. ФИО, табельный номер и доступ в систему — в общем справочнике.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Link
-            to="/vahta"
-            className="rounded-md bg-gray-100 px-3 py-1.5 text-sm text-gray-800 hover:bg-gray-200"
-          >
-            ← К табелю
-          </Link>
-          <Link
-            to="/vahta/posts"
-            className="rounded-md bg-gray-100 px-3 py-1.5 text-sm text-gray-800 hover:bg-gray-200"
-          >
-            Посты и экипажи
-          </Link>
-        </div>
-      </div>
+      <p className="mb-3 text-sm text-slate-500">
+        ФИО, табельный номер и доступ в систему правятся в карточке сотрудника.
+        Здесь — его рабочее место в охране.
+      </p>
 
       <div className="mb-3 flex flex-wrap items-center gap-3">
-        <Button size="sm" onClick={() => setEditing('new')}>
+        <Button size="sm" onClick={() => setCreating(true)}>
           + Оформить сотрудника
         </Button>
         <input
@@ -167,18 +175,6 @@ export function VahtaStaffPage() {
           placeholder="Поиск: ФИО, таб. №, пост"
           className="w-64 rounded-md border border-gray-300 px-3 py-1.5 text-sm"
         />
-        <label className="flex items-center gap-2 text-sm text-slate-600">
-          Пост за
-          <input
-            type="month"
-            value={`${year}-${String(month).padStart(2, '0')}`}
-            onChange={(e) => {
-              const [y, m] = e.target.value.split('-').map(Number)
-              if (y && m) setPeriod(y, m)
-            }}
-            className="rounded-md border border-gray-300 px-2 py-1 text-sm"
-          />
-        </label>
         <span className="ml-auto text-xs text-slate-500">
           {people} чел. · {shown.length} рабочих мест
         </span>
@@ -248,7 +244,7 @@ export function VahtaStaffPage() {
                 <td className="px-3 py-2 text-right">
                   <button
                     type="button"
-                    onClick={() => setEditing(r.position_id)}
+                    onClick={() => onOpen(r.position_id)}
                     className="invisible cursor-pointer text-sm text-blue-700 hover:underline group-hover:visible"
                   >
                     Изменить
@@ -271,15 +267,19 @@ export function VahtaStaffPage() {
         вахты, человека ставят на пост помесячно.
       </p>
 
-      {editing !== null && (
+      {(editing === 'new' || editRow) && (
         <StaffModal
           row={editRow ?? null}
           guardDepts={guardDepts}
           otherDepts={allDepts.filter((d) => d.is_active && !isGuardDepartment(d))}
           canOpenDirectory={role === 'admin' || role === 'manager' || role === 'accountant'}
-          onClose={() => setEditing(null)}
+          onClose={() => {
+            setCreating(false)
+            onOpen(null)
+          }}
           onSaved={() => {
-            setEditing(null)
+            setCreating(false)
+            onOpen(null)
             load()
           }}
         />

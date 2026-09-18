@@ -12,12 +12,12 @@ import { PayrollPage } from '../pages/admin/PayrollPage'
 import { TimesheetPage } from '../pages/TimesheetPage'
 import { VahtaPage } from '../pages/VahtaPage'
 import { VahtaSettingsPage } from '../pages/admin/VahtaSettingsPage'
-import { VahtaStaffPage } from '../pages/admin/VahtaStaffPage'
 import { TasksPage } from '../pages/TasksPage'
 import { PrivateRoute } from './PrivateRoute'
 import { useAuthStore } from '../store/auth'
 import { toast } from '../store/toasts'
 import type { UserRole } from '../types/api'
+import { LEGACY_VAHTA_SETTINGS_REDIRECTS, VAHTA_SETTINGS_BASE } from '../utils/vahtaSettings'
 
 function RoleRoute({ allow, children }: { allow: UserRole[]; children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user)
@@ -28,6 +28,15 @@ function RoleRoute({ allow, children }: { allow: UserRole[]; children: React.Rea
     return <Navigate to="/dashboard" replace state={{ from: location }} />
   }
   return <>{children}</>
+}
+
+/**
+ * Старый адрес → вкладка настроек вахты, с тем же `?…`: закладка
+ * `/vahta/staff?position_id=N` должна открыть то же рабочее место.
+ */
+function LegacyVahtaRedirect({ from }: { from: string }) {
+  const { search } = useLocation()
+  return <Navigate to={`${VAHTA_SETTINGS_BASE}/${LEGACY_VAHTA_SETTINGS_REDIRECTS[from]}${search}`} replace />
 }
 
 export function AppRouter() {
@@ -60,24 +69,22 @@ export function AppRouter() {
                 </RoleRoute>
               }
             />
+            {/* Настройки вахты (task_vahta_settings_staff): всё, что ведётся как
+                справочник, — вкладками одного экрана; вкладка в адресе.
+                Доступ — admin и менеджер охраны, как у прежних страниц
+                «Посты» и «Сотрудники охраны». */}
             <Route
-              path="/vahta/posts"
+              path="/vahta/settings/:tab?"
               element={
                 <RoleRoute allow={['admin', 'manager']}>
                   <VahtaSettingsPage />
                 </RoleRoute>
               }
             />
-            {/* Сотрудники охраны (task_guard_ownership): штат охранных
-                подразделений ведётся здесь — админ и менеджер охраны. */}
-            <Route
-              path="/vahta/staff"
-              element={
-                <RoleRoute allow={['admin', 'manager']}>
-                  <VahtaStaffPage />
-                </RoleRoute>
-              }
-            />
+            {/* Прежние адреса — во вкладки; права проверяет маршрут вкладки. */}
+            {Object.keys(LEGACY_VAHTA_SETTINGS_REDIRECTS).map((from) => (
+              <Route key={from} path={from} element={<LegacyVahtaRedirect from={from} />} />
+            ))}
 
             {/* Единый экран оргструктуры вместо отдельных «Компании» и «Отделы»
                 (task_org_structure ч.3). Структуру и права меняет только admin. */}
