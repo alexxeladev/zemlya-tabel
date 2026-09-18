@@ -29,6 +29,7 @@ import { usePersistentState } from '../hooks/usePersistentState'
 import { ReplaceModal } from '../components/vahta/ReplaceModal'
 import { usePeriodStore } from '../store/period'
 import { useAuthStore } from '../store/auth'
+import { TIMEKEEPER_NEW_POSITION_HINT } from '../utils/guardStaff'
 import { toast } from '../store/toasts'
 import type {
   Company,
@@ -1537,6 +1538,7 @@ function AddToPostModal({
   const [picked, setPicked] = useState<number[]>([])
   const [query, setQuery] = useState('')
   const [saving, setSaving] = useState(false)
+  const isTimekeeper = useAuthStore((s) => s.user?.role) === 'timekeeper'
 
   useEffect(() => {
     listVahtaCandidates(year, month).then(setCandidates).catch(() => setCandidates([]))
@@ -1693,6 +1695,9 @@ function AddToPostModal({
         ))}
       </div>
 
+      {isTimekeeper && (
+        <p className="mt-2 text-xs text-amber-700">{TIMEKEEPER_NEW_POSITION_HINT}</p>
+      )}
       <p className="mt-3 text-xs text-gray-500">
         Каждому выбранному заведётся своя строка{place ? ` на «${place.label}»` : ''},
         все дни месяца отметятся сразу — обычно человек отрабатывает весь срок, а

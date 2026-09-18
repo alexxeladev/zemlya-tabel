@@ -4,6 +4,8 @@ import { listVahtaCandidates, replaceOnPost } from '../../api/vahta'
 import { Button } from '../Button'
 import { Modal } from '../Modal'
 import { toast } from '../../store/toasts'
+import { useAuthStore } from '../../store/auth'
+import { TIMEKEEPER_NEW_POSITION_HINT } from '../../utils/guardStaff'
 import type { VahtaCandidate, VahtaRow } from '../../types/api'
 
 /**
@@ -36,6 +38,7 @@ export function ReplaceModal({
   const [candidates, setCandidates] = useState<VahtaCandidate[]>([])
   const [fromDay, setFromDay] = useState(midDay + 1)
   const [saving, setSaving] = useState(false)
+  const isTimekeeper = useAuthStore((s) => s.user?.role) === 'timekeeper'
 
   useEffect(() => {
     listVahtaCandidates(year, month).then(setCandidates).catch(() => setCandidates([]))
@@ -107,6 +110,9 @@ export function ReplaceModal({
             <p className="px-1 pb-1 pt-2 text-[10px] uppercase tracking-wide text-gray-400">
               Из других экипажей
             </p>
+            {isTimekeeper && (
+              <p className="px-1 pb-1 text-[11px] text-amber-700">{TIMEKEEPER_NEW_POSITION_HINT}</p>
+            )}
             {busy.map((c) => (
               <button
                 key={c.position_id ?? c.employee_id}

@@ -773,6 +773,7 @@ def _editable_assignment_or_404(
 
 def _resolve_position(
     db: Session,
+    actor: Employee,
     place,
     position_id: int | None,
     employee_id: int | None,
@@ -805,6 +806,20 @@ def _resolve_position(
     ]
     if existing:
         return existing[0]
+    # Дальше — НОВОЕ рабочее место в охране (task_stage2_access п.2.9). Заводит
+    # его тот, кто ведёт штат охраны (admin, менеджер охраны), как в «Сотрудниках
+    # охраны» и быстром найме. Табельщик ставит на пост только тех, у кого в этом
+    # подразделении уже есть свободное место; раньше постановка и замена молча
+    # заводили позицию и в обход прав.
+    if actor.role not in _SETTINGS_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"У «{employee.full_name}» нет свободного рабочего места в этом "
+                "подразделении охраны. Завести новое (совместительство, перевод из "
+                "другого подразделения) может администратор или менеджер охраны."
+            ),
+        )
     # Должность строки задаёт тип оплаты нового рабочего места: начальник,
     # поставленный на пост, заводится на окладе (task_guard_ownership).
     try:
@@ -883,7 +898,7 @@ def post_assignment(
         created: list[int] = []
         for employee_id in dict.fromkeys(payload.employee_ids):
             position = _resolve_position(
-                db, place, None, employee_id, payload.rate,
+                db, actor, place, None, employee_id, payload.rate,
                 payload.year, payload.month, payload.job_title_id,
             )
             try:
@@ -903,7 +918,7 @@ def post_assignment(
         return {"ids": created, "created": len(created)}
 
     position = _resolve_position(
-        db, place, payload.position_id, payload.employee_id, payload.rate,
+        db, actor, place, payload.position_id, payload.employee_id, payload.rate,
         payload.year, payload.month, payload.job_title_id,
     )
     try:
@@ -1029,7 +1044,7 @@ def post_replace(
     if payload.rate is not None:
         _require_money(actor)
     position = _resolve_position(
-        db, assignment.place, payload.position_id, payload.employee_id, payload.rate,
+        db, actor, assignment.place, payload.position_id, payload.employee_id, payload.rate,
         assignment.year, assignment.month, assignment.job_title_id,
     )
     try:
