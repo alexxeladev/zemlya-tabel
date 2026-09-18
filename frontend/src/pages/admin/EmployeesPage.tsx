@@ -87,7 +87,6 @@ const schema = z.object({
   email: z.string().optional(),
   role: z.string().optional(),
   initial_password: z.string().optional(),
-  is_system_admin: z.boolean().default(false),
 })
 
 type FormInput = z.input<typeof schema>
@@ -188,7 +187,7 @@ export function EmployeesPage() {
       overtime_coefficient: '1.5',
       loan_amount: '', loan_term_months: '', loan_start_date: '',
       is_active: true, hire_date: '', dismissal_date: '',
-      has_access: false, email: '', role: 'employee', initial_password: '', is_system_admin: false,
+      has_access: false, email: '', role: 'employee', initial_password: '',
     })
     setShowCreate(true)
   }
@@ -223,7 +222,6 @@ export function EmployeesPage() {
       email: e.email ?? '',
       role: e.role ?? 'employee',
       initial_password: '',
-      is_system_admin: e.is_system_admin,
     })
   }
 
@@ -278,10 +276,12 @@ export function EmployeesPage() {
         loan_amount: data.loan_amount || null,
         loan_term_months: data.loan_term_months ? Number(data.loan_term_months) : null,
         loan_start_date: data.loan_start_date || null,
-        is_active: data.is_active,
+        // Служебные поля (активность, «системный») правкой карточки не
+        // меняются — бэк их отбрасывает (task_stage2_access п.2.5): вход
+        // включают и выключают «Уволить» / «Вернуть».
+        ...(editTarget ? {} : { is_active: data.is_active }),
         hire_date: data.hire_date || null,
         dismissal_date: data.dismissal_date || null,
-        is_system_admin: data.is_system_admin,
         access: data.has_access && data.email && data.role
           ? { email: data.email, role: data.role as UserRole, initial_password: data.initial_password ?? '' }
           : null,
@@ -919,15 +919,6 @@ export function EmployeesPage() {
                 {editTarget?.is_system_admin && (
                   <p className="text-xs text-gray-400">Системный администратор — роль изменить нельзя</p>
                 )}
-                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    {...form.register('is_system_admin')}
-                    disabled={editTarget?.is_system_admin}
-                    className="rounded"
-                  />
-                  Системный пользователь (скрыт из табеля)
-                </label>
                 {(!editTarget || !editTarget.has_access) && (
                   <div className="flex flex-col gap-1">
                     <label className="text-sm font-medium text-gray-700">

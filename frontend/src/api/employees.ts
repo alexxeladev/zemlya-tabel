@@ -64,10 +64,8 @@ export const updateEmployee = (id: number, data: Partial<{
   loan_amount: string | null
   loan_term_months: number | null
   loan_start_date: string | null
-  is_active: boolean
   hire_date: string | null
   dismissal_date: string | null
-  is_system_admin: boolean
 }>, confirm = false) =>
   apiClient
     .patch<Employee>(`/api/employees/${id}`, data, { params: confirm ? { confirm: true } : {} })

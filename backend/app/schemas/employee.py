@@ -131,10 +131,17 @@ class EmployeeUpdate(BaseModel):
     loan_amount: Optional[Decimal] = None
     loan_term_months: Optional[int] = None
     loan_start_date: Optional[datetime.date] = None
-    is_active: Optional[bool] = None
     hire_date: Optional[datetime.date] = None
     dismissal_date: Optional[datetime.date] = None
-    is_system_admin: Optional[bool] = None
+    # Служебных полей здесь НЕТ намеренно (task_stage2_access п.2.5):
+    #   is_system_admin — неснимаемая учётка (её не уволить, не сбросить пароль,
+    #     не сменить роль); правкой карточки её можно было выдать себе или снять
+    #     с корневого админа;
+    #   is_active — вход в систему; включается и выключается только
+    #     увольнением/возвратом (`/dismiss`, `/rehire`), которые ставят дату и
+    #     охраняют системного админа.
+    # Переданные в запросе, они отбрасываются схемой (extra="ignore") и карточку
+    # не меняют.
 
 
 class EmployeeAccessGrant(BaseModel):

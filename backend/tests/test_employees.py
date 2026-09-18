@@ -520,3 +520,57 @@ def test_empty_tab_number_is_not_duplicate(client: TestClient, admin_user: Emplo
     resp = client.patch(f"/api/employees/{other.id}", json={"tab_number": ""}, headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["tab_number"] is None
+
+
+# ── Служебные поля в PATCH (task_stage2_access п.2.5) ─────────────────────────
+# Было: PATCH /employees/{id} принимал is_system_admin и is_active — правкой
+# карточки выдавалась неснимаемая учётка, с корневого админа снималась защита,
+# уволенный включался в обход /rehire, системный админ выключался в обход /dismiss.
+
+def _patch(client, token, emp_id, body):
+    return client.patch(
+        f"/api/employees/{emp_id}", json=body,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def test_patch_cannot_grant_system_admin(client: TestClient, admin_user: Employee, db_session):
+    target = _emp(db_session, "Обычный", email="plain@example.com", role="manager")
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = _patch(client, token, target.id, {"full_name": "Обычный", "is_system_admin": True})
+    assert resp.status_code == 200
+    db_session.refresh(target)
+    assert target.is_system_admin is False
+    assert resp.json()["is_system_admin"] is False
+
+
+def test_patch_cannot_strip_system_admin(client: TestClient, admin_user: Employee, db_session):
+    token = get_token(client, "admin@example.com", "admin123")
+    _patch(client, token, admin_user.id, {"is_system_admin": False})
+    db_session.refresh(admin_user)
+    assert admin_user.is_system_admin is True
+    # Защита на месте: системного админа по-прежнему не удалить.
+    resp = client.delete(
+        f"/api/employees/{admin_user.id}", headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_patch_cannot_deactivate_system_admin(client: TestClient, admin_user: Employee, db_session):
+    token = get_token(client, "admin@example.com", "admin123")
+    _patch(client, token, admin_user.id, {"is_active": False})
+    db_session.refresh(admin_user)
+    assert admin_user.is_active is True
+
+
+def test_patch_cannot_reactivate_dismissed(client: TestClient, admin_user: Employee, db_session):
+    """Уволенный не возвращается правкой карточки — только через /rehire."""
+    target = _emp(db_session, "Уволенный", active=False, email="gone@example.com")
+    token = get_token(client, "admin@example.com", "admin123")
+    resp = _patch(client, token, target.id, {"is_active": True})
+    assert resp.status_code == 200
+    db_session.refresh(target)
+    assert target.is_active is False
+    # И войти он по-прежнему не может.
+    login = client.post("/api/auth/login", json={"email": "gone@example.com", "password": "password123"})
+    assert login.status_code == 403
