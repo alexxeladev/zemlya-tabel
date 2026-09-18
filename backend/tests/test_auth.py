@@ -10,7 +10,7 @@ def test_login_success(client: TestClient, admin_user: Employee):
     data = resp.json()
     assert "access_token" in data
     assert data["token_type"] == "bearer"
-    assert data["must_change_password"] is True
+    assert data["must_change_password"] is False
 
 
 def test_login_wrong_password(client: TestClient, admin_user: Employee):
@@ -159,3 +159,104 @@ def test_cli_rejects_bad(bad, monkeypatch):
         cli.create_admin("cli@example.com", bad, "CLI")
     with pytest.raises(SystemExit):
         cli.reset_password("cli@example.com", bad)
+
+
+# ── Обязательная смена пароля — на сервере (task_stage2_access п.2.2) ─────────
+# Было: требование держал только React; токен пользователя с
+# must_change_password работал со всем API.
+from app.core.deps import PASSWORD_CHANGE_REQUIRED  # noqa: E402
+from app.core.security import hash_password  # noqa: E402
+from app.main import app as fastapi_app  # noqa: E402
+
+# Всё, что ограниченной сессии разрешено: свой профиль и смена пароля.
+ALLOWED_WHILE_PENDING = {("GET", "/api/auth/me"), ("POST", "/api/auth/change-password")}
+
+
+@pytest.fixture
+def pending_admin(db_session) -> Employee:
+    """Админ — чтобы отказ нельзя было списать на нехватку роли."""
+    emp = Employee(
+        full_name="Pending Admin", email="pending@example.com",
+        hashed_password=hash_password("pending123"), role="admin",
+        is_active=True, must_change_password=True,
+    )
+    db_session.add(emp)
+    db_session.commit()
+    return emp
+
+
+def _all_routes():
+    for route in fastapi_app.routes:
+        methods = getattr(route, "methods", None) or set()
+        for method in sorted(methods - {"HEAD", "OPTIONS"}):
+            yield method, route.path
+
+
+def _concrete(path: str) -> str:
+    import re
+    return re.sub(r"\{[^}]+\}", "1", path)
+
+
+def test_pending_session_rejected_on_every_protected_route(
+    client: TestClient, pending_admin: Employee
+):
+    """Любой маршрут, требующий входа, кроме профиля и смены пароля, отвечает
+    403 «Требуется сменить пароль». Список берётся из app.routes — новый
+    эндпойнт попадает под проверку сам."""
+    token = get_token(client, "pending@example.com", "pending123")
+    checked, leaks = 0, []
+    for method, path in _all_routes():
+        if (method, path) in ALLOWED_WHILE_PENDING:
+            continue
+        url = _concrete(path)
+        anon = client.request(method, url)
+        if anon.status_code != 401:
+            continue  # маршрут без входа (логин, документация) — не наш случай
+        resp = client.request(method, url, headers=_auth(token))
+        checked += 1
+        if resp.status_code != 403 or resp.json().get("detail") != PASSWORD_CHANGE_REQUIRED:
+            leaks.append(f"{method} {path} → {resp.status_code}")
+    assert checked > 100, f"обошли подозрительно мало маршрутов: {checked}"
+    assert not leaks, "ограниченная сессия прошла:\n" + "\n".join(leaks)
+
+
+def test_pending_session_can_read_profile_and_change_password(
+    client: TestClient, pending_admin: Employee
+):
+    token = get_token(client, "pending@example.com", "pending123")
+    me = client.get("/api/auth/me", headers=_auth(token))
+    assert me.status_code == 200
+    assert me.json()["must_change_password"] is True
+    resp = client.post(
+        "/api/auth/change-password",
+        json={"current_password": "pending123", "new_password": "brandnew123"},
+        headers=_auth(token),
+    )
+    assert resp.status_code in (200, 204)
+
+
+def test_session_unlocked_after_password_change(client: TestClient, pending_admin: Employee):
+    token = get_token(client, "pending@example.com", "pending123")
+    client.post(
+        "/api/auth/change-password",
+        json={"current_password": "pending123", "new_password": "brandnew123"},
+        headers=_auth(token),
+    )
+    fresh = get_token(client, "pending@example.com", "brandnew123")
+    assert client.get("/api/employees", headers=_auth(fresh)).status_code == 200
+
+
+def test_admin_reset_puts_user_into_restricted_session(
+    client: TestClient, admin_user: Employee, db_session
+):
+    """Сброс админом ставит требование — и с новым паролем до смены работать нельзя."""
+    emp = Employee(full_name="Рядовой", email="plain@example.com", role="accountant",
+                   hashed_password=hash_password("plain1234"), is_active=True)
+    db_session.add(emp)
+    db_session.commit()
+    adm = get_token(client, "admin@example.com", "admin123")
+    temp = client.post(f"/api/employees/{emp.id}/reset-password", headers=_auth(adm)).json()["temp_password"]
+    tok = get_token(client, "plain@example.com", temp)
+    resp = client.get("/api/timesheet/2026/5", headers=_auth(tok))
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == PASSWORD_CHANGE_REQUIRED

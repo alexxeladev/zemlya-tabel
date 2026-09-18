@@ -77,7 +77,11 @@ def admin_user(db_session) -> Employee:
         hashed_password=hash_password("admin123"),
         role="admin",
         is_active=True,
-        must_change_password=True,
+        # False: с обязательной сменой пароля сессия ограничена профилем и
+        # сменой пароля (task_stage2_access п.2.2) — фикстура, на которой
+        # держится половина тестов, иначе ни до чего бы не дошла. Сам режим
+        # проверяется своими пользователями в test_auth.py.
+        must_change_password=False,
         is_system_admin=True,
     )
     db_session.add(emp)

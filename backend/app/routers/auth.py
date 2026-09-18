@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user_allow_password_change
 from app.core.security import create_access_token, hash_password, verify_password
 from app.database import get_db
 from app.models.employees import Employee
@@ -37,7 +37,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 @router.post("/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(
     payload: ChangePasswordRequest,
-    current_emp: Employee = Depends(get_current_user),
+    current_emp: Employee = Depends(get_current_user_allow_password_change),
     db: Session = Depends(get_db),
 ):
     if current_emp.hashed_password is None or not verify_password(payload.current_password, current_emp.hashed_password):
@@ -48,7 +48,7 @@ def change_password(
 
 
 @router.get("/auth/me", response_model=EmployeeRead)
-def me(current_emp: Employee = Depends(get_current_user)):
+def me(current_emp: Employee = Depends(get_current_user_allow_password_change)):
     # Своя карточка — тоже карточка. Табельщику она отдаётся без денег вовсе;
     # сотруднику — со СВОИМ окладом (это его данные), но без бюджета отдела:
     # фонд ночных смен приходит вложенным в `department` (task_stage1 п.1.3).

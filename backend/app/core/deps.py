@@ -10,10 +10,14 @@ from app.services.reference_audit import set_audit_actor
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
-def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
-) -> Employee:
+# Отказ ограниченной сессии (task_stage2_access п.2.2). Текст — признак для
+# фронта (`api/client.ts` уводит на смену пароля), менять вместе с ним.
+PASSWORD_CHANGE_REQUIRED = "Требуется сменить пароль"
+
+
+def _authenticate(token: str, db: Session) -> Employee:
+    """Токен → действующий сотрудник с доступом. Ограничения сессии здесь НЕ
+    проверяются — это делают две зависимости ниже."""
     credentials_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -39,6 +43,32 @@ def get_current_user(
     # был бы помнить про аудит, и первый же новый забыл бы.
     set_audit_actor(db, emp)
     return emp
+
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> Employee:
+    """Полноценная сессия. Через неё идут ВСЕ эндпойнты, кроме своего профиля и
+    смены пароля: `require_role` и ролевые зависимости роутеров строятся поверх.
+
+    Пока у пользователя стоит `must_change_password`, сессия ограничена
+    (task_stage2_access п.2.2): раньше требование держал только React, и
+    выданным при входе токеном можно было работать со всем API.
+    """
+    emp = _authenticate(token, db)
+    if emp.must_change_password:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=PASSWORD_CHANGE_REQUIRED)
+    return emp
+
+
+def get_current_user_allow_password_change(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> Employee:
+    """Ограниченная сессия: пускает и того, кто обязан сменить пароль. Только
+    для `GET /auth/me` и `POST /auth/change-password` — больше никуда."""
+    return _authenticate(token, db)
 
 
 def require_role(*roles: str):
