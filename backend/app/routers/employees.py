@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
 from app.core.deps import get_current_user, require_role
-from app.core.security import hash_password
+from app.core.security import hash_password, revoke_sessions
 from app.database import get_db
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
@@ -433,6 +433,9 @@ def dismiss_employee(
     before = _to_dict(emp)
     emp.is_active = False
     emp.dismissal_date = payload.dismissal_date
+    # Уволенный не входит и так (is_active), но токен, выданный до увольнения,
+    # ожил бы после возврата в пределах своих 8 часов (task_stage2_access п.2.4).
+    revoke_sessions(emp)
     db.flush()
     # Уволен пятнадцатого — часы после пятнадцатого очищаются с подтверждения.
     _apply_employment_change(db, actor, emp, confirm, before_bounds)
@@ -487,6 +490,7 @@ def grant_access(
     emp.hashed_password = hash_password(payload.initial_password)
     emp.role = payload.role
     emp.must_change_password = True
+    revoke_sessions(emp)
     db.flush()
     log_action(db, actor, "employee", emp.id, "access_granted", after={"email": emp.email, "role": emp.role})
     db.commit()
@@ -538,6 +542,8 @@ def reset_password(
     temp_password = _gen_temp_password()
     emp.hashed_password = hash_password(temp_password)
     emp.must_change_password = True
+    # Сброс — это и есть «отозвать доступ»: сессии со старым паролем гаснут.
+    revoke_sessions(emp)
     db.flush()
     log_action(db, actor, "employee", emp.id, "reset_password")
     db.commit()
@@ -567,6 +573,7 @@ def revoke_access(
     emp.hashed_password = None
     emp.role = None
     emp.must_change_password = False
+    revoke_sessions(emp)
     # Без доступа в систему руководить отделами не может — связь снимаем.
     _drop_managed_departments_if_not_scoped(emp)
     db.flush()

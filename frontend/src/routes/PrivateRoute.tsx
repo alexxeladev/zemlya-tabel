@@ -32,9 +32,5 @@ export function PrivateRoute() {
     return <Navigate to="/change-password" replace />
   }
 
-  if (!mustChangePassword && location.pathname === '/change-password') {
-    return <Navigate to="/dashboard" replace />
-  }
-
   return <Outlet />
 }

@@ -36,6 +36,10 @@ export function ChangePasswordPage() {
   const [serverError, setServerError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
   const refreshUser = useAuthStore((s) => s.refreshUser)
+  const replaceToken = useAuthStore((s) => s.replaceToken)
+  // Страница двух режимов: обязательная смена (после выдачи доступа или сброса
+  // пароля — никуда больше не пускают) и добровольная, из меню.
+  const forced = useAuthStore((s) => s.mustChangePassword)
   const navigate = useNavigate()
 
   const {
@@ -47,7 +51,9 @@ export function ChangePasswordPage() {
   const onSubmit = async (data: FormData) => {
     setServerError(null)
     try {
-      await changePassword(data.currentPassword, data.newPassword)
+      const { access_token } = await changePassword(data.currentPassword, data.newPassword)
+      // Прежний токен сервер уже отозвал — дальше работаем с выданным взамен.
+      replaceToken(access_token)
       await refreshUser()
       setSuccess(true)
       setTimeout(() => navigate('/dashboard', { replace: true }), 1500)
@@ -61,7 +67,11 @@ export function ChangePasswordPage() {
       <div className="w-full max-w-sm space-y-6 rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
         <div className="space-y-1">
           <h1 className="text-2xl font-bold text-gray-900">Сменить пароль</h1>
-          <p className="text-sm text-gray-500">При первом входе необходимо сменить пароль</p>
+          <p className="text-sm text-gray-500">
+            {forced
+              ? 'Перед началом работы необходимо сменить пароль'
+              : 'На других устройствах и в других вкладках потребуется войти заново'}
+          </p>
         </div>
 
         {success ? (

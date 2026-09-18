@@ -11,12 +11,15 @@ export async function getMe(): Promise<Employee> {
   return data
 }
 
+/** Смена своего пароля отзывает ВСЕ выданные токены, включая текущий
+ *  (task_stage2_access п.2.4) — сервер отвечает новым, его надо сохранить. */
 export async function changePassword(
   currentPassword: string,
   newPassword: string,
-): Promise<void> {
-  await apiClient.post('/api/auth/change-password', {
+): Promise<TokenResponse> {
+  const { data } = await apiClient.post<TokenResponse>('/api/auth/change-password', {
     current_password: currentPassword,
     new_password: newPassword,
   })
+  return data
 }

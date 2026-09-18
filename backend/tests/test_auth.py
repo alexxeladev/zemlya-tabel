@@ -54,7 +54,8 @@ def test_change_password_resets_flag(client: TestClient, admin_user: Employee):
         json={"current_password": "admin123", "new_password": "newpass456"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
+    assert resp.json()["must_change_password"] is False
 
     resp2 = client.post("/api/auth/login", json={"email": "admin@example.com", "password": "newpass456"})
     assert resp2.status_code == 200
@@ -260,3 +261,121 @@ def test_admin_reset_puts_user_into_restricted_session(
     resp = client.get("/api/timesheet/2026/5", headers=_auth(tok))
     assert resp.status_code == 403
     assert resp.json()["detail"] == PASSWORD_CHANGE_REQUIRED
+
+
+# ── Отзыв токенов (task_stage2_access п.2.4) ─────────────────────────────────
+# Было: токен, полученный до смены пароля, работал ещё до 8 часов; отозвать
+# доступ было невозможно.
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from jose import jwt  # noqa: E402
+
+from app.config import settings  # noqa: E402
+
+
+def _me(client, token):
+    return client.get("/api/auth/me", headers=_auth(token)).status_code
+
+
+def test_old_token_dies_after_own_password_change(client: TestClient, admin_user: Employee):
+    old = get_token(client, "admin@example.com", "admin123")
+    resp = client.post(
+        "/api/auth/change-password",
+        json={"current_password": "admin123", "new_password": "newpass456"},
+        headers=_auth(old),
+    )
+    new = resp.json()["access_token"]
+    assert _me(client, old) == 401
+    assert client.get("/api/employees", headers=_auth(old)).status_code == 401
+    # Выданный взамен — работает: сменивший пароль не вылетает на вход.
+    assert _me(client, new) == 200
+
+
+def test_token_from_other_device_dies_after_password_change(client: TestClient, admin_user: Employee):
+    laptop = get_token(client, "admin@example.com", "admin123")
+    phone = get_token(client, "admin@example.com", "admin123")
+    client.post(
+        "/api/auth/change-password",
+        json={"current_password": "admin123", "new_password": "newpass456"},
+        headers=_auth(laptop),
+    )
+    assert _me(client, phone) == 401
+
+
+def test_old_token_dies_after_admin_reset(client: TestClient, admin_user: Employee, db_session):
+    emp = Employee(full_name="Жертва", email="victim@example.com", role="accountant",
+                   hashed_password=hash_password("victim123"), is_active=True)
+    db_session.add(emp)
+    db_session.commit()
+    stolen = get_token(client, "victim@example.com", "victim123")
+    assert client.get("/api/employees", headers=_auth(stolen)).status_code == 200
+    adm = get_token(client, "admin@example.com", "admin123")
+    client.post(f"/api/employees/{emp.id}/reset-password", headers=_auth(adm))
+    assert _me(client, stolen) == 401
+
+
+def test_old_token_dies_after_access_revoked_and_regranted(
+    client: TestClient, admin_user: Employee, db_session
+):
+    emp = Employee(full_name="Возврат", email="back@example.com", role="accountant",
+                   hashed_password=hash_password("back12345"), is_active=True)
+    db_session.add(emp)
+    db_session.commit()
+    before = get_token(client, "back@example.com", "back12345")
+    adm = get_token(client, "admin@example.com", "admin123")
+    assert client.delete(f"/api/employees/{emp.id}/access", headers=_auth(adm)).status_code == 204
+    client.post(
+        f"/api/employees/{emp.id}/access",
+        json={"email": "back@example.com", "role": "accountant", "initial_password": "again1234"},
+        headers=_auth(adm),
+    )
+    assert _me(client, before) == 401
+
+
+def test_old_token_dies_after_dismiss_and_rehire(client: TestClient, admin_user: Employee, db_session):
+    emp = Employee(full_name="Ушёл-пришёл", email="rehire@example.com", role="accountant",
+                   hashed_password=hash_password("rehire123"), is_active=True)
+    db_session.add(emp)
+    db_session.commit()
+    before = get_token(client, "rehire@example.com", "rehire123")
+    adm = get_token(client, "admin@example.com", "admin123")
+    client.post(f"/api/employees/{emp.id}/dismiss", json={"dismissal_date": "2026-05-15"},
+                headers=_auth(adm))
+    client.post(f"/api/employees/{emp.id}/rehire", headers=_auth(adm))
+    assert _me(client, before) == 401
+
+
+def test_cli_reset_revokes_tokens(client: TestClient, admin_user: Employee, db_session, monkeypatch):
+    from app import cli
+
+    old = get_token(client, "admin@example.com", "admin123")
+    monkeypatch.setattr("app.database.SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+    cli.reset_password("admin@example.com", "clireset123")
+    assert _me(client, old) == 401
+
+
+def test_token_without_version_claim_is_version_zero(client: TestClient, admin_user: Employee):
+    """Токен, выданный до выкатки (без `ver`), работает, пока пароль не меняли, —
+    выкатка сама никого не разлогинивает. После смены пароля — отозван."""
+    legacy = jwt.encode(
+        {"sub": str(admin_user.id), "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+        settings.SECRET_KEY, algorithm="HS256",
+    )
+    assert _me(client, legacy) == 200
+    fresh = get_token(client, "admin@example.com", "admin123")
+    client.post(
+        "/api/auth/change-password",
+        json={"current_password": "admin123", "new_password": "newpass456"},
+        headers=_auth(fresh),
+    )
+    assert _me(client, legacy) == 401
+
+
+def test_forged_version_claim_rejected(client: TestClient, admin_user: Employee):
+    bogus = jwt.encode(
+        {"sub": str(admin_user.id), "ver": "0",
+         "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+        settings.SECRET_KEY, algorithm="HS256",
+    )
+    assert _me(client, bogus) == 401

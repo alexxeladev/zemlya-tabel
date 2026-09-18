@@ -52,6 +52,24 @@ def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
+# Claim версии сессий в токене (task_stage2_access п.2.4). Токен без claim-а
+# (выдан до появления отзыва) читается как версия 0 — это исходное значение
+# колонки, поэтому выкатка сама никого не разлогинивает, а первая же смена
+# пароля отзывает и такие токены.
+TOKEN_VERSION_CLAIM = "ver"
+
+
+def token_version_of(payload: dict[str, Any]) -> int:
+    value = payload.get(TOKEN_VERSION_CLAIM, 0)
+    return value if isinstance(value, int) else -1
+
+
+def revoke_sessions(employee: Any) -> None:
+    """Отозвать все выданные сотруднику токены. Коммит — снаружи, вместе с
+    самой правкой (новый пароль и отзыв должны лечь одной транзакцией)."""
+    employee.token_version = (employee.token_version or 0) + 1
+
+
 def create_access_token(subject: str | int, extra: dict[str, Any] | None = None) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {"sub": str(subject), "exp": expire}

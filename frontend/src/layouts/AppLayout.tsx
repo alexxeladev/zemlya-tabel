@@ -110,6 +110,12 @@ export function AppLayout() {
             <p className="text-sm font-medium text-gray-800 truncate">{user?.full_name}</p>
             <p className="text-xs text-gray-500">{ROLE_LABELS[role ?? ''] ?? role}</p>
           </div>
+          <NavLink
+            to="/change-password"
+            className="block w-full rounded-md px-3 py-2 text-left text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            Сменить пароль
+          </NavLink>
           <button
             onClick={handleLogout}
             className="w-full rounded-md px-3 py-2 text-left text-sm text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"

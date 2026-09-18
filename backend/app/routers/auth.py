@@ -4,7 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user_allow_password_change
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    TOKEN_VERSION_CLAIM,
+    create_access_token,
+    hash_password,
+    revoke_sessions,
+    verify_password,
+)
 from app.database import get_db
 from app.models.employees import Employee
 from app.schemas.auth import ChangePasswordRequest, LoginRequest, TokenResponse
@@ -27,24 +33,32 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     emp.last_login_at = datetime.now(timezone.utc)
     db.commit()
 
-    token = create_access_token(subject=emp.id)
+    token = create_access_token(subject=emp.id, extra={TOKEN_VERSION_CLAIM: emp.token_version})
     return TokenResponse(
         access_token=token,
         must_change_password=emp.must_change_password,
     )
 
 
-@router.post("/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/auth/change-password", response_model=TokenResponse)
 def change_password(
     payload: ChangePasswordRequest,
     current_emp: Employee = Depends(get_current_user_allow_password_change),
     db: Session = Depends(get_db),
 ):
+    """Смена своего пароля ОТЗЫВАЕТ все выданные токены, включая тот, которым
+    пришёл запрос (task_stage2_access п.2.4), — поэтому в ответе новый токен:
+    иначе человек, сменивший пароль, тут же вылетал бы на вход."""
     if current_emp.hashed_password is None or not verify_password(payload.current_password, current_emp.hashed_password):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Wrong current password")
     current_emp.hashed_password = hash_password(payload.new_password)
     current_emp.must_change_password = False
+    revoke_sessions(current_emp)
     db.commit()
+    token = create_access_token(
+        subject=current_emp.id, extra={TOKEN_VERSION_CLAIM: current_emp.token_version}
+    )
+    return TokenResponse(access_token=token, must_change_password=False)
 
 
 @router.get("/auth/me", response_model=EmployeeRead)

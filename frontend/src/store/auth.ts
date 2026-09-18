@@ -12,6 +12,8 @@ interface AuthState {
   logout: () => void
   loadUserFromToken: () => Promise<void>
   refreshUser: () => Promise<void>
+  /** Токен, выданный взамен отозванного (после смены своего пароля). */
+  replaceToken: (token: string) => void
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -47,6 +49,11 @@ export const useAuthStore = create<AuthState>((set) => ({
       localStorage.removeItem(TOKEN_KEY)
       set({ user: null, token: null, mustChangePassword: false, isInitialized: true })
     }
+  },
+
+  replaceToken: (token: string) => {
+    localStorage.setItem(TOKEN_KEY, token)
+    set({ token })
   },
 
   refreshUser: async () => {

@@ -59,7 +59,7 @@ def create_admin(email: str, password: str, full_name: str) -> None:
 
 
 def reset_password(email: str, new_password: str) -> None:
-    from app.core.security import hash_password
+    from app.core.security import hash_password, revoke_sessions
     from app.database import SessionLocal
     from app.models.employees import Employee
 
@@ -73,6 +73,7 @@ def reset_password(email: str, new_password: str) -> None:
 
         emp.hashed_password = hash_password(new_password)
         emp.must_change_password = True
+        revoke_sessions(emp)
         db.commit()
         print(f"Password reset for '{email}'. must_change_password=True")
     finally:

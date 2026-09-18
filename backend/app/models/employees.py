@@ -92,6 +92,12 @@ class Employee(Base):
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
     is_system_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Версия сессий (task_stage2_access п.2.4): уходит в токен claim-ом `ver` и
+    # сверяется на каждом запросе. Смена/сброс пароля и снятие/выдача доступа
+    # поднимают её — все ранее выданные токены перестают работать.
+    token_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
 
     # Timestamps
     created_at: Mapped[str] = mapped_column(server_default=func.now())

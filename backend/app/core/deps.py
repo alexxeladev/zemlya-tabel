@@ -2,7 +2,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
-from app.core.security import decode_token
+from app.core.security import decode_token, token_version_of
 from app.database import get_db
 from app.models.employees import Employee
 from app.services.reference_audit import set_audit_actor
@@ -33,6 +33,10 @@ def _authenticate(token: str, db: Session) -> Employee:
 
     emp = db.get(Employee, int(employee_id))
     if emp is None:
+        raise credentials_exc
+    # Отозванная сессия (task_stage2_access п.2.4): пароль сменили или сбросили,
+    # доступ сняли — токен, выданный до этого, больше не действует.
+    if token_version_of(payload) != (emp.token_version or 0):
         raise credentials_exc
     if emp.email is None or emp.role is None:
         raise credentials_exc
