@@ -195,6 +195,15 @@ class EmployeePosition(Base):
         Boolean, default=False, server_default="false", nullable=False
     )
 
+    # Должность ОХРАНЫ — ссылка на справочник вахты (`guard_job_titles`); у
+    # обычных рабочих мест пусто. Связь по ключу, а не по названию: переименование
+    # должности в справочнике штат не ломает. `title` при этом дублирует имя
+    # должности — его читают табель, ведомость и Excel, и он единственная
+    # «должность» у обычных позиций.
+    job_title_id: Mapped[int | None] = mapped_column(
+        ForeignKey("guard_job_titles.id"), nullable=True, index=True
+    )
+
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
@@ -205,6 +214,7 @@ class EmployeePosition(Base):
     employee: Mapped[Employee] = relationship(
         "Employee", back_populates="positions", foreign_keys=[employee_id]
     )
+    job_title = relationship("GuardJobTitle")
     department: Mapped[Optional[Department]] = relationship(
         "Department", back_populates="positions"
     )

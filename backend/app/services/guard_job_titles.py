@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.models.guard_job_titles import (
     DEFAULT_GUARD_JOB_TITLES,
+    GUARD_PAY_PER_SHIFT,
     GUARD_PAY_TYPES,
     GuardJobTitle,
 )
-from app.models.positions import PAY_TYPE_SALARY, EmployeePosition
+from app.models.positions import EmployeePosition
 from app.services.guard_duty import GuardError
 
 
@@ -68,27 +69,32 @@ def resolve_job_title(db: Session, job_title_id: int | None, place) -> GuardJobT
     return get_job_title(db, job_title_id)
 
 
-def job_title_of_position(db: Session, position: EmployeePosition) -> GuardJobTitle | None:
-    """Должность охранного рабочего места — по названию, как её пишет вахта.
+def title_index(db: Session) -> dict[str, GuardJobTitle]:
+    """Справочник одним запросом: {имя в нижнем регистре: должность}. Для списков
+    (штат) — чтобы не ходить в базу на каждую строку."""
+    return {t.name.lower(): t for t in db.query(GuardJobTitle).all()}
 
-    Отдельной колонки у позиции нет: `title` и есть имя должности. Название
-    переименовали или снесли — подбираем по типу оплаты (оклад → первая
-    окладная, иначе первая посменная), чтобы штат не остался без должности.
+
+def job_title_of_position(
+    position: EmployeePosition, index: dict[str, GuardJobTitle] | None = None
+) -> GuardJobTitle | None:
+    """Должность охранного рабочего места.
+
+    Связь — по ключу `EmployeePosition.job_title_id`. Позиции, заведённые до
+    этой связи, узнаются по названию ОДИН раз (`index` — справочник по имени),
+    и ссылка при этом проставляется; название ни с чем не совпало — `None`, и
+    экран показывает настоящее `title` с пустой должностью. Подменять её
+    «первой подходящей по типу оплаты» нельзя: следующее сохранение карточки
+    молча переписало бы должность человека (нашло ревью).
     """
-    name = (position.title or "").strip().lower()
-    if name:
-        # Сравнение без регистра — в Python: SQL-`lower()` в SQLite не знает
-        # кириллицу, а справочник — десяток строк.
-        found = next((t for t in db.query(GuardJobTitle).all() if t.name.lower() == name), None)
-        if found is not None:
-            return found
-    wanted = PAY_TYPE_SALARY if position.pay_type == PAY_TYPE_SALARY else "per_shift"
-    return (
-        db.query(GuardJobTitle)
-        .filter(GuardJobTitle.pay_type == wanted, GuardJobTitle.is_active == True)  # noqa: E712
-        .order_by(GuardJobTitle.sort_order, GuardJobTitle.id)
-        .first()
-    )
+    if position.job_title is not None:
+        return position.job_title
+    if index is None:
+        return None
+    found = index.get((position.title or "").strip().lower())
+    if found is not None:
+        position.job_title_id = found.id
+    return found
 
 
 # ── Правка справочника ────────────────────────────────────────────────────────
@@ -113,44 +119,111 @@ def save_job_title(db: Session, title: GuardJobTitle | None, data: dict) -> Guar
     активной должности каждое (флаг переезжает, а не дублируется); снять
     должность по умолчанию нельзя — сначала назначьте другую.
     """
-    if title is None:
+    from app.models.positions import EmployeePosition
+
+    is_new = title is None
+    # Всё проверяется ДО первой записи: иначе половина правок уже легла бы в
+    # сессию к моменту отказа (ревью).
+    name = None
+    if "name" in data or is_new:
+        name = (data.get("name") or "").strip()
+        if len(name) < 2:
+            raise GuardJobTitleError("Укажите название должности")
+        _check_name_free(db, name, None if is_new else title.id)
+    pay_type = None
+    if "pay_type" in data or is_new:
+        pay_type = data.get("pay_type") or GUARD_PAY_PER_SHIFT
+        if pay_type not in GUARD_PAY_TYPES:
+            raise GuardJobTitleError("Способ оплаты: «ставка за смену» или «оклад за месяц»")
+        if not is_new and pay_type != title.pay_type:
+            closed = closed_months_using(db, title)
+            if closed:
+                raise GuardJobTitleClosedMonths(title, closed)
+    deactivate = not is_new and data.get("is_active") is False and title.is_active
+    if deactivate:
+        if title.default_for_post or title.default_for_crew:
+            raise GuardJobTitleError(
+                "Это должность по умолчанию — сначала назначьте по умолчанию другую"
+            )
+        others = [
+            t for t in db.query(GuardJobTitle).filter(GuardJobTitle.is_active == True)  # noqa: E712
+            if t.id != title.id and t.pay_type == title.pay_type
+        ]
+        if not others:
+            raise GuardJobTitleError(
+                f"Это последняя активная должность с оплатой «{title.pay_type_label.lower()}» — "
+                "снять её нельзя"
+            )
+    for flag in ("default_for_post", "default_for_crew"):
+        if data.get(flag) is True and (deactivate or (not is_new and not title.is_active and data.get("is_active") is not True)):
+            raise GuardJobTitleError("Снятая должность не может быть должностью по умолчанию")
+        if data.get(flag) is False and not is_new and getattr(title, flag):
+            raise GuardJobTitleError(
+                "Снять «по умолчанию» можно только назначив по умолчанию другую должность"
+            )
+
+    if is_new:
         title = GuardJobTitle()
         # Новая должность встаёт В КОНЕЦ списка, а не вклинивается первой.
         last = db.query(GuardJobTitle).order_by(GuardJobTitle.sort_order.desc()).first()
         title.sort_order = (last.sort_order if last else 0) + 1
         db.add(title)
-    if "name" in data or title.name is None:
-        name = (data.get("name") or "").strip()
-        if len(name) < 2:
-            raise GuardJobTitleError("Укажите название должности")
-        _check_name_free(db, name, title.id)
+    old_name = title.name
+    if name is not None:
         title.name = name
-    if "pay_type" in data or title.pay_type is None:
-        pay_type = data.get("pay_type") or "per_shift"
-        if pay_type not in GUARD_PAY_TYPES:
-            raise GuardJobTitleError("Способ оплаты: «ставка за смену» или «оклад за месяц»")
+    if pay_type is not None:
         title.pay_type = pay_type
     if "sort_order" in data and data["sort_order"] is not None:
         title.sort_order = int(data["sort_order"])
     if "is_active" in data and data["is_active"] is not None:
-        if data["is_active"] is False and (title.default_for_post or title.default_for_crew):
-            raise GuardJobTitleError(
-                "Это должность по умолчанию — сначала назначьте по умолчанию другую"
-            )
         title.is_active = bool(data["is_active"])
     db.flush()
     for flag in ("default_for_post", "default_for_crew"):
         if data.get(flag) is True:
-            if not title.is_active:
-                raise GuardJobTitleError("Снятая должность не может быть должностью по умолчанию")
             setattr(title, flag, True)
             _clear_default(db, flag, title)
-        elif data.get(flag) is False and getattr(title, flag):
-            raise GuardJobTitleError(
-                "Снять «по умолчанию» можно только назначив по умолчанию другую должность"
-            )
+    # Переименование доезжает до рабочих мест: `title` позиции — подпись в
+    # табеле, ведомости и Excel, и она обязана совпадать со справочником.
+    if old_name is not None and title.name != old_name:
+        for position in db.query(EmployeePosition).filter(EmployeePosition.job_title_id == title.id).all():
+            position.title = title.name
     db.flush()
     return title
+
+
+class GuardJobTitleClosedMonths(GuardJobTitleError):
+    """Смена способа оплаты задела бы закрытые месяцы."""
+
+    def __init__(self, title: GuardJobTitle, months: list[tuple[int, int]]) -> None:
+        self.months = months
+        listed = ", ".join(f"{m:02d}.{y}" for y, m in months)
+        super().__init__(
+            f"Способ оплаты должности «{title.name}» менять нельзя: она стоит в строках "
+            f"закрытых месяцев ({listed}), и расчёт этих месяцев изменился бы задним "
+            "числом. Заведите новую должность с нужной оплатой и переведите людей на неё"
+        )
+
+
+def closed_months_using(db: Session, title: GuardJobTitle) -> list[tuple[int, int]]:
+    """(год, месяц) закрытых периодов, где есть строки вахты с этой должностью.
+
+    Снапшота расчёта в системе нет: способ оплаты читается живьём, и его смена
+    переписала бы ведомость, которую бухгалтерия уже видела. Закрытость — как у
+    ячеек: статус периода табеля отдела места работы, `closed`.
+    """
+    from app.models.guard_assignments import GuardAssignment
+    from app.models.timesheet_periods import TimesheetPeriod
+
+    months: set[tuple[int, int]] = set()
+    rows = db.query(GuardAssignment).filter(GuardAssignment.job_title_id == title.id).all()
+    if not rows:
+        return []
+    keys = {(a.department_id, a.year, a.month) for a in rows}
+    closed = db.query(TimesheetPeriod).filter(TimesheetPeriod.status == "closed").all()
+    for period in closed:
+        if (period.department_id, period.year, period.month) in keys:
+            months.add((period.year, period.month))
+    return sorted(months)
 
 
 def job_title_usage(db: Session, title: GuardJobTitle) -> int:
@@ -160,11 +233,40 @@ def job_title_usage(db: Session, title: GuardJobTitle) -> int:
     return db.query(GuardAssignment).filter(GuardAssignment.job_title_id == title.id).count()
 
 
+def usage_counts(db: Session) -> dict[int, tuple[int, int, int]]:
+    """{id должности: (строк табеля, из них в закрытых месяцах, рабочих мест)}
+    одним проходом — для списка справочника, без COUNT на строку."""
+    from sqlalchemy import func
+
+    from app.models.guard_assignments import GuardAssignment
+    from app.models.positions import EmployeePosition
+    from app.models.timesheet_periods import TimesheetPeriod
+
+    rows = {r[0]: r[1] for r in db.query(GuardAssignment.job_title_id, func.count()).group_by(GuardAssignment.job_title_id)}
+    positions = {r[0]: r[1] for r in db.query(EmployeePosition.job_title_id, func.count()).group_by(EmployeePosition.job_title_id)}
+    closed_keys = {
+        (p.department_id, p.year, p.month)
+        for p in db.query(TimesheetPeriod).filter(TimesheetPeriod.status == "closed")
+    }
+    closed: dict[int, int] = {}
+    if closed_keys:
+        for a in db.query(GuardAssignment).all():
+            if (a.department_id, a.year, a.month) in closed_keys:
+                closed[a.job_title_id] = closed.get(a.job_title_id, 0) + 1
+    ids = set(rows) | set(positions) | set(closed)
+    return {i: (rows.get(i, 0), closed.get(i, 0), positions.get(i, 0)) for i in ids if i is not None}
+
+
 def delete_job_title(db: Session, title: GuardJobTitle) -> str:
     """Удалить неиспользуемую должность; использованную — только снять."""
     if title.default_for_post or title.default_for_crew:
         raise GuardJobTitleError("Это должность по умолчанию — сначала назначьте другую")
-    if job_title_usage(db, title):
+    from app.models.positions import EmployeePosition
+
+    used_by_staff = db.query(EmployeePosition).filter(EmployeePosition.job_title_id == title.id).count()
+    if job_title_usage(db, title) or used_by_staff:
+        # Рабочие места штата тоже ссылка: физически удалить — оставить людей
+        # без должности (ревью).
         title.is_active = False
         db.flush()
         return "deactivated"

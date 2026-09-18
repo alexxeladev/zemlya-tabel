@@ -20,7 +20,8 @@ import { Modal } from '../Modal'
  * встают на пост объекта и в экипаж ГБР, если должность не выбрали явно.
  *
  * Смена способа оплаты у должности, на которой уже стоят люди, пересчитывает
- * все НЕЗАКРЫТЫЕ месяцы — об этом спрашивается подтверждение.
+ * открытые месяцы — об этом спрашивается подтверждение; есть строки в ЗАКРЫТЫХ
+ * месяцах — бэк отказывает (409), снапшота расчёта в системе нет.
  */
 export function JobTitlesTab({ canManage }: { canManage: boolean }) {
   const [titles, setTitles] = useState<GuardJobTitle[]>([])
@@ -60,8 +61,9 @@ export function JobTitlesTab({ canManage }: { canManage: boolean }) {
   }
 
   const remove = async (t: GuardJobTitle) => {
-    const question = t.usage_count
-      ? `На должности «${t.name}» стоят ${t.usage_count} строк табеля — удалить её нельзя, она будет снята (пропадёт из выбора, в истории останется). Снять?`
+    const used = t.usage_count + t.staff_count
+    const question = used
+      ? `На должности «${t.name}» стоят ${t.usage_count} строк табеля и ${t.staff_count} рабочих мест — удалить её нельзя, она будет снята (пропадёт из выбора, у людей и в истории останется). Снять?`
       : `Удалить должность «${t.name}»?`
     if (!window.confirm(question)) return
     try {
@@ -95,6 +97,7 @@ export function JobTitlesTab({ canManage }: { canManage: boolean }) {
             <th className="px-3 py-2">Название</th>
             <th className="px-3 py-2">Оплата</th>
             <th className="px-3 py-2">По умолчанию</th>
+            <th className="px-3 py-2 text-right">Рабочих мест</th>
             <th className="px-3 py-2 text-right">Строк табеля</th>
             <th className="px-3 py-2" />
           </tr>
@@ -132,7 +135,15 @@ export function JobTitlesTab({ canManage }: { canManage: boolean }) {
                   </button>
                 )}
               </td>
-              <td className="px-3 py-2 text-right tabular-nums">{t.usage_count}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{t.staff_count}</td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {t.usage_count}
+                {t.closed_usage_count > 0 && (
+                  <span className="ml-1 text-xs text-slate-400" title="в закрытых месяцах — способ оплаты уже не сменить">
+                    ({t.closed_usage_count} закр.)
+                  </span>
+                )}
+              </td>
               <td className="px-3 py-2 text-right text-xs">
                 {canManage && (
                   <>
@@ -149,7 +160,7 @@ export function JobTitlesTab({ canManage }: { canManage: boolean }) {
                         onClick={() => void remove(t)}
                         className="cursor-pointer text-red-600 hover:underline"
                       >
-                        {t.usage_count ? 'Снять' : 'Удалить'}
+                        {t.usage_count + t.staff_count ? 'Снять' : 'Удалить'}
                       </button>
                     ) : (
                       <button
@@ -202,7 +213,11 @@ function JobTitleModal({
       title.usage_count > 0 &&
       !window.confirm(
         `На должности «${title.name}» стоят ${title.usage_count} строк табеля. Смена способа ` +
-          'оплаты пересчитает все незакрытые месяцы, где стоят эти люди. Продолжить?',
+          'оплаты пересчитает открытые месяцы, где стоят эти люди' +
+          (title.closed_usage_count > 0
+            ? `; в закрытых месяцах (${title.closed_usage_count} строк) она не допускается — сохранение будет отклонено`
+            : '') +
+          '. Продолжить?',
       )
     )
       return

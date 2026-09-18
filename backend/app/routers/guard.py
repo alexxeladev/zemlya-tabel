@@ -104,10 +104,12 @@ from app.services.guard_duty import (
 )
 from app.services.guard_export import generate_guard_timesheet_excel
 from app.services.guard_job_titles import (
+    GuardJobTitleClosedMonths,
     delete_job_title,
     get_job_title,
     job_title_of_position,
-    job_title_usage,
+    title_index,
+    usage_counts,
     list_job_titles,
     save_job_title,
 )
@@ -236,13 +238,14 @@ def patch_settings(
 # (табельщик выбирает должность, ставя человека на пост), правят — те же, кто
 # правит настройки: admin и менеджер охраны.
 
-def _job_title_read(db: Session, title) -> GuardJobTitleRead:
+def _job_title_read(title, usage: dict[int, tuple[int, int, int]]) -> GuardJobTitleRead:
+    rows, closed, staff = usage.get(title.id, (0, 0, 0))
     return GuardJobTitleRead(
         id=title.id, name=title.name, pay_type=title.pay_type,
         pay_type_label=title.pay_type_label,
         default_for_post=title.default_for_post, default_for_crew=title.default_for_crew,
         sort_order=title.sort_order, is_active=title.is_active,
-        usage_count=job_title_usage(db, title),
+        usage_count=rows, closed_usage_count=closed, staff_count=staff,
     )
 
 
@@ -253,7 +256,8 @@ def get_job_titles(
     actor: Employee = Depends(get_current_user),
 ):
     _require_vahta(actor)
-    return [_job_title_read(db, t) for t in list_job_titles(db, include_inactive=include_inactive)]
+    usage = usage_counts(db)
+    return [_job_title_read(t, usage) for t in list_job_titles(db, include_inactive=include_inactive)]
 
 
 @router.post("/job-titles", response_model=GuardJobTitleRead, status_code=status.HTTP_201_CREATED)
@@ -272,7 +276,7 @@ def post_job_title(
                after={"name": title.name, "pay_type": title.pay_type})
     db.commit()
     db.refresh(title)
-    return _job_title_read(db, title)
+    return _job_title_read(title, usage_counts(db))
 
 
 @router.patch("/job-titles/{title_id}", response_model=GuardJobTitleRead)
@@ -292,13 +296,15 @@ def patch_job_title(
     before = {"name": title.name, "pay_type": title.pay_type, "is_active": title.is_active}
     try:
         save_job_title(db, title, payload.model_dump(exclude_unset=True))
+    except GuardJobTitleClosedMonths as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     except GuardError as exc:
         raise _guard_error(exc)
     log_action(db, actor, "guard_job_title", title.id, "update", before=before,
                after={"name": title.name, "pay_type": title.pay_type, "is_active": title.is_active})
     db.commit()
     db.refresh(title)
-    return _job_title_read(db, title)
+    return _job_title_read(title, usage_counts(db))
 
 
 @router.delete("/job-titles/{title_id}")
@@ -1232,13 +1238,15 @@ def export_excel(
 
 
 def _staff_read(
-    db: Session,
     position: EmployeePosition,
     places: dict[int, list[str]],
     official: dict[int, bool],
+    titles: dict[str, GuardJobTitle],
 ) -> GuardStaffRead:
     employee = position.employee
-    title = job_title_of_position(db, position)
+    # `titles` — справочник одним запросом на весь список (ревью: было по два
+    # запроса на строку). Позиция без ссылки узнаётся по названию один раз.
+    title = job_title_of_position(position, titles)
     return GuardStaffRead(
         employee_id=employee.id,
         position_id=position.id,
@@ -1305,8 +1313,9 @@ def get_staff(
         _access(db, actor, department_id)
         department_ids = [department_id]
     places, official = _staff_month_context(db, department_ids, year, month)
+    titles = title_index(db)
     return [
-        _staff_read(db, p, places, official)
+        _staff_read(p, places, official, titles)
         for p in list_staff_positions(db, department_ids)
     ]
 
@@ -1341,7 +1350,7 @@ def post_staff(
     )
     db.commit()
     db.refresh(position)
-    return _staff_read(db, position, {}, {})
+    return _staff_read(position, {}, {}, title_index(db))
 
 
 @router.patch("/staff/{position_id}", response_model=GuardStaffRead)
@@ -1393,4 +1402,4 @@ def patch_staff(
     )
     db.commit()
     db.refresh(position)
-    return _staff_read(db, position, {}, {})
+    return _staff_read(position, {}, {}, title_index(db))

@@ -78,15 +78,17 @@ def downgrade() -> None:
         sa.Column("kind", sa.String(20), nullable=False, server_default="guard"),
     )
     conn = op.get_bind()
-    rows = conn.execute(sa.text("select id, name from guard_job_titles")).all()
-    by_name = {name: title_id for title_id, name in rows}
-    for kind, name, *_ in _TITLES:
-        title_id = by_name.get(name)
-        if title_id is not None:
-            conn.execute(
-                sa.text("update guard_assignments set kind = :kind where job_title_id = :tid"),
-                {"kind": kind, "tid": title_id},
-            )
+    # Свои и переименованные должности в четвёрку кодов не отобразить — они
+    # сворачиваются по СПОСОБУ ОПЛАТЫ (оклад → chief, иначе guard), чтобы откат
+    # не превратил окладную строку в посменную. Подпись при этом теряется.
+    rows = conn.execute(sa.text("select id, name, pay_type from guard_job_titles")).all()
+    by_name = {name: kind for kind, name, *_ in _TITLES}
+    for title_id, name, pay_type in rows:
+        kind = by_name.get(name) or ("chief" if pay_type == "salary" else "guard")
+        conn.execute(
+            sa.text("update guard_assignments set kind = :kind where job_title_id = :tid"),
+            {"kind": kind, "tid": title_id},
+        )
     op.drop_index("ix_guard_assignments_job_title_id", table_name="guard_assignments")
     op.drop_column("guard_assignments", "job_title_id")
     op.drop_table("guard_job_titles")

@@ -909,6 +909,10 @@ export interface GuardJobTitle {
   is_active: boolean
   /** сколько строк табеля (за все месяцы) стоят на этой должности */
   usage_count: number
+  /** из них в ЗАКРЫТЫХ месяцах — при них способ оплаты не меняется (409) */
+  closed_usage_count: number
+  /** рабочих мест штата на этой должности */
+  staff_count: number
 }
 
 export interface GuardJobTitleInput {

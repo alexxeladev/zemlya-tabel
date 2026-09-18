@@ -247,6 +247,7 @@ def ensure_transfer_into_guard_allowed(
     from sqlalchemy import or_
 
     from app.models.employee_adjustments import EmployeeAdjustment
+    from app.models.night_shifts import NightShift
     from app.models.timesheet_entries import TimesheetEntry
 
     def owned(model):
@@ -260,6 +261,11 @@ def ensure_transfer_into_guard_allowed(
     hours = owned(TimesheetEntry).count()
     if hours:
         found.append(_plural(hours, "ячейка часов", "ячейки часов", "ячеек часов"))
+    # Ночная смена привязана к позиции (position_id обязателен) и оплачивается
+    # надбавкой — после перевода пропала бы из расчёта так же, как часы.
+    nights = db.query(NightShift).filter(NightShift.position_id == position.id).count()
+    if nights:
+        found.append(_plural(nights, "ночная смена", "ночные смены", "ночных смен"))
     adjustments = owned(EmployeeAdjustment).count()
     if adjustments:
         found.append(_plural(
@@ -308,14 +314,22 @@ def pin_loan_before_primary_change(
 # ── Должность ↔ тип оплаты ────────────────────────────────────────────────────
 
 def apply_job_title(position: EmployeePosition, title: GuardJobTitle, amount: Decimal | None) -> None:
-    """Должность из справочника, тип оплаты от неё и сумма в поле базы этого типа.
+    """Должность из справочника (ссылка + подпись), тип оплаты от неё и сумма в
+    поле базы этого типа.
 
-    У позиции своей колонки должности нет: её имя пишется в `title`, и по нему же
-    рабочее место потом узнаётся (`guard_job_titles.job_title_of_position`).
-    Базы чужих типов гасятся — как везде в системе, иначе расчёт возьмёт не то.
+    `job_title_id` — связь; `title` дублирует имя должности, потому что его
+    читают табель, ведомость и Excel. Базы чужих типов гасятся — как везде в
+    системе, иначе расчёт возьмёт не то.
     """
+    position.job_title_id = title.id
     position.title = title.name
     position.pay_type = title.pay_type
+    for pay_type, base_field in PAY_TYPE_BASE_FIELD.items():
+        setattr(position, base_field, amount if pay_type == position.pay_type else None)
+
+
+def apply_amount(position: EmployeePosition, amount: Decimal | None) -> None:
+    """Только сумма — по ТЕКУЩЕМУ типу оплаты рабочего места, должность не трогая."""
     for pay_type, base_field in PAY_TYPE_BASE_FIELD.items():
         setattr(position, base_field, amount if pay_type == position.pay_type else None)
 
@@ -441,11 +455,14 @@ def update_staff(
             "Рабочее место не в охранном подразделении — оно ведётся в общем справочнике"
         )
 
-    from app.services.guard_job_titles import get_job_title, job_title_of_position
+    from app.services.guard_job_titles import get_job_title
 
-    title = (
-        get_job_title(db, data["job_title_id"]) if "job_title_id" in data
-        else job_title_of_position(db, position)
+    # Перевод из охраны — должность не нужна (в обычном отделе её ведёт
+    # справочник); экран шлёт `job_title_id: 0`/пусто — это не ошибка.
+    leaving = "department_id" in data and not is_guard_department_id(db, data["department_id"])
+    new_title = (
+        get_job_title(db, data["job_title_id"])
+        if data.get("job_title_id") and not leaving else None
     )
     amount = data["amount"] if "amount" in data else amount_of(position)
     hire = data["hire_date"] if "hire_date" in data else position.hire_date
@@ -464,8 +481,12 @@ def update_staff(
         if not is_guard_department(dept):
             warning = TransferOutWarning(department_name=dept.name)
 
-    if ("job_title_id" in data or "amount" in data) and title is not None:
-        apply_job_title(position, title, amount)
+    # Должность меняется только явно; сумма — всегда по текущему типу оплаты.
+    # Раньше при несовпавшей должности сумма молча не сохранялась (ревью).
+    if new_title is not None:
+        apply_job_title(position, new_title, amount)
+    elif "amount" in data:
+        apply_amount(position, amount)
     position.hire_date = hire
     position.dismissal_date = dismissal
     position.department_id = target

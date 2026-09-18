@@ -178,11 +178,166 @@ class TestStaff:
         me = next(r for r in rows if r["position_id"] == rodionov.primary_position.id)
         assert me["job_title_id"] == _title_id(db_session, "Начальник охраны")
 
-    def test_staff_row_with_unknown_name_falls_back_by_pay_type(self, client, users, db_session, rodionov):
-        rodionov.primary_position.title = "Кто-то из прошлого"
+
+# ── По итогам ревью ───────────────────────────────────────────────────────────
+
+from app.models.timesheet_periods import TimesheetPeriod  # noqa: E402
+
+
+def _close(db_session, dept, year=YEAR, month=MONTH):
+    db_session.add(TimesheetPeriod(department_id=dept.id, year=year, month=month, status="closed"))
+    db_session.commit()
+
+
+class TestClosedMonths:
+    def test_pay_type_change_is_refused_when_title_is_in_a_closed_month(
+        self, client, users, db_session, gbr_place, guard_dept, rodionov,
+    ):
+        """Снапшота расчёта нет: смена способа оплаты переписала бы ведомость,
+        которую бухгалтерия уже видела. Отказ с перечнем месяцев."""
+        dispatcher = _title_id(db_session, "Диспетчер")
+        create_assignment(db_session, year=YEAR, month=MONTH, place=gbr_place,
+                          position=rodionov.primary_position, job_title_id=dispatcher,
+                          rate=Decimal("5000"), days=FIRST_HALF)
         db_session.commit()
-        rows = client.get("/api/vahta/staff", params={"year": YEAR, "month": MONTH},
-                          headers=_auth(client, "admin")).json()
+        _close(db_session, guard_dept)
+
+        resp = client.patch(f"{URL}/{dispatcher}", json={"pay_type": "salary"}, headers=_auth(client, "admin"))
+
+        assert resp.status_code == 409, resp.text
+        assert f"{MONTH:02d}.{YEAR}" in resp.json()["detail"]
+        db_session.expire_all()
+        assert db_session.get(GuardJobTitle, dispatcher).pay_type == "per_shift"
+        assert build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH).rows[0].accrued_total == Decimal("75000.00")
+
+    def test_rename_in_a_closed_month_is_fine(self, client, users, db_session, gbr_place, guard_dept, rodionov):
+        """Название — подпись, деньги не трогает."""
+        dispatcher = _title_id(db_session, "Диспетчер")
+        create_assignment(db_session, year=YEAR, month=MONTH, place=gbr_place,
+                          position=rodionov.primary_position, job_title_id=dispatcher, days=FIRST_HALF)
+        db_session.commit()
+        _close(db_session, guard_dept)
+        resp = client.patch(f"{URL}/{dispatcher}", json={"name": "Диспетчер ПЦН"}, headers=_auth(client, "admin"))
+        assert resp.status_code == 200, resp.text
+
+    def test_usage_is_split_by_period_status(self, client, users, db_session, gbr_place, guard_dept, rodionov):
+        dispatcher = _title_id(db_session, "Диспетчер")
+        create_assignment(db_session, year=YEAR, month=MONTH, place=gbr_place,
+                          position=rodionov.primary_position, job_title_id=dispatcher, days=FIRST_HALF)
+        db_session.commit()
+        _close(db_session, guard_dept)
+        me = next(t for t in _titles(client) if t["id"] == dispatcher)
+        assert me["usage_count"] == 1 and me["closed_usage_count"] == 1
+
+
+class TestPositionsAreLinkedByKey:
+    """Рабочее место ссылается на должность по FK, а не по названию: переименование
+    и снятие должности штат не ломают (ревью)."""
+
+    def test_rename_keeps_staff_on_the_same_title(self, client, users, db_session, rodionov):
+        chief = _title_id(db_session, "Начальник охраны")
+        client.patch(f"/api/vahta/staff/{rodionov.primary_position.id}",
+                     json={"job_title_id": chief, "amount": "135000"}, headers=_auth(client, "admin"))
+        client.patch(f"{URL}/{chief}", json={"name": "Начальник службы безопасности"}, headers=_auth(client, "admin"))
+
+        rows = client.get("/api/vahta/staff", params={"year": YEAR, "month": MONTH}, headers=_auth(client, "admin")).json()
         me = next(r for r in rows if r["position_id"] == rodionov.primary_position.id)
-        assert me["job_title_id"] == _title_id(db_session, "Охранник")
-        assert me["job_title_name"] == "Охранник"
+        assert me["job_title_id"] == chief
+        assert me["job_title_name"] == "Начальник службы безопасности"
+        db_session.expire_all()
+        assert db_session.get(type(rodionov.primary_position), rodionov.primary_position.id).title == "Начальник службы безопасности"
+
+    def test_title_used_only_by_staff_is_not_physically_deleted(self, client, users, db_session, rodionov):
+        dispatcher = _title_id(db_session, "Диспетчер")
+        client.patch(f"/api/vahta/staff/{rodionov.primary_position.id}",
+                     json={"job_title_id": dispatcher}, headers=_auth(client, "admin"))
+        resp = client.delete(f"{URL}/{dispatcher}", headers=_auth(client, "admin"))
+        assert resp.json() == {"result": "deactivated"}
+        assert db_session.get(GuardJobTitle, dispatcher) is not None
+
+    def test_editing_amount_does_not_rewrite_the_title(self, client, users, db_session, rodionov):
+        """Правка суммы при снятой должности не подменяет должность фолбэком."""
+        dispatcher = _title_id(db_session, "Диспетчер")
+        client.patch(f"/api/vahta/staff/{rodionov.primary_position.id}",
+                     json={"job_title_id": dispatcher, "amount": "4000"}, headers=_auth(client, "admin"))
+        client.patch(f"{URL}/{dispatcher}", json={"is_active": False}, headers=_auth(client, "admin"))
+
+        resp = client.patch(f"/api/vahta/staff/{rodionov.primary_position.id}",
+                            json={"amount": "4500"}, headers=_auth(client, "admin"))
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["job_title_name"] == "Диспетчер"
+        assert Decimal(resp.json()["amount"]) == Decimal("4500")
+
+    def test_legacy_position_without_link_is_matched_by_name_once(self, client, users, db_session, rodionov):
+        """Позиции до миграции: название совпало с должностью — привязка ставится
+        при первом чтении, неизвестное название — пусто, без подмены."""
+        pos = rodionov.primary_position
+        pos.job_title_id = None
+        pos.title = "гбр"
+        db_session.commit()
+        rows = client.get("/api/vahta/staff", params={"year": YEAR, "month": MONTH}, headers=_auth(client, "admin")).json()
+        me = next(r for r in rows if r["position_id"] == pos.id)
+        assert me["job_title_id"] == _title_id(db_session, "ГБР")
+
+        pos.job_title_id = None
+        pos.title = "Кто-то из прошлого"
+        db_session.commit()
+        rows = client.get("/api/vahta/staff", params={"year": YEAR, "month": MONTH}, headers=_auth(client, "admin")).json()
+        me = next(r for r in rows if r["position_id"] == pos.id)
+        assert me["job_title_id"] is None and me["job_title_name"] == "Кто-то из прошлого"
+
+    def test_staff_list_does_not_query_titles_per_row(self, client, users, db_session, guard_dept):
+        from sqlalchemy import event
+
+        from tests.conftest import engine
+        from tests.test_vahta import _employee
+
+        for i in range(6):
+            _employee(db_session, f"Охранник Номер {i}", guard_dept, f"0000-9040{i}")
+        seen = []
+        listener = lambda conn, cur, stmt, *a: seen.append(stmt) if "guard_job_titles" in stmt else None  # noqa: E731
+        event.listen(engine, "before_cursor_execute", listener)
+        try:
+            client.get("/api/vahta/staff", params={"year": YEAR, "month": MONTH}, headers=_auth(client, "admin"))
+        finally:
+            event.remove(engine, "before_cursor_execute", listener)
+        assert len(seen) <= 2, f"запросов к справочнику: {len(seen)} на 7 рабочих мест"
+
+
+class TestReplaceAndStaffEdgeCases:
+    def test_replacement_inherits_a_deactivated_title(self, client, users, db_session, gbr_place, rodionov):
+        from app.services.guard_duty import replace_on_post
+        from tests.test_vahta import _employee
+
+        dispatcher = _title_id(db_session, "Диспетчер")
+        a = create_assignment(db_session, year=YEAR, month=MONTH, place=gbr_place,
+                              position=rodionov.primary_position, job_title_id=dispatcher, days=FIRST_HALF)
+        db_session.commit()
+        client.patch(f"{URL}/{dispatcher}", json={"is_active": False}, headers=_auth(client, "admin"))
+        other = _employee(db_session, "Сменщик Иван", rodionov.primary_position.department, "0000-90277")
+
+        kept, successor = replace_on_post(db_session, a, position=other.primary_position, from_day=5)
+
+        assert successor is not None and successor.job_title_id == dispatcher
+
+    def test_transfer_out_of_guard_does_not_need_a_title(self, client, users, db_session, rodionov, other_dept):
+        resp = client.patch(f"/api/vahta/staff/{rodionov.primary_position.id}",
+                            params={"confirm": True},
+                            json={"department_id": other_dept.id, "job_title_id": 0}, headers=_auth(client, "admin"))
+        assert resp.status_code == 200, resp.text
+
+    def test_default_flag_and_deactivation_in_one_request_change_nothing(self, client, users, db_session):
+        dispatcher = _title_id(db_session, "Диспетчер")
+        resp = client.patch(f"{URL}/{dispatcher}", json={"is_active": False, "default_for_post": True},
+                            headers=_auth(client, "admin"))
+        assert resp.status_code == 422
+        db_session.expire_all()
+        t = db_session.get(GuardJobTitle, dispatcher)
+        assert t.is_active is True and t.default_for_post is False
+
+    def test_last_active_title_of_a_pay_type_cannot_be_deactivated(self, client, users, db_session):
+        chief = _title_id(db_session, "Начальник охраны")
+        resp = client.patch(f"{URL}/{chief}", json={"is_active": False}, headers=_auth(client, "admin"))
+        assert resp.status_code == 422
+        assert "оклад" in resp.json()["detail"].lower()

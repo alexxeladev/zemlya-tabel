@@ -523,6 +523,7 @@ def create_assignment(
     job_title_id: int | None = None,
     fill_days: bool = True,
     days: set[int] | None = None,
+    inherit_title: bool = False,
 ) -> GuardAssignment:
     """Поставить человека на МЕСТО РАБОТЫ (пост объекта или экипаж ГБР).
 
@@ -537,13 +538,20 @@ def create_assignment(
 
     ensure_guard_position(db, position, place)
     is_post = isinstance(place, GuardPost)
+    # `inherit_title` — должность НАСЛЕДУЕТСЯ от существующей строки (замена на
+    # посту, копирование периода): снятую тогда не отвергаем, иначе строку со
+    # снятой должностью нельзя было бы заменить (ревью).
+    title_id = (
+        job_title_id if inherit_title and job_title_id is not None
+        else resolve_job_title(db, job_title_id, place).id
+    )
     assignment = GuardAssignment(
         year=year,
         month=month,
         post_id=place.id if is_post else None,
         crew_id=None if is_post else place.id,
         position_id=position.id if position else None,
-        job_title_id=resolve_job_title(db, job_title_id, place).id,
+        job_title_id=title_id,
         rate=rate if rate is not None else default_rate(place),
         sort_order=_next_sort_order(db, year, month, place),
     )
@@ -706,6 +714,7 @@ def replace_on_post(
         rate=rate if rate is not None else assignment.rate,
         # Сменщик встаёт на ту же должность, что и прежний.
         job_title_id=assignment.job_title_id,
+        inherit_title=True,
         days=moved,
     )
     return assignment, successor

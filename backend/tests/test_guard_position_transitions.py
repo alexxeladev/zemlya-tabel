@@ -253,3 +253,17 @@ def test_transfer_between_ordinary_departments_is_untouched(
     db_session.add(target)
     db_session.commit()
     assert _transfer_position(client, admin, office_worker, target).status_code == 200
+
+
+def test_night_shifts_block_the_transfer(client, admin, db_session, office_worker, guard_dept):
+    """Ночная смена привязана к позиции и оплачивается надбавкой — после перевода
+    в охрану она стала бы невидимой для расчёта так же, как часы (ревью)."""
+    from app.models.night_shifts import NightShift
+
+    office_worker.primary_position.has_night_shifts = True
+    db_session.add(NightShift(employee_id=office_worker.id, position_id=office_worker.primary_position.id,
+                              work_date=date(YEAR, MONTH, 5)))
+    db_session.commit()
+    resp = _transfer_position(client, admin, office_worker, guard_dept)
+    assert resp.status_code == 422
+    assert "ночн" in resp.json()["detail"].lower()

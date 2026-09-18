@@ -328,7 +328,9 @@ function StaffModal({
     try {
       const base: VahtaStaffInput = {
         department_id: Number(draft.department_id),
-        job_title_id: Number(draft.job_title_id),
+        // Перевод из охраны — должность не нужна (в обычном отделе её ведёт
+        // справочник); пустой выбор не шлём вовсе, иначе бэк искал бы должность #0.
+        ...(draft.job_title_id && !transferOut ? { job_title_id: Number(draft.job_title_id) } : {}),
         amount: orNull(draft.amount),
         hire_date: orNull(draft.hire_date),
         dismissal_date: orNull(draft.dismissal_date),
