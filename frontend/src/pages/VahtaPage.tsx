@@ -39,6 +39,9 @@ import { formatMoney } from '../utils/money'
 import { UI_KEYS } from '../utils/persist'
 import { companyLabel } from '../utils/companies'
 import { defaultJobTitleId, useGuardJobTitles } from '../hooks/useGuardJobTitles'
+import { ConfirmDialog } from '../components/ds/ConfirmDialog'
+import { RowMenu, type MenuItem } from '../components/ds/Menu'
+import { MONTHS_RU_PREP } from '../utils/ruDate'
 
 // Должности — справочник вахты (настройки → «Должности»), а не константа
 // экрана: грузятся хуком useGuardJobTitles и передаются строкам и окнам.
@@ -68,6 +71,17 @@ const COL_RATE_W = 76
 const DAY_W = 20
 const LEFT_ROLE = COL_NAME_W
 const LEFT_RATE = COL_NAME_W + COL_ROLE_W
+
+/**
+ * «4 чел. · 5 строк» у экипажа и объекта. Считаются ЛЮДИ (уникальные), а строк
+ * бывает больше — человек на двух половинах месяца или на двух постах одного
+ * объекта. Пустое место — «никого».
+ */
+function placeCount(card: VahtaCard): string {
+  const people = new Set(card.rows.filter((r) => r.employee_id).map((r) => r.employee_id)).size
+  const head = people ? `${people} чел.` : 'никого'
+  return card.rows.length > people ? `${head} · ${plural(card.rows.length, 'строка', 'строки', 'строк')}` : head
+}
 
 function money(value: string | null | undefined): string {
   return formatMoney(value ?? null, { showZero: true })
@@ -137,6 +151,12 @@ interface PersonRowProps {
   onReplace: (row: VahtaRow) => void
   onRemove: (row: VahtaRow) => void
   onKind: (row: VahtaRow, jobTitleId: number) => void
+  /** Ставка СТРОКИ правится прямо в ячейке (была только во вкладке «Состав»). */
+  onRate: (row: VahtaRow, value: string) => Promise<boolean>
+  /** Ставка места по умолчанию — чтобы пометить строку со своей ставкой. */
+  placeRate: string | null
+  /** Пост строки — только у объектов с двумя и больше постами, иначе null. */
+  postLabel: string | null
   jobTitles: GuardJobTitle[]
 }
 
@@ -165,8 +185,36 @@ function highlight(text: string | null, query: string) {
 const PersonRow = memo(
   function PersonRow({
     row, firstDay, lastDay, midDay, showMoney, canManage, canEdit, canOpenCard, query,
-    onPaintStart, onPaintOver, onMoney, onReplace, onRemove, onKind, jobTitles,
+    onPaintStart, onPaintOver, onMoney, onReplace, onRemove, onKind, onRate, placeRate,
+    postLabel, jobTitles,
   }: PersonRowProps) {
+    const [rateDraft, setRateDraft] = useState<string | null>(null)
+    const ownRate =
+      placeRate !== null && parseFloat(row.rate ?? '0') !== parseFloat(placeRate)
+    const saveRate = async () => {
+      if (rateDraft === null) return
+      const value = rateDraft.trim().replace(',', '.')
+      if (value === String(parseFloat(row.rate ?? '0'))) return setRateDraft(null)
+      if (!/^\d+(\.\d{1,2})?$/.test(value)) {
+        toast.error('Ставка — число, например 4500')
+        return
+      }
+      if (await onRate(row, value)) setRateDraft(null)
+    }
+    // Меню строки: разрушающее «Снять с поста» — в меню, а не красной кнопкой в
+    // каждой из 85 строк (редизайн §4.3). Табельщик снимает с поста тоже —
+    // бэк ему это разрешает (решение заказчика).
+    const menuItems: MenuItem[] = canEdit
+      ? row.employee_id
+        ? [
+            { label: 'Заменить…', hint: 'кто сменит на посту с выбранного дня', onSelect: () => onReplace(row) },
+            { label: 'Снять с поста…', danger: true, onSelect: () => onRemove(row) },
+          ]
+        : [
+            { label: 'Поставить человека…', onSelect: () => onReplace(row) },
+            { label: 'Убрать свободное место…', danger: true, onSelect: () => onRemove(row) },
+          ]
+      : []
     const marked = useMemo(() => new Set(row.days), [row.days])
     const days = useMemo(
       () => Array.from({ length: lastDay - firstDay + 1 }, (_, i) => firstDay + i),
@@ -236,13 +284,52 @@ const PersonRow = memo(
           ) : (
             row.job_title_name
           )}
+          {postLabel && (
+            <span className="block truncate px-1 text-[11px] text-slate-500" title={`Пост: ${postLabel}`}>
+              пост {postLabel}
+            </span>
+          )}
         </td>
 
         <td
           className="sticky z-10 border-r border-slate-200 bg-[#FBFBF9] px-2 py-1 text-right tabular-nums group-hover:bg-slate-50"
           style={{ left: LEFT_RATE, width: COL_RATE_W, minWidth: COL_RATE_W }}
         >
-          {showMoney ? money(row.rate) : ''}
+          {!showMoney ? (
+            ''
+          ) : rateDraft !== null ? (
+            <input
+              autoFocus
+              value={rateDraft}
+              aria-label={`Ставка строки: ${row.employee_name ?? 'вакансия'}`}
+              onChange={(e) => setRateDraft(e.target.value)}
+              onBlur={() => void saveRate()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void saveRate()
+                if (e.key === 'Escape') setRateDraft(null)
+              }}
+              className="w-[84px] rounded border border-sky-500 px-1.5 py-0.5 text-right tabular-nums"
+            />
+          ) : canManage ? (
+            <button
+              type="button"
+              onClick={() => setRateDraft(String(parseFloat(row.rate ?? '0')))}
+              title={
+                ownRate
+                  ? `Своя ставка строки; у места ${money(placeRate)}. Клик — изменить`
+                  : 'Ставка этой строки. Клик — изменить'
+              }
+              className="cursor-pointer rounded border border-dashed border-transparent px-1 py-0.5 tabular-nums hover:border-slate-400 hover:bg-white"
+            >
+              {ownRate && <span className="mr-1 text-[10.5px] font-medium text-teal-800">своя</span>}
+              {money(row.rate)}
+            </button>
+          ) : (
+            <>
+              {ownRate && <span className="mr-1 text-[10.5px] font-medium text-teal-800">своя</span>}
+              {money(row.rate)}
+            </>
+          )}
         </td>
 
         {days.map((day) => (
@@ -347,26 +434,7 @@ const PersonRow = memo(
         )}
 
         <td className="px-1 py-1 text-right whitespace-nowrap" style={{ width: 48 }}>
-          {canEdit && (
-            <button
-              type="button"
-              title="Кто сменит на посту"
-              onClick={() => onReplace(row)}
-              className="cursor-pointer rounded px-1.5 text-slate-300 hover:bg-slate-200 hover:text-slate-700"
-            >
-              ⋯
-            </button>
-          )}
-          {canManage && (
-            <button
-              type="button"
-              title="Убрать из табеля"
-              onClick={() => onRemove(row)}
-              className="cursor-pointer rounded px-1.5 text-slate-300 hover:bg-slate-200 hover:text-red-700"
-            >
-              ✕
-            </button>
-          )}
+          <RowMenu items={menuItems} label={`Действия: ${row.employee_name ?? 'свободное место'}`} />
         </td>
       </tr>
     )
@@ -386,6 +454,8 @@ const PersonRow = memo(
     a.row.job_title_name === b.row.job_title_name &&
     a.jobTitles === b.jobTitles &&
     a.row.employee_name === b.row.employee_name &&
+    a.placeRate === b.placeRate &&
+    a.postLabel === b.postLabel &&
     a.query === b.query &&
     a.showMoney === b.showMoney &&
     a.canManage === b.canManage &&
@@ -446,6 +516,19 @@ export function VahtaPage() {
 
   const zones = data?.zones ?? []
   const places = useMemo(() => placesOf(sites, crews), [sites, crews])
+  // Ставка места по умолчанию (пометка «своя» у строки) и пост в строке — только
+  // у объектов, где постов больше одного: иначе пост совпадает с объектом.
+  const postInfo = useMemo(() => {
+    const map = new Map<number, { rate: string | null; multi: boolean }>()
+    for (const site of sites)
+      for (const post of site.posts)
+        map.set(post.id, { rate: post.effective_rate ?? null, multi: site.posts.length > 1 })
+    return map
+  }, [sites])
+  const crewRate = useMemo(
+    () => new Map(crews.map((c) => [c.id, c.shift_rate ?? null] as const)),
+    [crews],
+  )
   const showMoney = Boolean(data?.can_see_money)
   const canEdit = Boolean(data?.can_edit)
   const jobTitles = useGuardJobTitles()
@@ -608,15 +691,39 @@ export function VahtaPage() {
     }
   }
 
-  const handleRemove = useCallback(
-    async (row: VahtaRow) => {
-      if (!window.confirm('Убрать строку из табеля? Сотрудник останется в справочнике.'))
-        return
+  // Снятие с поста — через подтверждение, которое называет последствия
+  // (ux-copy): человек, место, месяц, сколько смен удалится; что он остаётся в штате.
+  const [removing, setRemoving] = useState<VahtaRow | null>(null)
+  const [removeBusy, setRemoveBusy] = useState(false)
+  const handleRemove = useCallback((row: VahtaRow) => setRemoving(row), [])
+  const confirmRemove = async () => {
+    if (!removing) return
+    setRemoveBusy(true)
+    try {
+      await deleteVahtaAssignment(removing.id)
+      toast.success(
+        removing.employee_name
+          ? `${removing.employee_name} снят с поста «${removing.post_name}»`
+          : 'Свободное место убрано',
+      )
+      setRemoving(null)
+      await reload()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не удалось снять с поста')
+    } finally {
+      setRemoveBusy(false)
+    }
+  }
+
+  const onRate = useCallback(
+    async (row: VahtaRow, value: string) => {
       try {
-        await deleteVahtaAssignment(row.id)
+        await updateVahtaAssignment(row.id, { rate: value })
         await reload()
+        return true
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : 'Не удалось убрать строку')
+        toast.error(e instanceof Error ? e.message : 'Не удалось сохранить ставку')
+        return false
       }
     },
     [reload],
@@ -971,10 +1078,14 @@ export function VahtaPage() {
                             {highlight(card.name, query)}
                           </span>
                         </td>
+                        {/* Сколько ЛЮДЕЙ на месте и сколько строк: у человека на
+                            двух половинах месяца строк две, а человек один. */}
                         <td
-                          className="sticky z-10 border-b border-slate-200 bg-slate-100/70"
+                          className="sticky z-10 whitespace-nowrap border-b border-slate-200 bg-slate-100/70 px-2 text-[11.5px] text-slate-600"
                           style={{ left: LEFT_ROLE }}
-                        />
+                        >
+                          {placeCount(card)}
+                        </td>
                         <td
                           className="sticky z-10 border-b border-r border-slate-200 bg-slate-100/70"
                           style={{ left: LEFT_RATE }}
@@ -1028,6 +1139,19 @@ export function VahtaPage() {
                           onReplace={onReplace}
                           onRemove={handleRemove}
                           onKind={onKind}
+                          onRate={onRate}
+                          placeRate={
+                            row.crew_id !== null
+                              ? crewRate.get(row.crew_id) ?? null
+                              : row.post_id !== null
+                                ? postInfo.get(row.post_id)?.rate ?? null
+                                : null
+                          }
+                          postLabel={
+                            row.post_id !== null && postInfo.get(row.post_id)?.multi
+                              ? row.post_name
+                              : null
+                          }
                           jobTitles={jobTitles}
                         />
                       ))}
@@ -1105,6 +1229,34 @@ export function VahtaPage() {
       </div>
 
       {/* ── Окна ──────────────────────────────────────────────────────────── */}
+      {removing && (
+        <ConfirmDialog
+          title={removing.employee_name ? 'Снять с поста?' : 'Убрать свободное место?'}
+          confirmLabel={removing.employee_name ? 'Снять с поста' : 'Убрать место'}
+          cancelLabel="Оставить"
+          danger
+          busy={removeBusy}
+          onConfirm={() => void confirmRemove()}
+          onCancel={() => setRemoving(null)}
+        >
+          {removing.employee_name ? (
+            <>
+              Снять {removing.employee_name} с поста «{removing.post_name}» в{' '}
+              {MONTHS_RU_PREP[month - 1]}?{' '}
+              {removing.days.length > 0
+                ? `Отмеченные смены (${removing.days.length}) удалятся из табеля.`
+                : 'Отмеченных смен нет.'}{' '}
+              Сотрудник остаётся в штате охраны.
+            </>
+          ) : (
+            <>
+              Убрать свободное место «{removing.job_title_name}» на «{removing.post_name}» в{' '}
+              {MONTHS_RU_PREP[month - 1]}? В других месяцах оно не пропадёт.
+            </>
+          )}
+        </ConfirmDialog>
+      )}
+
       {replaceRow && (
         <ReplaceModal
           row={replaceRow}
