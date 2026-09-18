@@ -111,7 +111,7 @@ export function JobTitlesTab({ canManage }: { canManage: boolean }) {
   const td = 'border-b border-ds-line px-3 py-2 align-middle'
 
   return (
-    <div className="max-w-[980px]">
+    <div>
       {canManage && (
         <div className="mb-3">
           <DsButton variant="primary" icon="plus" onClick={() => setEditing('new')}>
@@ -128,10 +128,10 @@ export function JobTitlesTab({ canManage }: { canManage: boolean }) {
         <thead>
           <tr>
             <th className={`${th} text-left`}>Название</th>
-            <th className={`${th} text-left`}>Оплата</th>
-            <th className={`${th} text-left`}>По умолчанию</th>
-            <th className={`${th} text-right`}>Рабочих мест</th>
-            <th className={`${th} text-right`}>Строк табеля</th>
+            <th className={`${th} w-[200px] text-left`}>Оплата</th>
+            <th className={`${th} w-[220px] text-left`}>По умолчанию</th>
+            <th className={`${th} w-[140px] text-right`}>Рабочих мест</th>
+            <th className={`${th} w-[140px] text-right`}>Строк табеля</th>
             <th className={`${th} w-12`}>
               <span className="sr-only">Действия</span>
             </th>

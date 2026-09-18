@@ -374,12 +374,12 @@ export function ZonesTab({ year, month }: { year: number; month: number }) {
           Измените запрос — поиск идёт по зонам, объектам и постам.
         </EmptyState>
       ) : (
-        <table className="w-full max-w-[1180px] border-separate border-spacing-0 overflow-hidden rounded-ds-lg border border-ds-line bg-ds-surface text-[13px]">
+        <table className="w-full border-separate border-spacing-0 overflow-hidden rounded-ds-lg border border-ds-line bg-ds-surface text-[13px]">
           <thead>
             <tr>
               <th className={`${th} text-left`}>Зона, объект и пост</th>
               <th className={`${th} w-[170px] text-right`}>Ставка за смену</th>
-              <th className={`${th} w-[300px] text-left`}>Юрлицо</th>
+              <th className={`${th} w-[360px] text-left`}>Юрлицо</th>
               <th className={`${th} w-[120px] text-right`}>Людей ({MONTHS_RU[month - 1].toLowerCase()})</th>
               <th className={`${th} w-12`}>
                 <span className="sr-only">Действия</span>
