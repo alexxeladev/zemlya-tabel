@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Optional
 
@@ -59,7 +60,6 @@ from app.services.positions import (
     department_employment_rows,
     departments_with_employees,
     entries_by_position,
-    visible_positions,
 )
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 
@@ -179,6 +179,14 @@ def months_in_range(
     return out
 
 
+def _all_employees_for_month(db: Session, year: int, month: int) -> list[Employee]:
+    """Все несистемные сотрудники, видимые в месяце (то, что видит admin):
+    кэш общий, видимость режется при чтении."""
+    # Не ORM-объект: транзиентный Employee мог бы утечь в сессию через каскад.
+    admin_scope = SimpleNamespace(role="admin", id=None, managed_departments=[])
+    return visible_employees_for_actor(db, admin_scope, None, year=year, month=month)
+
+
 def _month_payrolls(
     db: Session,
     actor: Employee,
@@ -187,17 +195,65 @@ def _month_payrolls(
     companies_by_id: dict[int, tuple[str, str]],
     calendars_cache: dict[int, dict | None],
 ) -> _MonthResults:
-    """Расчёт ЗП всех видимых сотрудников за месяц — тот же путь, что в табеле."""
+    """Расчёт ЗП всех видимых сотрудников за месяц — тот же путь, что в табеле.
+
+    Через КЭШ (task_perf, `services/dashboard_cache`): итоги месяца по всем
+    рабочим местам лежат в `dashboard_month_cache` и пересчитываются только
+    когда версии данных месяца или справочника ушли вперёд. Кэш хранит всех,
+    видимость актора применяется поверх (`restore_results`): менеджер получает
+    ровно те же строки, что дал бы живой расчёт по его отделам.
+    """
+    from app.services.dashboard_cache import (
+        current_versions, load_month, restore_results, serialize_results, store_month,
+    )
+    from app.services.org_access import accessible_department_ids
+
+    allowed = set(accessible_department_ids(actor, None)) if is_department_scoped(actor) else None
+    # Сотрудник видит только себя — как `visible_employees_for_actor`.
+    only_emp = actor.id if actor.role == "employee" else None
+    cached = load_month(db, year, month)
+    if cached is not None:
+        return restore_results(cached, allowed, only_emp)
+
+    # Промах: считаем ВСЕХ (как admin) на версиях, снятых до расчёта, кладём в
+    # кэш и отдаём актору его часть.
+    versions = current_versions(db, year, month)
+    full, extras = _compute_month_payrolls(db, year, month, companies_by_id, calendars_cache)
+    rows = serialize_results(full, extras)
+    store_month(db, year, month, versions, rows)
+    return restore_results(rows, allowed, only_emp)
+
+
+def _compute_month_payrolls(
+    db: Session,
+    year: int,
+    month: int,
+    companies_by_id: dict[int, tuple[str, str]],
+    calendars_cache: dict[int, dict | None],
+) -> tuple[_MonthResults, dict[tuple[int, int | None], tuple[Decimal, Decimal]]]:
+    """Живой расчёт месяца по ВСЕМ сотрудникам и активным позициям (область
+    admin): результат идёт в кэш, из него режется видимость.
+
+    Вторым значением — по рабочему месту два показателя округления из
+    ВЕДОМОСТИ (`build_payroll_statement`, без actor-а = все активные позиции):
+    хвост округления «к выплате» и нераспределённый остаток. Из результатов
+    расчёта их не получить (там нет премий/удержаний и распределения), а без
+    кэша ведомость всей компании строилась бы при каждом открытии (~1 с)."""
     if year not in calendars_cache:
         cal = db.query(ProductionCalendar).filter_by(year=year).first()
         calendars_cache[year] = cal.data if cal else None
     calendar_data = calendars_cache[year]
 
-    employees = visible_employees_for_actor(db, actor, None, year=year, month=month)
+    employees = _all_employees_for_month(db, year, month)
     entries = get_month_entries(db, employees, year, month)
     by_emp: dict[int, list] = {}
     for e in entries:
         by_emp.setdefault(e.employee_id, []).append(e)
+    # Отделы позиций — одним запросом на месяц, а не ленивой догрузкой на
+    # каждую позицию (диагностика: 27× SELECT departments на открытие).
+    dept_ids = {p.department_id for emp in employees for p in emp.positions if p.department_id}
+    if dept_ids:
+        db.query(Department).filter(Department.id.in_(dept_ids)).all()
 
     # Отсутствия — тоже часть ФОТ (отпускные/больничные), иначе дашборд
     # разойдётся с /payroll у сотрудников с ОТ/Б.
@@ -222,7 +278,7 @@ def _month_payrolls(
     results: _MonthResults = []
     for emp in employees:
         by_position = entries_by_position(emp, by_emp.get(emp.id, []))
-        for position in visible_positions(emp, actor) or [emp.primary_position]:
+        for position in emp.active_positions or [emp.primary_position]:
             guard_row = guard_rows.get(position.id) if position is not None else None
             if guard_row is not None:
                 results.append((
@@ -243,7 +299,13 @@ def _month_payrolls(
                     night_rate=night.rate_of(position),
                 ),
             ))
-    return results
+
+    statement = build_payroll_statement(db, employees, entries, year, month)
+    extras = {
+        (r.employee_id, r.position_id): (r.rounding_tail, r.unallocated_remainder)
+        for r in statement.rows
+    }
+    return results, extras
 
 
 # ── Блок 1: часы ──────────────────────────────────────────────────────────────
@@ -328,10 +390,8 @@ def _payroll_totals(
     )
 
 
-def _rounding_and_unallocated(
-    db: Session, actor: Employee, year: int, month: int
-) -> tuple[Decimal, Decimal]:
-    """Два РАЗНЫХ показателя округления за месяц, одним проходом.
+def _rounding_and_unallocated(results: _MonthResults) -> tuple[Decimal, Decimal]:
+    """Два РАЗНЫХ показателя округления за месяц из кэшированных итогов.
 
     1. «Эффект округления» — Σ хвостов округления «к выплате» до 1000 ₽. Знак
        ЛЮБОЙ и по строкам, и в сумме: вниз оседает в пользу компании (+), вверх
@@ -342,15 +402,14 @@ def _rounding_and_unallocated(
 
     Смешивать их нельзя: первый про выплату, второй про затраты юрлиц.
 
-    Считается через `build_payroll_statement` — тот же путь, что у ведомости
-    (премии/KPI/удержания и распределение в ФОТ дашборда не входят, поэтому из
-    результатов _month_payrolls этих чисел не получить). Видимость по ролям —
-    через `visible_employees_for_actor` (manager видит только свой отдел).
+    По строке оба берутся у ведомости (`_compute_month_payrolls` кладёт их в
+    кэш вместе с итогами), здесь только складываются — уже по видимым актору
+    рабочим местам, так что менеджер получает сумму по своим отделам.
     """
-    employees = visible_employees_for_actor(db, actor, None, year=year, month=month)
-    entries = get_month_entries(db, employees, year, month)
-    statement = build_payroll_statement(db, employees, entries, year, month, actor)
-    return statement.total_rounding_tail, statement.total_unallocated_remainder
+    return (
+        sum((p.rounding_tail for *_, p in results), _ZERO),
+        sum((p.unallocated_remainder for *_, p in results), _ZERO),
+    )
 
 
 def _payroll_by_department(db: Session, results: _MonthResults) -> list[DepartmentPayrollRead]:
@@ -599,7 +658,7 @@ def build_dashboard(
     rounding, unallocated = _ZERO, _ZERO
     if include_money:
         for y, m in months:
-            tail, rest = _rounding_and_unallocated(db, actor, y, m)
+            tail, rest = _rounding_and_unallocated(by_month[(y, m)])
             rounding += tail
             unallocated += rest
     trend_months = months if len(months) > 1 else _last_n_months(year, month, TREND_MONTHS)

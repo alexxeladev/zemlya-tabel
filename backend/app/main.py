@@ -21,10 +21,11 @@ from app.routers.guard import router as guard_router
 from app.routers.org import router as org_router
 from app.routers.schedules import router as schedules_router
 from app.routers.timesheet import router as timesheet_router
-# `reference_audit` импортируется РАДИ ПОБОЧНОГО ЭФФЕКТА: он регистрирует
+# `reference_audit` и `dashboard_cache` импортируются РАДИ ПОБОЧНОГО ЭФФЕКТА: они регистрируют
 # слушатели сессии, которые ведут журнал изменений справочников. Без этого
 # импорта журнал молча пуст.
 from app.services import reference_audit  # noqa: F401
+from app.services.dashboard_cache import drop_cache
 from app.services.calendar import CalendarFetchError, ensure_calendar
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,16 @@ async def lifespan(app: FastAPI):
             logger.warning("Could not preload calendar for %d: %s", year, exc)
         except Exception as exc:
             logger.warning("Skipping calendar preload for %d: %s", year, exc)
+    # Кэш дашборда (services/dashboard_cache): версии поднимаются ПОСЛЕ коммита
+    # данных; процесс, убитый ровно между ними (рестарт на деплое), оставил бы
+    # кэш месяца устаревшим навсегда. Сброс на старте закрывает этот случай —
+    # ценой одного пересчёта при первом открытии после рестарта.
+    try:
+        with SessionLocal() as db:
+            drop_cache(db)
+            db.commit()
+    except Exception as exc:
+        logger.warning("Could not drop dashboard cache on startup: %s", exc)
     yield
 
 

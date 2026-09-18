@@ -91,6 +91,7 @@ def reset_data(assume_yes: bool = False) -> None:
     from app.models.loan_deductions import LoanDeduction
     from app.models.positions import EmployeePosition
     from app.models.production_calendars import ProductionCalendar
+    from app.models.dashboard_cache import DashboardMonthCache, DataVersion
     from app.models.reference_changes import ReferenceChange
     from app.models.schedules import Schedule
     from app.models.timesheet_entries import TimesheetEntry
@@ -128,6 +129,10 @@ def reset_data(assume_yes: bool = False) -> None:
             # ключей у него нет, поэтому падать нечему — но и смысла хранить
             # историю стёртой базы тоже.
             ReferenceChange,
+            # Кэш итогов дашборда и его счётчики версий: считаны по стёртым
+            # данным, а bulk-сиды поднять версию не могут (мимо ORM).
+            DashboardMonthCache,
+            DataVersion,
             TimesheetEntry,
             TimesheetPeriod,
             EmployeeAbsence,

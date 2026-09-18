@@ -632,6 +632,11 @@ def generate_demo_data(
     stats.update({f"shares_{k}": v for k, v in shares.items()})
     period_counts = _seed_periods(rnd, db, departments, months, qa)
     stats.update({f"periods_{k}": v for k, v in period_counts.items()})
+    # Табель залит bulk-ом, мимо ORM — кэш дашборда об этом не узнал бы
+    # (services/dashboard_cache): стираем, следующее открытие пересчитает.
+    from app.services.dashboard_cache import drop_cache
+
+    drop_cache(db)
     db.commit()
 
     stats["companies"] = len(companies)

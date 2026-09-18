@@ -25,6 +25,7 @@ from app.models.guard_assignments import (
     GuardShift,
     half_of_day,
 )
+from app.models.dashboard_cache import DashboardMonthCache, DataVersion
 from app.models.guard_job_titles import GuardJobTitle
 from app.models.guard_posts import (
     GuardCrew,
@@ -77,6 +78,8 @@ __all__ = [
     "GuardAssignment",
     "GuardCrew",
     "GuardJobTitle",
+    "DashboardMonthCache",
+    "DataVersion",
     "GuardCrewShare",
     "GuardPost",
     "GuardSite",
