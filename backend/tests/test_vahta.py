@@ -966,3 +966,71 @@ class TestTimekeeperSeesNoMoney:
             headers=_auth(client, "timekeeper"),
         )
         assert resp.status_code == 200
+
+
+class TestAccountantReadOnly:
+    """Бухгалтер в вахте — только просмотр (task_stage2_access п.2.7).
+
+    Было: экран прятал кнопки (`can_edit`), а мутации проверяли только доступ к
+    разделу — бухгалтер через API ставил людей, отмечал смены, менял суммы и
+    удалял строки. Каждый вызов обязан дать 403 и ничего не изменить.
+    """
+
+    @pytest.fixture
+    def filled(self, db_session, gbr_place, rodionov):
+        assignment = create_assignment(
+            db_session, year=YEAR, month=MONTH, place=gbr_place,
+            position=rodionov.primary_position, days=FIRST_HALF,
+        )
+        db_session.commit()
+        return assignment
+
+    def _state(self, db_session, assignment_id):
+        db_session.expire_all()
+        rows = db_session.query(GuardAssignment).all()
+        target = db_session.get(GuardAssignment, assignment_id)
+        return (
+            len(rows),
+            sorted(s.work_date for s in target.shifts) if target else None,
+            target.premium_h1 if target else None,
+        )
+
+    def test_screen_says_read_only(self, client, users, filled):
+        resp = client.get(f"/api/vahta/{YEAR}/{MONTH}", headers=_auth(client, "accountant"))
+        assert resp.status_code == 200
+        assert resp.json()["can_edit"] is False
+
+    def test_every_mutation_is_forbidden(self, client, db_session, users, filled, gbr_place, rodionov):
+        headers = _auth(client, "accountant")
+        before = self._state(db_session, filled.id)
+        calls = [
+            ("put", "/api/vahta/day", {"assignment_id": filled.id, "day": 20, "value": True}),
+            ("put", "/api/vahta/days", {"assignment_id": filled.id, "days": [1, 2]}),
+            ("patch", f"/api/vahta/assignments/{filled.id}", {"premium_h1": "500"}),
+            ("patch", f"/api/vahta/assignments/{filled.id}", {"note": "бухгалтер"}),
+            ("post", "/api/vahta/assignments", {
+                "year": YEAR, "month": MONTH, "crew_id": gbr_place.id,
+                "position_id": rodionov.primary_position.id,
+            }),
+            ("post", "/api/vahta/assignments", {"year": YEAR, "month": MONTH, "crew_id": gbr_place.id}),
+            ("post", "/api/vahta/replace", {
+                "assignment_id": filled.id, "from_day": 10, "employee_id": rodionov.id,
+            }),
+            ("delete", f"/api/vahta/assignments/{filled.id}", None),
+        ]
+        for method, url, body in calls:
+            kwargs = {"headers": headers}
+            if body is not None:
+                kwargs["json"] = body
+            resp = getattr(client, method)(url, **kwargs)
+            assert resp.status_code == 403, f"{method.upper()} {url} {body} → {resp.status_code}"
+        assert self._state(db_session, filled.id) == before
+
+    @pytest.mark.parametrize("role", ["admin", "manager", "timekeeper"])
+    def test_editing_roles_still_mark_shifts(self, client, db_session, users, filled, role):
+        resp = client.put(
+            "/api/vahta/day",
+            json={"assignment_id": filled.id, "day": 20, "value": True},
+            headers=_auth(client, role),
+        )
+        assert resp.status_code == 200

@@ -189,6 +189,17 @@ def _row_read(
     )
 
 
+#: Кто ПРАВИТ табель вахты: смены, люди на местах, замены, строки (task_stage2_access
+#: п.2.7). Бухгалтер раздел видит, но только смотрит — его работа начинается на
+#: проверке периода. Единственное место этого списка: экран (`can_edit`) и
+#: мутации роутера (`_require_timesheet_edit`) спрашивают только его.
+VAHTA_EDIT_ROLES = ("admin", "manager", "timekeeper")
+
+
+def can_edit_vahta(actor) -> bool:
+    return actor.role in VAHTA_EDIT_ROLES
+
+
 def build_guard_month(
     db: Session,
     actor: Employee,
@@ -341,7 +352,7 @@ def build_guard_month(
         employer_tax_percent=tax_percent if with_money else None,
         halves=half_totals,
         company_totals=company_totals,
-        can_edit=actor.role in ("admin", "manager", "timekeeper") and period_lock is None,
+        can_edit=can_edit_vahta(actor) and period_lock is None,
         period_lock=period_lock,
         can_see_money=with_money,
     )

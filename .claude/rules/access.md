@@ -157,3 +157,22 @@
   (nginx/балансировщик препрода). Пока препрод на `http://…:8080`, пароль и токен
   идут по сети открытым текстом.
 - Тесты — `backend/tests/test_login_security.py` (28).
+
+### Бухгалтер в вахте — только просмотр (п.2.7)
+
+- **Один предикат — `can_edit_vahta` / `VAHTA_EDIT_ROLES` (admin, manager,
+  timekeeper) в `services/guard_month.py`.** Его спрашивают и экран
+  (`GuardMonthRead.can_edit`), и роутер (`_require_timesheet_edit` в
+  `routers/guard.py`). Было: экран прятал кнопки, а мутации проверяли только
+  доступ к разделу (`_require_vahta`), и бухгалтер через API ставил людей,
+  отмечал смены, менял премии и удалял строки.
+- Закрыты все шесть мутаций табеля: `POST /vahta/assignments`,
+  `PATCH /vahta/assignments/{id}` (в том числе должность и примечание, не только
+  деньги), `DELETE /vahta/assignments/{id}`, `PUT /vahta/day`, `PUT /vahta/days`,
+  `POST /vahta/replace` — 403 «Табель вахты для этой роли — только просмотр».
+  Справочник, копирование периода, быстрый найм и штат и раньше были за
+  `_require_settings` (admin, manager). Выгрузка Excel бухгалтеру открыта.
+- Новый эндпойнт, меняющий табель вахты, — через `_require_timesheet_edit`, а не
+  `_require_vahta`.
+- Тесты — `backend/tests/test_vahta.py::TestAccountantReadOnly` (все мутации под
+  бухгалтером → 403 и данные не изменились; admin/manager/табельщик смену ставят).

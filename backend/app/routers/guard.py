@@ -120,7 +120,7 @@ from app.services.guard_staff import (
     list_staff_positions,
     update_staff,
 )
-from app.services.guard_month import build_guard_month
+from app.services.guard_month import build_guard_month, can_edit_vahta
 from app.services.org_access import can_see_finances
 from app.services.timesheet_periods import month_lock_status
 
@@ -142,6 +142,15 @@ def _require_settings(actor: Employee) -> None:
         raise HTTPException(
             status_code=403, detail="Настройки вахты доступны администратору и менеджеру охраны"
         )
+
+
+def _require_timesheet_edit(actor: Employee) -> None:
+    """Правка табеля вахты (task_stage2_access п.2.7). Было: мутации проверяли
+    только доступ к разделу, и бухгалтер — «только просмотр» на экране — через
+    API ставил людей, отмечал смены, менял премии и удалял строки."""
+    _require_vahta(actor)
+    if not can_edit_vahta(actor):
+        raise HTTPException(status_code=403, detail="Табель вахты для этой роли — только просмотр")
 
 
 def _require_money(actor: Employee) -> None:
@@ -855,7 +864,7 @@ def post_assignment(
     actor: Employee = Depends(get_current_user),
 ):
     """Поставить на место работы одного человека, нескольких сразу или пустой слот."""
-    _require_vahta(actor)
+    _require_timesheet_edit(actor)
     place = _place_or_404(db, actor, payload.post_id, payload.crew_id)
     _require_open_month(db, place.department_id, payload.year, payload.month)
     if payload.rate is not None:
@@ -931,7 +940,7 @@ def patch_assignment(
     Всё, кроме примечания и отметки трудоустройства, — деньги, поэтому
     табельщику эндпойнт закрыт целиком: смены он ведёт другими вызовами.
     """
-    _require_vahta(actor)
+    _require_timesheet_edit(actor)
     assignment = _editable_assignment_or_404(db, actor, assignment_id)
     data = payload.model_dump(exclude_unset=True)
     # Должность — не деньги: её правит и табельщик. Всё остальное в этой форме
@@ -961,7 +970,7 @@ def remove_assignment(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    _require_vahta(actor)
+    _require_timesheet_edit(actor)
     assignment = _editable_assignment_or_404(db, actor, assignment_id)
     log_action(db, actor, "guard_assignment", assignment_id, "delete")
     delete_assignment(db, assignment)
@@ -976,7 +985,7 @@ def put_day(
     actor: Employee = Depends(get_current_user),
 ):
     """Отметить или снять один день выхода."""
-    _require_vahta(actor)
+    _require_timesheet_edit(actor)
     assignment = _editable_assignment_or_404(db, actor, payload.assignment_id)
     try:
         toggle_day(db, assignment, payload.day, payload.value)
@@ -997,7 +1006,7 @@ def put_days(
     actor: Employee = Depends(get_current_user),
 ):
     """«Отметить все» / «снять все»: набор дней строки целиком."""
-    _require_vahta(actor)
+    _require_timesheet_edit(actor)
     assignment = _editable_assignment_or_404(db, actor, payload.assignment_id)
     set_days(db, assignment, set(payload.days))
     log_action(
@@ -1015,7 +1024,7 @@ def post_replace(
     actor: Employee = Depends(get_current_user),
 ):
     """Замена на посту: дни с указанного числа уходят сменщику."""
-    _require_vahta(actor)
+    _require_timesheet_edit(actor)
     assignment = _editable_assignment_or_404(db, actor, payload.assignment_id)
     if payload.rate is not None:
         _require_money(actor)
