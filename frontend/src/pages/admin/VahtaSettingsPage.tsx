@@ -27,6 +27,7 @@ import type { VahtaShare } from '../../types/api'
 import { Button } from '../../components/Button'
 import { Modal } from '../../components/Modal'
 import { CrewRoster } from '../../components/vahta/CrewRoster'
+import { JobTitlesTab } from '../../components/vahta/JobTitlesTab'
 import { usePeriodStore } from '../../store/period'
 import { useAuthStore } from '../../store/auth'
 import { toast } from '../../store/toasts'
@@ -279,7 +280,7 @@ export function VahtaSettingsPage() {
   const [sites, setSites] = useState<VahtaSite[]>([])
   const [crews, setCrews] = useState<VahtaCrew[]>([])
   const [companies, setCompanies] = useState<Company[]>([])
-  const [tab, setTab] = useState<'zones' | 'roster'>('zones')
+  const [tab, setTab] = useState<'zones' | 'roster' | 'titles'>('zones')
   const [month, setMonth] = useState<VahtaMonth | null>(null)
   const [query, setQuery] = useState('')
   const [editZone, setEditZone] = useState<VahtaZone | 'new' | null>(null)
@@ -448,6 +449,7 @@ export function VahtaSettingsPage() {
           [
             ['zones', 'Зоны, объекты и посты'],
             ['roster', 'Состав'],
+            ['titles', 'Должности'],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -730,6 +732,7 @@ export function VahtaSettingsPage() {
       )}
 
       {tab === 'roster' && <CrewRoster canManage={canManage} />}
+      {tab === 'titles' && <JobTitlesTab canManage={canManage} />}
 
       {editZone && (
         <ZoneModal

@@ -3,6 +3,8 @@
 // Свой раздел, но данные общие: охранник — обычная позиция сотрудника, а
 // результат расчёта попадает в общую ведомость «Расчёт ЗП».
 import type {
+  GuardJobTitle,
+  GuardJobTitleInput,
   VahtaCandidate,
   VahtaCrew,
   VahtaDepartment,
@@ -44,6 +46,23 @@ export const getVahtaSettings = () =>
 
 export const updateVahtaSettings = (data: { employer_tax_percent: string }) =>
   apiClient.patch<VahtaSettings>('/api/vahta/settings', data).then((r) => r.data)
+
+// ── Справочник должностей охраны ──
+export const listGuardJobTitles = (includeInactive = false) =>
+  apiClient
+    .get<GuardJobTitle[]>('/api/vahta/job-titles', {
+      params: includeInactive ? { include_inactive: true } : {},
+    })
+    .then((r) => r.data)
+
+export const createGuardJobTitle = (data: GuardJobTitleInput) =>
+  apiClient.post<GuardJobTitle>('/api/vahta/job-titles', data).then((r) => r.data)
+
+export const updateGuardJobTitle = (id: number, data: GuardJobTitleInput) =>
+  apiClient.patch<GuardJobTitle>(`/api/vahta/job-titles/${id}`, data).then((r) => r.data)
+
+export const deleteGuardJobTitle = (id: number) =>
+  apiClient.delete<{ result: 'deleted' | 'deactivated' }>(`/api/vahta/job-titles/${id}`).then((r) => r.data)
 
 export const getVahtaDepartments = () =>
   apiClient.get<VahtaDepartment[]>('/api/vahta/departments').then((r) => r.data)
@@ -143,8 +162,8 @@ export const createVahtaAssignment = (data: {
   /** Несколько человек на ОДИН пост сразу — создаётся одной транзакцией. */
   employee_ids?: number[]
   rate?: string | null
-  /** Должность строки; не задана — обычная для места. */
-  kind?: string | null
+  /** Должность строки (id из справочника); не задана — обычная для места. */
+  job_title_id?: number | null
 }) =>
   apiClient
     .post<{ id?: number; ids: number[]; created: number }>(
@@ -157,7 +176,7 @@ export const updateVahtaAssignment = (
   id: number,
   data: Partial<{
     /** Должность строки — правится прямо в табеле. */
-    kind: string
+    job_title_id: number
     rate: string
     is_official: boolean
     note: string | null
@@ -214,7 +233,7 @@ export const quickHireGuard = (data: {
   post_id?: number | null
   crew_id?: number | null
   rate?: string | null
-  kind?: string | null
+  job_title_id?: number | null
   year?: number
   month?: number
   assign?: boolean

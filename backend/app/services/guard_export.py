@@ -179,7 +179,7 @@ def _write_cards(ws, row, cards: list[GuardCardRead], month, days, col_days_star
             _set(ws, row, 2, number)
             # Пустой слот: человека нет — так в образце и есть, не падаем.
             _set(ws, row, 3, item.employee_name or "— вакансия —", center=False)
-            _set(ws, row, 4, item.kind_label, center=False)
+            _set(ws, row, 4, item.job_title_name, center=False)
             _set(ws, row, 5, _money(item.rate))
             # «КП» — где человек работает: у экипажа его имя, у поста
             # «Объект · Пост» (в образце это «GW 1 GW 2» под шапкой объекта).

@@ -64,6 +64,7 @@ from app.models.reference_changes import (
     SOURCE_UI,
     ReferenceChange,
 )
+from app.models.guard_job_titles import GuardJobTitle
 from app.models.schedules import Schedule
 
 # ── Что под аудитом ───────────────────────────────────────────────────────────
@@ -133,6 +134,15 @@ AUDITED_FIELDS: dict[type, tuple[str, ...]] = {
         "is_active",
     ),
     Company: ("name", "code", "short_name", "inn", "sort_order", "is_active"),
+    # Должности охраны: от способа оплаты зависит расчёт вахты во всех
+    # незакрытых месяцах, где стоят люди с этой должностью.
+    GuardJobTitle: (
+        "name",
+        "pay_type",
+        "default_for_post",
+        "default_for_crew",
+        "is_active",
+    ),
     Schedule: (
         "name",
         "schedule_type",
@@ -152,6 +162,7 @@ ENTITY_TYPES: dict[type, str] = {
     Department: "department",
     Company: "company",
     Schedule: "schedule",
+    GuardJobTitle: "guard_job_title",
 }
 
 # Назначение ответственных (менеджеры и табельщики отдела) — связь many-to-many,
@@ -173,6 +184,7 @@ ENTITY_LABELS: dict[str, str] = {
     "department": "Отдел",
     "company": "Юрлицо",
     "schedule": "График работы",
+    "guard_job_title": "Должность охраны",
     EMPLOYEE_SHARES_ENTITY: "Распределение в карточке",
     DEPARTMENT_SHARES_ENTITY: "Распределение отдела",
     MANAGERS_ENTITY: "Ответственные отдела",
@@ -210,6 +222,8 @@ FIELD_LABELS: dict[str, str] = {
     "code": "Код",
     "head_company_id": "Головная компания",
     "night_shift_fund": "Фонд ночных смен",
+    "default_for_post": "По умолчанию для поста",
+    "default_for_crew": "По умолчанию для экипажа ГБР",
     "uses_quantity_distribution": "Распределение по показателю",
     "quantity_metric_name": "Название показателя",
     "quantity_part1_name": "Показатель: часть 1",

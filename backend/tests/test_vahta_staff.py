@@ -21,6 +21,7 @@ from app.services.payroll import position_setup_issues
 from app.services.payroll_statement import build_payroll_statement
 from tests.conftest import get_token
 from tests.test_vahta import (  # noqa: F401 — фикстуры справочника вахты
+    _title_id,
     _make_post,
     _make_site,
     _make_zone,
@@ -63,12 +64,24 @@ def guard_manager(client, db_session, guard_dept) -> dict:
 
 
 def _hire(client, headers, dept, kind="guard", amount="3500", **extra):
+    """`kind` — прежний код должности; в запрос уходит id из справочника."""
     return client.post(
         "/api/vahta/staff",
         json={"full_name": "Караулов Олег Петрович", "department_id": dept.id,
-              "kind": kind, "amount": amount, **extra},
+              "job_title_id": _title_by_kind(client, headers, kind), "amount": amount, **extra},
         headers=headers,
     )
+
+
+_KIND_NAMES = {"guard": "Охранник", "gbr": "ГБР", "dispatcher": "Диспетчер", "chief": "Начальник охраны"}
+
+
+def _title_by_kind(client, headers, kind: str) -> int:
+    """id должности по прежнему коду; неизвестный код — заведомо несуществующий id."""
+    if kind not in _KIND_NAMES:
+        return 999999
+    titles = client.get("/api/vahta/job-titles", headers=headers).json()
+    return next(t["id"] for t in titles if t["name"] == _KIND_NAMES[kind])
 
 
 @pytest.fixture
@@ -119,7 +132,7 @@ class TestCreate:
         assert resp.status_code == 201, resp.text
         body = resp.json()
         assert body["pay_type"] == "salary"
-        assert body["kind_label"] == "Начальник охраны"
+        assert body["job_title_name"] == "Начальник охраны"
         pos = db_session.get(EmployeePosition, body["position_id"])
         assert pos.rate == Decimal("135000") and pos.shift_rate is None
 
@@ -163,7 +176,7 @@ class TestCreate:
         """Быстрый найм всем ставил посменную — начальник теперь на окладе."""
         _, position = quick_hire(
             db_session, full_name="Начальников Пётр", place=guard_post,
-            rate=Decimal("135000"), kind="chief",
+            rate=Decimal("135000"), job_title_id=_title_id(db_session, "Начальник охраны"),
         )
         assert position.pay_type == "salary"
         assert position.rate == Decimal("135000")
@@ -176,7 +189,8 @@ def test_chief_placed_on_post_gets_salary_position(
     resp = client.post(
         "/api/vahta/assignments",
         json={"year": YEAR, "month": MONTH, "post_id": guard_post.id,
-              "kind": "chief", "employee_id": ordinary_emp.id, "rate": "120000"},
+              "job_title_id": _title_id(db_session, "Начальник охраны"),
+              "employee_id": ordinary_emp.id, "rate": "120000"},
         headers=admin,
     )
     assert resp.status_code == 201, resp.text
@@ -444,7 +458,8 @@ class TestTransfer:
     def test_edit_within_guard(self, client, admin, guard_staff, db_session):
         resp = client.patch(
             f"/api/vahta/staff/{guard_staff['position_id']}",
-            json={"kind": "chief", "amount": "120000", "dismissal_date": "2026-09-30"},
+            json={"job_title_id": _title_id(db_session, "Начальник охраны"), "amount": "120000",
+                  "dismissal_date": "2026-09-30"},
             headers=admin,
         )
         assert resp.status_code == 200, resp.text

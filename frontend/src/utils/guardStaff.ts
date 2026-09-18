@@ -7,15 +7,6 @@
 // `department.is_guard_department`, своего правила у фронта нет.
 
 
-export type GuardKind = 'guard' | 'gbr' | 'dispatcher' | 'chief'
-
-export const GUARD_KIND_OPTIONS: { value: GuardKind; label: string }[] = [
-  { value: 'guard', label: 'Охранник' },
-  { value: 'gbr', label: 'ГБР' },
-  { value: 'dispatcher', label: 'Диспетчер' },
-  { value: 'chief', label: 'Начальник охраны' },
-]
-
 /** Путь экрана «Сотрудники охраны». */
 export const GUARD_STAFF_PATH = '/vahta/staff'
 
@@ -41,13 +32,12 @@ export const GUARD_ACCRUAL_HINT =
   'Охранное рабочее место: смены, премии, штрафы и выплаты ведутся в модуле «Вахта»'
 
 /**
- * Подпись поля суммы в форме. Тип оплаты следует из ДОЛЖНОСТИ: у начальника
- * охраны оклад за месяц, у остальных ставка за смену. Это только подпись до
- * сохранения — сам тип выставляет бэк (`pay_type_for_kind`), и после сохранения
- * экран показывает `pay_type` из ответа.
+ * Подпись поля суммы в форме — по способу оплаты должности из справочника
+ * (`GuardJobTitle.pay_type`): оклад за месяц либо ставка за смену. Это только
+ * подпись до сохранения — сам тип выставляет бэк по той же должности.
  */
-export function guardAmountLabel(kind: GuardKind): string {
-  return kind === 'chief' ? 'Оклад за месяц, ₽' : 'Ставка за смену, ₽'
+export function guardAmountLabel(payType: 'per_shift' | 'salary' | undefined): string {
+  return payType === 'salary' ? 'Оклад за месяц, ₽' : 'Ставка за смену, ₽'
 }
 
 // ── Подтверждения 409 ─────────────────────────────────────────────────────────

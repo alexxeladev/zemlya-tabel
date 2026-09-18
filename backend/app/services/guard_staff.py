@@ -38,13 +38,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.departments import Department
 from app.models.employees import Employee
-from app.models.guard_posts import (
-    GUARD_KIND_CHIEF,
-    GUARD_KIND_GUARD,
-    GUARD_KIND_LABELS,
-    GUARD_KINDS,
-    pay_type_for_kind,
-)
+from app.models.guard_job_titles import GuardJobTitle
 from app.models.positions import (
     PAY_TYPE_BASE_FIELD,
     PAY_TYPE_SALARY,
@@ -313,28 +307,15 @@ def pin_loan_before_primary_change(
 
 # ── Должность ↔ тип оплаты ────────────────────────────────────────────────────
 
-def guard_kind_of_position(position: EmployeePosition) -> str:
-    """Должность охранного рабочего места.
+def apply_job_title(position: EmployeePosition, title: GuardJobTitle, amount: Decimal | None) -> None:
+    """Должность из справочника, тип оплаты от неё и сумма в поле базы этого типа.
 
-    Отдельного поля у позиции нет (новых колонок задача не заводит): должность
-    читается из названия, как её пишет вахта, а неизвестное название — по типу
-    оплаты (оклад → начальник, иначе охранник).
-    """
-    for kind, label in GUARD_KIND_LABELS.items():
-        if (position.title or "").strip().lower() == label.lower():
-            return kind
-    return GUARD_KIND_CHIEF if position.pay_type == PAY_TYPE_SALARY else GUARD_KIND_GUARD
-
-
-def apply_guard_kind(position: EmployeePosition, kind: str, amount: Decimal | None) -> None:
-    """Должность, тип оплаты от неё и сумма в поле базы этого типа.
-
+    У позиции своей колонки должности нет: её имя пишется в `title`, и по нему же
+    рабочее место потом узнаётся (`guard_job_titles.job_title_of_position`).
     Базы чужих типов гасятся — как везде в системе, иначе расчёт возьмёт не то.
     """
-    if kind not in GUARD_KINDS:
-        raise GuardStaffError(f"Неизвестная должность «{kind}»")
-    position.title = GUARD_KIND_LABELS[kind]
-    position.pay_type = pay_type_for_kind(kind)
+    position.title = title.name
+    position.pay_type = title.pay_type
     for pay_type, base_field in PAY_TYPE_BASE_FIELD.items():
         setattr(position, base_field, amount if pay_type == position.pay_type else None)
 
@@ -384,7 +365,7 @@ def create_staff(
     full_name: str,
     tab_number: str | None,
     department_id: int,
-    kind: str,
+    job_title_id: int,
     amount: Decimal | None,
     hire_date: datetime.date | None,
     dismissal_date: datetime.date | None,
@@ -402,6 +383,9 @@ def create_staff(
         raise GuardStaffError("Выберите подразделение охраны")
     _check_dates(hire_date, dismissal_date)
     _check_amount(amount)
+    from app.services.guard_job_titles import get_job_title
+
+    title = get_job_title(db, job_title_id)
 
     number = normalize_tab_number(tab_number)
     if number is None:
@@ -413,14 +397,14 @@ def create_staff(
     employee = Employee(
         full_name=full_name,
         tab_number=number,
-        position=GUARD_KIND_LABELS.get(kind),
+        position=title.name,
         is_active=True,
     )
     db.add(employee)
     db.flush()
     position = employee.ensure_primary_position()
     position.department_id = department_id
-    apply_guard_kind(position, kind, amount)
+    apply_job_title(position, title, amount)
     position.hire_date = hire_date
     position.dismissal_date = dismissal_date
     db.flush()
@@ -444,7 +428,7 @@ def update_staff(
 ) -> TransferOutWarning | None:
     """Правка охранного рабочего места из вахты. Коммит снаружи.
 
-    `data` — только присланные поля: department_id, kind, amount, hire_date,
+    `data` — только присланные поля: department_id, job_title_id, amount, hire_date,
     dismissal_date. ФИО и таб. № здесь не правятся — это поля ЧЕЛОВЕКА, их ведёт
     общий справочник.
 
@@ -457,7 +441,12 @@ def update_staff(
             "Рабочее место не в охранном подразделении — оно ведётся в общем справочнике"
         )
 
-    kind = data.get("kind", guard_kind_of_position(position))
+    from app.services.guard_job_titles import get_job_title, job_title_of_position
+
+    title = (
+        get_job_title(db, data["job_title_id"]) if "job_title_id" in data
+        else job_title_of_position(db, position)
+    )
     amount = data["amount"] if "amount" in data else amount_of(position)
     hire = data["hire_date"] if "hire_date" in data else position.hire_date
     dismissal = data["dismissal_date"] if "dismissal_date" in data else position.dismissal_date
@@ -475,8 +464,8 @@ def update_staff(
         if not is_guard_department(dept):
             warning = TransferOutWarning(department_name=dept.name)
 
-    if "kind" in data or "amount" in data:
-        apply_guard_kind(position, kind, amount)
+    if ("job_title_id" in data or "amount" in data) and title is not None:
+        apply_job_title(position, title, amount)
     position.hire_date = hire
     position.dismissal_date = dismissal
     position.department_id = target

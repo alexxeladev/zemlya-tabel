@@ -77,8 +77,8 @@ class GuardStatementRow:
         return self.assignment.place_name
 
     @property
-    def kind_label(self) -> str:
-        return self.assignment.kind_label
+    def job_title_name(self) -> str:
+        return self.assignment.job_title_name
 
 
 def load_guard_rows(
@@ -163,7 +163,7 @@ def guard_payroll_read(
         employee_id=employee.id,
         employee_name=employee.full_name,
         position_id=position.id,
-        position_title=row.kind_label,
+        position_title=row.job_title_name,
         is_primary_position=bool(position.is_primary),
         rate=Decimal(str(row.assignment.rate)),
         schedule_name=None,

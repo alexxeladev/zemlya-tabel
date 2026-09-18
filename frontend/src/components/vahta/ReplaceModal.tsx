@@ -96,7 +96,7 @@ export function ReplaceModal({
       }
     >
       <p className="mb-3 text-sm text-gray-500">
-        {row.post_name} · {row.kind_label}. Сейчас{' '}
+        {row.post_name} · {row.job_title_name}. Сейчас{' '}
         {row.employee_name ?? 'никого нет'}
         {lastWorked > 0 ? `, отработал по ${lastWorked} число` : ''}.
       </p>

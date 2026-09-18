@@ -98,7 +98,7 @@ class TestTaxCalculation:
         from app.services.guard_payroll import distribute_guard_amount
 
         row = calculate_guard_row(
-            kind="gbr", rate=Decimal("5000"), year=YEAR, month=MONTH,
+            pay_type="per_shift", rate=Decimal("5000"), year=YEAR, month=MONTH,
             days=_days(1, 15), premium={1: Decimal("230")},
             official={1: Decimal("25230")}, tax_percent=FORTY,
         )
@@ -118,7 +118,7 @@ class TestTaxCalculation:
     def test_tax_does_not_touch_accrued_or_payout(self):
         """Налог — затрата компании: «итого начислено» и «к выплате» те же."""
         kwargs = dict(
-            kind="gbr", rate=Decimal("5000"), year=YEAR, month=MONTH,
+            pay_type="per_shift", rate=Decimal("5000"), year=YEAR, month=MONTH,
             days=_days(1, 15), premium={1: Decimal("230")},
             official={1: Decimal("25230")},
         )
@@ -129,7 +129,7 @@ class TestTaxCalculation:
 
     def test_without_official_payout_base_equals_accrued(self):
         row = calculate_guard_row(
-            kind="gbr", rate=Decimal("5000"), year=YEAR, month=MONTH,
+            pay_type="per_shift", rate=Decimal("5000"), year=YEAR, month=MONTH,
             days=_days(1, 15), premium={1: Decimal("230")}, tax_percent=FORTY,
         )
         assert row.tax == _ZERO
@@ -140,7 +140,7 @@ class TestTaxByHalves:
     def test_tax_is_computed_per_half(self):
         """Официальная выплата своя у каждой половины — налог тоже."""
         row = calculate_guard_row(
-            kind="gbr", rate=Decimal("5000"), year=YEAR, month=MONTH,
+            pay_type="per_shift", rate=Decimal("5000"), year=YEAR, month=MONTH,
             days=_days(1, 31), premium={1: Decimal("230")},
             official={1: Decimal("25230"), 2: Decimal("10000")}, tax_percent=FORTY,
         )
@@ -151,7 +151,7 @@ class TestTaxByHalves:
 
     def test_only_half_keeps_its_own_sums(self):
         row = calculate_guard_row(
-            kind="gbr", rate=Decimal("5000"), year=YEAR, month=MONTH,
+            pay_type="per_shift", rate=Decimal("5000"), year=YEAR, month=MONTH,
             days=_days(1, 31), premium={1: Decimal("230")},
             penalty={2: Decimal("500")},
             official={1: Decimal("25230"), 2: Decimal("10000")}, tax_percent=FORTY,
@@ -525,7 +525,7 @@ class TestPayoutRounding:
 
     def test_each_half_is_rounded_separately(self):
         row = calculate_guard_row(
-            kind="gbr", rate=Decimal("5000"), year=YEAR, month=MONTH,
+            pay_type="per_shift", rate=Decimal("5000"), year=YEAR, month=MONTH,
             days=_days(1, 31), premium={1: Decimal("230"), 2: Decimal("230")},
             official={1: Decimal("25000"), 2: Decimal("25000")}, tax_percent=FORTY,
         )

@@ -206,7 +206,7 @@ export function CrewRoster({ canManage }: { canManage: boolean }) {
                     )}
                   </td>
                   <td className="px-4 py-2 text-gray-600">{row.post_name}</td>
-                  <td className="px-4 py-2 text-gray-600">{row.kind_label}</td>
+                  <td className="px-4 py-2 text-gray-600">{row.job_title_name}</td>
                   <td className="px-4 py-2 text-right">
                     {editing ? (
                       <span className="inline-flex items-center gap-1">
@@ -243,7 +243,7 @@ export function CrewRoster({ canManage }: { canManage: boolean }) {
                         className="cursor-pointer rounded border border-transparent px-2 py-0.5 hover:border-gray-300 hover:bg-gray-50"
                       >
                         {formatMoney(row.rate, { showZero: true })}
-                        {row.kind === 'chief' && (
+                        {row.pay_type === 'salary' && (
                           <span className="ml-1 text-[10px] text-gray-400">/мес</span>
                         )}
                       </button>

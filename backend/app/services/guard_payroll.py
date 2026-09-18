@@ -49,7 +49,7 @@ from app.models.guard_assignments import (
     HALF_FIRST,
     half_of_day,
 )
-from app.models.guard_posts import GUARD_KIND_CHIEF
+from app.models.guard_job_titles import GUARD_PAY_SALARY
 from app.services.distribution import distribute
 
 _ZERO = Decimal("0")
@@ -224,16 +224,17 @@ def employer_tax(official_payout: Decimal, tax_percent: Decimal) -> Decimal:
 
 
 def _half_salary(
-    kind: str, rate: Decimal, year: int, month: int, half: int, shifts: int
+    pay_type: str, rate: Decimal, year: int, month: int, half: int, shifts: int
 ) -> Decimal:
-    """Зарплата половины по типу оплаты поста.
+    """Зарплата половины по СПОСОБУ ОПЛАТЫ должности.
 
-    Охранник и ГБР считаются одинаково — смены × ставка; различие только в
-    величине ставки и подписи должности. Начальник охраны получает фикс-оклад,
-    половина за полмесяца, ПРОПОРЦИОНАЛЬНО отмеченным дням половины: отмечено
-    10 дней из 15 → 135 000 / 2 × 10/15 = 45 000.
+    Способов два, и задаёт их справочник должностей (`GuardJobTitle.pay_type`):
+    `per_shift` — смены × ставка (охранник, ГБР, диспетчер и любая своя посменная
+    должность; различие между ними только в ставке и подписи); `salary` —
+    фикс-оклад, половина за полмесяца, ПРОПОРЦИОНАЛЬНО отмеченным дням половины:
+    отмечено 10 дней из 15 → 135 000 / 2 × 10/15 = 45 000 (начальник охраны).
     """
-    if kind != GUARD_KIND_CHIEF:
+    if pay_type != GUARD_PAY_SALARY:
         return (rate * shifts).quantize(KOPECK)
 
     length = half_length(year, month, half)
@@ -244,7 +245,7 @@ def _half_salary(
 
 def calculate_guard_row(
     *,
-    kind: str,
+    pay_type: str,
     rate: Decimal,
     year: int,
     month: int,
@@ -276,7 +277,7 @@ def calculate_guard_row(
         halves[half] = GuardHalfResult(
             half=half,
             shifts=shifts,
-            salary=_half_salary(kind, rate, year, month, half, shifts),
+            salary=_half_salary(pay_type, rate, year, month, half, shifts),
             premium=_money(premium.get(half)),
             penalty=_money(penalty.get(half)),
             official_payout=_money(official.get(half)),

@@ -25,9 +25,8 @@ from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.guard_assignments import GuardAssignment
+from app.models.guard_job_titles import GuardJobTitle
 from app.models.guard_posts import (
-    GUARD_KIND_LABELS,
-    GUARD_KINDS,
     GuardCrew,
     GuardPost,
     GuardSite,
@@ -51,6 +50,9 @@ from app.schemas.guard import (
     GuardReplaceInput,
     GuardSettingsRead,
     GuardSettingsUpdate,
+    GuardJobTitleCreate,
+    GuardJobTitleRead,
+    GuardJobTitleUpdate,
     GuardShareRead,
     GuardStaffCreate,
     GuardStaffRead,
@@ -101,10 +103,17 @@ from app.services.guard_duty import (
     update_zone,
 )
 from app.services.guard_export import generate_guard_timesheet_excel
+from app.services.guard_job_titles import (
+    delete_job_title,
+    get_job_title,
+    job_title_of_position,
+    job_title_usage,
+    list_job_titles,
+    save_job_title,
+)
 from app.services.guard_staff import (
     amount_of,
     create_staff,
-    guard_kind_of_position,
     is_guard_position,
     list_staff_positions,
     update_staff,
@@ -220,6 +229,97 @@ def patch_settings(
 
 
 # ── Отделы охраны ─────────────────────────────────────────────────────────────
+
+# ── Справочник должностей охраны ──────────────────────────────────────────────
+#
+# Должность — строка справочника, а не константа кода. Читают все роли вахты
+# (табельщик выбирает должность, ставя человека на пост), правят — те же, кто
+# правит настройки: admin и менеджер охраны.
+
+def _job_title_read(db: Session, title) -> GuardJobTitleRead:
+    return GuardJobTitleRead(
+        id=title.id, name=title.name, pay_type=title.pay_type,
+        pay_type_label=title.pay_type_label,
+        default_for_post=title.default_for_post, default_for_crew=title.default_for_crew,
+        sort_order=title.sort_order, is_active=title.is_active,
+        usage_count=job_title_usage(db, title),
+    )
+
+
+@router.get("/job-titles", response_model=list[GuardJobTitleRead])
+def get_job_titles(
+    include_inactive: bool = Query(False),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    _require_vahta(actor)
+    return [_job_title_read(db, t) for t in list_job_titles(db, include_inactive=include_inactive)]
+
+
+@router.post("/job-titles", response_model=GuardJobTitleRead, status_code=status.HTTP_201_CREATED)
+def post_job_title(
+    payload: GuardJobTitleCreate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    _require_vahta(actor)
+    _require_settings(actor)
+    try:
+        title = save_job_title(db, None, payload.model_dump(exclude_unset=True))
+    except GuardError as exc:
+        raise _guard_error(exc)
+    log_action(db, actor, "guard_job_title", title.id, "create",
+               after={"name": title.name, "pay_type": title.pay_type})
+    db.commit()
+    db.refresh(title)
+    return _job_title_read(db, title)
+
+
+@router.patch("/job-titles/{title_id}", response_model=GuardJobTitleRead)
+def patch_job_title(
+    title_id: int,
+    payload: GuardJobTitleUpdate,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    """Смена способа оплаты пересчитывает все НЕЗАКРЫТЫЕ месяцы, где стоят люди
+    с этой должностью, — экран об этом предупреждает (`usage_count`)."""
+    _require_vahta(actor)
+    _require_settings(actor)
+    title = db.get(GuardJobTitle, title_id)
+    if title is None:
+        raise HTTPException(status_code=404, detail="Должность не найдена")
+    before = {"name": title.name, "pay_type": title.pay_type, "is_active": title.is_active}
+    try:
+        save_job_title(db, title, payload.model_dump(exclude_unset=True))
+    except GuardError as exc:
+        raise _guard_error(exc)
+    log_action(db, actor, "guard_job_title", title.id, "update", before=before,
+               after={"name": title.name, "pay_type": title.pay_type, "is_active": title.is_active})
+    db.commit()
+    db.refresh(title)
+    return _job_title_read(db, title)
+
+
+@router.delete("/job-titles/{title_id}")
+def remove_job_title(
+    title_id: int,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(get_current_user),
+):
+    _require_vahta(actor)
+    _require_settings(actor)
+    title = db.get(GuardJobTitle, title_id)
+    if title is None:
+        raise HTTPException(status_code=404, detail="Должность не найдена")
+    try:
+        result = delete_job_title(db, title)
+    except GuardError as exc:
+        raise _guard_error(exc)
+    log_action(db, actor, "guard_job_title", title_id, "delete", before={"name": title.name})
+    db.commit()
+    return {"result": result}
+
 
 @router.get("/departments")
 def get_guard_departments(
@@ -664,7 +764,7 @@ def _resolve_position(
     rate: Decimal | None,
     year: int,
     month: int,
-    kind: str | None = None,
+    job_title_id: int | None = None,
 ) -> EmployeePosition | None:
     """Рабочее место, которое встаёт на место работы охраны.
 
@@ -693,7 +793,7 @@ def _resolve_position(
     # Должность строки задаёт тип оплаты нового рабочего места: начальник,
     # поставленный на пост, заводится на окладе (task_guard_ownership).
     try:
-        return add_position_for_guard(db, employee, place, rate, kind)
+        return add_position_for_guard(db, employee, place, rate, job_title_id)
     except GuardError as exc:
         raise _guard_error(exc)
 
@@ -754,8 +854,11 @@ def post_assignment(
     _require_open_month(db, place.department_id, payload.year, payload.month)
     if payload.rate is not None:
         _require_money(actor)
-    if payload.kind is not None and payload.kind not in GUARD_KINDS:
-        raise HTTPException(status_code=422, detail="Неизвестная должность")
+    if payload.job_title_id is not None:
+        try:
+            get_job_title(db, payload.job_title_id)
+        except GuardError as exc:
+            raise _guard_error(exc)
 
     # Пакет: несколько человек на один пост. Пустой список — это не «поставить
     # никого», а ошибка ввода, поэтому 422, а не молчаливый пустой слот.
@@ -766,12 +869,12 @@ def post_assignment(
         for employee_id in dict.fromkeys(payload.employee_ids):
             position = _resolve_position(
                 db, place, None, employee_id, payload.rate,
-                payload.year, payload.month, payload.kind,
+                payload.year, payload.month, payload.job_title_id,
             )
             try:
                 assignment = create_assignment(
                     db, year=payload.year, month=payload.month, place=place,
-                    position=position, rate=payload.rate, kind=payload.kind,
+                    position=position, rate=payload.rate, job_title_id=payload.job_title_id,
                 )
             except GuardError as exc:
                 raise _guard_error(exc)
@@ -786,7 +889,7 @@ def post_assignment(
 
     position = _resolve_position(
         db, place, payload.position_id, payload.employee_id, payload.rate,
-        payload.year, payload.month, payload.kind,
+        payload.year, payload.month, payload.job_title_id,
     )
     try:
         assignment = create_assignment(
@@ -796,7 +899,7 @@ def post_assignment(
             place=place,
             position=position,
             rate=payload.rate,
-            kind=payload.kind,
+            job_title_id=payload.job_title_id,
         )
     except GuardError as exc:
         # Сюда приходит и «позиция не охранная»: `position_id` из запроса может
@@ -827,10 +930,13 @@ def patch_assignment(
     data = payload.model_dump(exclude_unset=True)
     # Должность — не деньги: её правит и табельщик. Всё остальное в этой форме
     # денежное, поэтому финансовая проверка стоит на нём.
-    if set(data) - {"kind", "note"}:
+    if set(data) - {"job_title_id", "note"}:
         _require_money(actor)
-    if data.get("kind") and data["kind"] not in GUARD_KINDS:
-        raise HTTPException(status_code=422, detail="Неизвестная должность")
+    if data.get("job_title_id") is not None:
+        try:
+            get_job_title(db, data["job_title_id"])
+        except GuardError as exc:
+            raise _guard_error(exc)
     before = {k: str(getattr(assignment, k)) for k in data}
     for field, value in data.items():
         if value is not None or field == "note":
@@ -909,7 +1015,7 @@ def post_replace(
         _require_money(actor)
     position = _resolve_position(
         db, assignment.place, payload.position_id, payload.employee_id, payload.rate,
-        assignment.year, assignment.month, assignment.kind,
+        assignment.year, assignment.month, assignment.job_title_id,
     )
     try:
         kept, successor = replace_on_post(
@@ -993,7 +1099,7 @@ def post_quick_hire(
     try:
         employee, position = quick_hire(
             db, full_name=payload.full_name, place=place, rate=payload.rate,
-            kind=payload.kind,
+            job_title_id=payload.job_title_id,
         )
     except GuardError as exc:
         raise _guard_error(exc)
@@ -1003,7 +1109,7 @@ def post_quick_hire(
         try:
             assignment = create_assignment(
                 db, year=payload.year, month=payload.month, place=place,
-                position=position, rate=payload.rate, kind=payload.kind,
+                position=position, rate=payload.rate, job_title_id=payload.job_title_id,
             )
         except GuardError as exc:
             raise _guard_error(exc)
@@ -1126,12 +1232,13 @@ def export_excel(
 
 
 def _staff_read(
+    db: Session,
     position: EmployeePosition,
     places: dict[int, list[str]],
     official: dict[int, bool],
 ) -> GuardStaffRead:
     employee = position.employee
-    kind = guard_kind_of_position(position)
+    title = job_title_of_position(db, position)
     return GuardStaffRead(
         employee_id=employee.id,
         position_id=position.id,
@@ -1139,8 +1246,8 @@ def _staff_read(
         tab_number=employee.tab_number,
         department_id=position.department_id,
         department_name=position.department.name if position.department else "",
-        kind=kind,
-        kind_label=GUARD_KIND_LABELS[kind],
+        job_title_id=title.id if title else None,
+        job_title_name=title.name if title else (position.title or ""),
         pay_type=position.pay_type,
         amount=amount_of(position),
         hire_date=position.hire_date,
@@ -1199,7 +1306,7 @@ def get_staff(
         department_ids = [department_id]
     places, official = _staff_month_context(db, department_ids, year, month)
     return [
-        _staff_read(p, places, official)
+        _staff_read(db, p, places, official)
         for p in list_staff_positions(db, department_ids)
     ]
 
@@ -1220,7 +1327,7 @@ def post_staff(
             full_name=payload.full_name,
             tab_number=payload.tab_number,
             department_id=payload.department_id,
-            kind=payload.kind,
+            job_title_id=payload.job_title_id,
             amount=payload.amount,
             hire_date=payload.hire_date,
             dismissal_date=payload.dismissal_date,
@@ -1234,7 +1341,7 @@ def post_staff(
     )
     db.commit()
     db.refresh(position)
-    return _staff_read(position, {}, {})
+    return _staff_read(db, position, {}, {})
 
 
 @router.patch("/staff/{position_id}", response_model=GuardStaffRead)
@@ -1286,4 +1393,4 @@ def patch_staff(
     )
     db.commit()
     db.refresh(position)
-    return _staff_read(position, {}, {})
+    return _staff_read(db, position, {}, {})

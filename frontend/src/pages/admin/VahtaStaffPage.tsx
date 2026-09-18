@@ -35,13 +35,12 @@ import type {
 } from '../../types/api'
 import {
   GUARD_CONFIRM_CANCELLED,
-  GUARD_KIND_OPTIONS,
-  type GuardKind,
   guardAmountLabel,
   isGuardDepartment,
   withGuardConfirm,
 } from '../../utils/guardStaff'
 import { formatMoney } from '../../utils/money'
+import { useGuardJobTitles } from '../../hooks/useGuardJobTitles'
 
 const MONTHS = [
   'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
@@ -55,7 +54,7 @@ type Draft = {
   full_name: string
   tab_number: string
   department_id: string
-  kind: GuardKind
+  job_title_id: string
   amount: string
   hire_date: string
   dismissal_date: string
@@ -65,7 +64,7 @@ const emptyDraft = (deptId: number | undefined): Draft => ({
   full_name: '',
   tab_number: '',
   department_id: deptId ? String(deptId) : '',
-  kind: 'guard',
+  job_title_id: '',
   amount: '',
   hire_date: '',
   dismissal_date: '',
@@ -75,7 +74,7 @@ const toDraft = (s: VahtaStaff): Draft => ({
   full_name: s.full_name,
   tab_number: s.tab_number ?? '',
   department_id: String(s.department_id),
-  kind: s.kind,
+  job_title_id: s.job_title_id != null ? String(s.job_title_id) : '',
   amount: s.amount != null ? String(parseFloat(s.amount)) : '',
   hire_date: s.hire_date ?? '',
   dismissal_date: s.dismissal_date ?? '',
@@ -215,7 +214,7 @@ export function VahtaStaffPage() {
                   )}
                 </td>
                 <td className="px-3 py-2 font-mono text-xs text-slate-600">{r.tab_number ?? '—'}</td>
-                <td className="px-3 py-2">{r.kind_label}</td>
+                <td className="px-3 py-2">{r.job_title_name}</td>
                 <td className="px-3 py-2 text-slate-600">
                   {r.places.length ? r.places.join(', ') : (
                     <span className="text-slate-400">не стоит на посту</span>
@@ -305,6 +304,7 @@ function StaffModal({
   onSaved: () => void
 }) {
   const [draft, setDraft] = useState<Draft>(row ? toDraft(row) : emptyDraft(guardDepts[0]?.id))
+  const jobTitles = useGuardJobTitles()
   const [similar, setSimilar] = useState<VahtaSimilarEmployee[]>([])
   const [saving, setSaving] = useState(false)
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }))
@@ -328,7 +328,7 @@ function StaffModal({
     try {
       const base: VahtaStaffInput = {
         department_id: Number(draft.department_id),
-        kind: draft.kind,
+        job_title_id: Number(draft.job_title_id),
         amount: orNull(draft.amount),
         hire_date: orNull(draft.hire_date),
         dismissal_date: orNull(draft.dismissal_date),
@@ -360,7 +360,10 @@ function StaffModal({
   }
 
   const inputCls = 'w-full rounded-md border border-gray-300 px-3 py-2 text-sm'
-  const canSave = (row != null || draft.full_name.trim().length >= 3) && draft.department_id !== ''
+  const canSave =
+    (row != null || draft.full_name.trim().length >= 3) &&
+    draft.department_id !== '' &&
+    (transferOut || draft.job_title_id !== '')
 
   return (
     <Modal
@@ -466,18 +469,21 @@ function StaffModal({
             <label className="block text-sm">
               <span className="mb-1 block text-gray-600">Должность</span>
               <select
-                value={draft.kind}
-                onChange={(e) => set('kind', e.target.value as GuardKind)}
+                value={draft.job_title_id}
+                onChange={(e) => set('job_title_id', e.target.value)}
                 className={inputCls}
               >
-                {GUARD_KIND_OPTIONS.map((k) => (
-                  <option key={k.value} value={k.value}>{k.label}</option>
+                <option value="">— выберите —</option>
+                {jobTitles.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
               </select>
             </label>
 
             <label className="block text-sm">
-              <span className="mb-1 block text-gray-600">{guardAmountLabel(draft.kind)}</span>
+              <span className="mb-1 block text-gray-600">
+                {guardAmountLabel(jobTitles.find((t) => String(t.id) === draft.job_title_id)?.pay_type)}
+              </span>
               <input
                 value={draft.amount}
                 onChange={(e) => set('amount', e.target.value.replace(',', '.'))}

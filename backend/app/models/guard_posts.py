@@ -57,51 +57,13 @@ if TYPE_CHECKING:
     from app.models.departments import Department
 
 
-# ── Должность ─────────────────────────────────────────────────────────────────
 # Должность принадлежит СТРОКЕ ТАБЕЛЯ (человеку на месте), а не посту: «GW 1» —
-# это физическая точка, она не «Охранник». В табеле заказчика «Должность» и
-# стоит колонкой рядом с ФИО.
-#
-# Пока она висела на посту, модель заставляла ВЫДУМЫВАТЬ данные: на «КП Олимп»,
-# где стоят двое ГБР и трое охранников, приходилось заводить два несуществующих
-# поста «КП Олимп · ГБР» и «КП Олимп · Охранник». В жизни это один объект.
-#
-# Охранник, ГБР и диспетчер считаются ОДИНАКОВО (смены × ставка) и различаются
-# только подписью и величиной ставки. Настоящих способов расчёта два: посменно
-# и фикс-оклад начальника — он и выводится из должности.
-GUARD_KIND_GUARD = "guard"            # Охранник
-GUARD_KIND_GBR = "gbr"                # ГБР
-GUARD_KIND_DISPATCHER = "dispatcher"  # Диспетчер
-GUARD_KIND_CHIEF = "chief"            # Начальник охраны: ставка — ОКЛАД ЗА МЕСЯЦ
-
-GUARD_KINDS: tuple[str, ...] = (
-    GUARD_KIND_GUARD, GUARD_KIND_GBR, GUARD_KIND_DISPATCHER, GUARD_KIND_CHIEF,
-)
-
-GUARD_KIND_LABELS: dict[str, str] = {
-    GUARD_KIND_GUARD: "Охранник",
-    GUARD_KIND_GBR: "ГБР",
-    GUARD_KIND_DISPATCHER: "Диспетчер",
-    GUARD_KIND_CHIEF: "Начальник охраны",
-}
-
-#: Должности, у которых ставка — цена ОДНОЙ СМЕНЫ (а не месячный оклад).
-PER_SHIFT_GUARD_KINDS: tuple[str, ...] = (
-    GUARD_KIND_GUARD, GUARD_KIND_GBR, GUARD_KIND_DISPATCHER,
-)
-
-
-def pay_type_for_kind(kind: str | None) -> str:
-    """Тип оплаты РАБОЧЕГО МЕСТА охранника — от должности (task_guard_ownership).
-
-    Начальник охраны — оклад за месяц, остальные — ставка за смену. Отдельным
-    полем в форме найма тип оплаты не вводится: иначе можно было бы завести
-    посменного начальника. Неизвестная или пустая должность — охранник.
-    """
-    # Импорт здесь: модели позиций и вахты друг от друга не зависят.
-    from app.models.positions import PAY_TYPE_PER_SHIFT, PAY_TYPE_SALARY
-
-    return PAY_TYPE_SALARY if kind == GUARD_KIND_CHIEF else PAY_TYPE_PER_SHIFT
+# это физическая точка, она не «Охранник». Пока она висела на посту, модель
+# заставляла ВЫДУМЫВАТЬ данные: на «КП Олимп», где стоят двое ГБР и трое
+# охранников, приходилось заводить два несуществующих поста. Сами должности —
+# справочник `guard_job_titles` (`models/guard_job_titles.py`); у места работы
+# остаётся только вид — пост объекта или экипаж ГБР, — по которому справочник
+# подбирает должность по умолчанию.
 
 _ZERO = Decimal("0")
 
@@ -192,9 +154,9 @@ class GuardCrew(Base):
         """Отдел экипажа — отдел его зоны (права проверяются по нему)."""
         return self.zone.department_id if self.zone else None
 
-    #: Экипаж ГБР и есть ГБР — это должность его людей по умолчанию, когда их
-    #: ставят в экипаж. Саму должность хранит строка табеля.
-    default_kind = GUARD_KIND_GBR
+    #: Вид места работы: по нему справочник должностей подбирает должность по
+    #: умолчанию (`GuardJobTitle.default_for_crew`).
+    is_crew = True
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"<GuardCrew {self.id} {self.name!r}>"
@@ -337,8 +299,8 @@ class GuardPost(Base):
 
     site: Mapped[GuardSite] = relationship("GuardSite", back_populates="posts")
 
-    #: Должность людей поста по умолчанию. Саму должность хранит строка табеля.
-    default_kind = GUARD_KIND_GUARD
+    #: Вид места работы — см. `GuardCrew.is_crew` (`GuardJobTitle.default_for_post`).
+    is_crew = False
 
     @property
     def effective_rate(self) -> Decimal:

@@ -4,7 +4,8 @@ import { findSimilarEmployees, createVahtaAssignment, quickHireGuard } from '../
 import { Button } from '../Button'
 import { Modal } from '../Modal'
 import { toast } from '../../store/toasts'
-import type { VahtaSimilarEmployee } from '../../types/api'
+import type { GuardJobTitle, VahtaSimilarEmployee } from '../../types/api'
+import { defaultJobTitleId, useGuardJobTitles } from '../../hooks/useGuardJobTitles'
 
 /** Место работы: пост объекта или выездной экипаж ГБР (см. VahtaPage). */
 export interface HirePlace {
@@ -12,17 +13,8 @@ export interface HirePlace {
   kind: 'post' | 'crew'
   id: number
   label: string
-  /** Должность, обычная для места: у экипажа ГБР, у поста охранник. */
-  defaultKind: 'guard' | 'gbr' | 'dispatcher' | 'chief'
   rate: string | null
 }
-
-const KINDS: { value: HirePlace['defaultKind']; label: string }[] = [
-  { value: 'guard', label: 'Охранник' },
-  { value: 'gbr', label: 'ГБР' },
-  { value: 'dispatcher', label: 'Диспетчер' },
-  { value: 'chief', label: 'Начальник охраны' },
-]
 
 /**
  * «Оформить нового» — быстрый найм из ТРЁХ полей: ФИО, пост, ставка.
@@ -56,12 +48,16 @@ export function QuickHireModal({
   const options = places.length > 0 ? places : allPlaces
   const [fullName, setFullName] = useState('')
   const [placeKey, setPlaceKey] = useState<string>(options[0]?.key ?? '')
-  const [kind, setKind] = useState<HirePlace['defaultKind'] | ''>('')
+  const [jobTitleId, setJobTitleId] = useState<number | ''>('')
+  const jobTitles: GuardJobTitle[] = useGuardJobTitles()
   const [rate, setRate] = useState('')
   const [similar, setSimilar] = useState<VahtaSimilarEmployee[]>([])
   const [saving, setSaving] = useState(false)
 
   const place = allPlaces.find((p) => p.key === placeKey) ?? options.find((p) => p.key === placeKey)
+  const chosenTitle = jobTitles.find(
+    (t) => t.id === (jobTitleId || (place ? defaultJobTitleId(jobTitles, place.kind) : undefined)),
+  )
 
   // Ставка подставляется от места и остаётся правимой (в образце у двух ГБР
   // одного экипажа ставки разные).
@@ -92,7 +88,7 @@ export function QuickHireModal({
       const result = await quickHireGuard({
         full_name: fullName.trim(),
         ...placeRef(place),
-        kind: kind || place.defaultKind,
+        job_title_id: jobTitleId || defaultJobTitleId(jobTitles, place.kind) || null,
         rate: rate || null,
         year,
         month,
@@ -115,7 +111,7 @@ export function QuickHireModal({
         year,
         month,
         ...placeRef(place),
-        kind: kind || place.defaultKind,
+        job_title_id: jobTitleId || defaultJobTitleId(jobTitles, place.kind) || null,
         employee_id: employeeId,
       })
       toast.success('Поставлен на место')
@@ -204,13 +200,13 @@ export function QuickHireModal({
       <label className="mb-3 block text-sm">
         <span className="mb-1 block text-gray-600">Должность</span>
         <select
-          value={kind || place?.defaultKind || 'guard'}
-          onChange={(e) => setKind(e.target.value as HirePlace['defaultKind'])}
+          value={jobTitleId || (place ? defaultJobTitleId(jobTitles, place.kind) : '') || ''}
+          onChange={(e) => setJobTitleId(Number(e.target.value))}
           className="w-full rounded-md border border-gray-300 px-3 py-2"
         >
-          {KINDS.map((k) => (
-            <option key={k.value} value={k.value}>
-              {k.label}
+          {jobTitles.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
             </option>
           ))}
         </select>
@@ -218,7 +214,7 @@ export function QuickHireModal({
 
       <label className="block text-sm">
         <span className="mb-1 block text-gray-600">
-          Ставка {(kind || place?.defaultKind) === 'chief' ? 'за месяц' : 'за смену'}
+          Ставка {chosenTitle?.pay_type === 'salary' ? 'за месяц' : 'за смену'}
         </span>
         <input
           value={rate}

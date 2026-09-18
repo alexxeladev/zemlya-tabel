@@ -892,8 +892,33 @@ export interface EmployeeImportResult {
 // Денежные поля необязательные: табельщику они приходят null — суммы
 // вычищаются на уровне API, а не прячутся в интерфейсе.
 
-/** Должность поста: охранник, ГБР и диспетчер посменно, начальник фикс-окладом. */
-export type VahtaKind = 'guard' | 'gbr' | 'dispatcher' | 'chief'
+/** Способ оплаты должности охраны: ставка за смену либо оклад за месяц. */
+export type GuardPayType = 'per_shift' | 'salary'
+
+/** Должность охраны — строка справочника вахты (настройки → «Должности»).
+ *  От неё способ оплаты; «по умолчанию» — с ней встают на пост / в экипаж,
+ *  если должность не выбрали явно. */
+export interface GuardJobTitle {
+  id: number
+  name: string
+  pay_type: GuardPayType
+  pay_type_label: string
+  default_for_post: boolean
+  default_for_crew: boolean
+  sort_order: number
+  is_active: boolean
+  /** сколько строк табеля (за все месяцы) стоят на этой должности */
+  usage_count: number
+}
+
+export interface GuardJobTitleInput {
+  name?: string
+  pay_type?: GuardPayType
+  default_for_post?: boolean
+  default_for_crew?: boolean
+  sort_order?: number | null
+  is_active?: boolean
+}
 
 /** Строка экрана «Сотрудники охраны» — рабочее место в охранном подразделении
  *  (task_guard_ownership). Пост и официальность — за выбранный месяц. */
@@ -904,8 +929,9 @@ export interface VahtaStaff {
   tab_number: string | null
   department_id: number
   department_name: string
-  kind: VahtaKind
-  kind_label: string
+  /** должность из справочника; null — название места не совпало ни с одной */
+  job_title_id: number | null
+  job_title_name: string
   pay_type: PayType
   /** оклад за месяц у начальника, ставка за смену у остальных */
   amount: string | null
@@ -921,7 +947,7 @@ export interface VahtaStaffInput {
   full_name?: string
   tab_number?: string | null
   department_id?: number
-  kind?: VahtaKind
+  job_title_id?: number
   amount?: string | null
   hire_date?: string | null
   dismissal_date?: string | null
@@ -1033,8 +1059,9 @@ export interface VahtaRow {
   zone_name: string | null
   department_id: number
   /** Должность ЭТОГО человека на месте, а не свойство места. */
-  kind: VahtaKind
-  kind_label: string
+  job_title_id: number
+  job_title_name: string
+  pay_type: GuardPayType
   /** Пустой слот (незанятое место): человека нет, все его поля null. */
   employee_id: number | null
   position_id: number | null

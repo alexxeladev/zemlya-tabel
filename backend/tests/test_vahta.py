@@ -34,6 +34,13 @@ from app.services.guard_duty import (
 from app.services.payroll_statement import build_payroll_statement
 from tests.conftest import get_token
 
+
+def _title_id(db: Session, name: str) -> int:
+    """id должности охраны по названию — справочник сеет conftest."""
+    from app.models.guard_job_titles import GuardJobTitle
+
+    return db.query(GuardJobTitle).filter(GuardJobTitle.name == name).one().id
+
 YEAR, MONTH = 2026, 8
 ALL_DAYS = set(range(1, 32))
 FIRST_HALF = set(range(1, 16))
@@ -590,17 +597,17 @@ class TestJobTitleOnTheRow:
 
         a = create_assignment(
             db_session, year=YEAR, month=MONTH, place=post,
-            position=gbr.primary_position, kind="gbr", rate=Decimal("4500"),
+            position=gbr.primary_position, job_title_id=_title_id(db_session, "ГБР"), rate=Decimal("4500"),
         )
         b = create_assignment(
             db_session, year=YEAR, month=MONTH, place=post,
-            position=guard.primary_position, kind="guard",
+            position=guard.primary_position, job_title_id=_title_id(db_session, "Охранник"),
         )
         db_session.commit()
 
         assert a.post_id == b.post_id           # пост ОДИН
-        assert a.kind_label == "ГБР"
-        assert b.kind_label == "Охранник"
+        assert a.job_title_name == "ГБР"
+        assert b.job_title_name == "Охранник"
         assert a.rate == Decimal("4500.00")
         assert b.rate == Decimal("3000.00")     # от объекта
 
@@ -617,8 +624,8 @@ class TestJobTitleOnTheRow:
             db_session, year=YEAR, month=MONTH, place=guard_post, position=None,
         )
         db_session.commit()
-        assert in_crew.kind_label == "ГБР"
-        assert on_post.kind_label == "Охранник"
+        assert in_crew.job_title_name == "ГБР"
+        assert on_post.job_title_name == "Охранник"
 
     def test_chief_pay_follows_the_title(self, db_session, zone, companies, guard_dept):
         """Способ оплаты выводится из должности строки, а не из поста."""
@@ -629,7 +636,7 @@ class TestJobTitleOnTheRow:
         emp = _employee(db_session, "Сторожев П.", guard_dept, "T-0504")
         create_assignment(
             db_session, year=YEAR, month=MONTH, place=post,
-            position=emp.primary_position, kind="chief", days=FIRST_HALF,
+            position=emp.primary_position, job_title_id=_title_id(db_session, "Начальник охраны"), days=FIRST_HALF,
         )
         db_session.commit()
         statement = build_payroll_statement(db_session, [emp], [], YEAR, MONTH)
@@ -644,11 +651,11 @@ class TestJobTitleOnTheRow:
         db_session.commit()
         resp = client.patch(
             f"/api/vahta/assignments/{assignment.id}",
-            json={"kind": "dispatcher"}, headers=_auth(client, "manager"),
+            json={"job_title_id": _title_id(db_session, "Диспетчер")}, headers=_auth(client, "manager"),
         )
         assert resp.status_code == 200
         db_session.refresh(assignment)
-        assert assignment.kind_label == "Диспетчер"
+        assert assignment.job_title_name == "Диспетчер"
 
     def test_unknown_title_is_rejected(self, client, users, db_session, gbr_place, rodionov):
         assignment = create_assignment(
@@ -658,7 +665,7 @@ class TestJobTitleOnTheRow:
         db_session.commit()
         resp = client.patch(
             f"/api/vahta/assignments/{assignment.id}",
-            json={"kind": "космонавт"}, headers=_auth(client, "manager"),
+            json={"job_title_id": 999999}, headers=_auth(client, "manager"),
         )
         assert resp.status_code == 422
 

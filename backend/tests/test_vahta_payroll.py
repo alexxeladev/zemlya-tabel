@@ -29,7 +29,7 @@ class TestPayTypes:
     def test_guard_shifts_times_rate(self):
         """Охранник: 15 смен × 4 000 = 60 000."""
         row = calculate_guard_row(
-            kind="guard", rate=Decimal("4000"), year=2026, month=8,
+            pay_type="per_shift", rate=Decimal("4000"), year=2026, month=8,
             days=_all_days(1, 15),
         )
         assert row.shifts == 15
@@ -38,7 +38,7 @@ class TestPayTypes:
     def test_gbr_shifts_times_rate(self):
         """ГБР: тот же расчёт, ставка выше — 15 × 5 000 = 75 000."""
         row = calculate_guard_row(
-            kind="gbr", rate=Decimal("5000"), year=2026, month=8,
+            pay_type="per_shift", rate=Decimal("5000"), year=2026, month=8,
             days=_all_days(1, 15),
         )
         assert row.salary == Decimal("75000")
@@ -46,7 +46,7 @@ class TestPayTypes:
     def test_chief_fixed_salary_half_per_half_month(self):
         """Начальник охраны: фикс-оклад, половина за полмесяца (135 000 / 2)."""
         row = calculate_guard_row(
-            kind="chief", rate=Decimal("135000"), year=2026, month=8,
+            pay_type="salary", rate=Decimal("135000"), year=2026, month=8,
             days=_all_days(1, 15),
         )
         assert row.halves[1].salary == Decimal("67500")
@@ -56,7 +56,7 @@ class TestPayTypes:
 
     def test_chief_full_month_is_full_salary(self):
         row = calculate_guard_row(
-            kind="chief", rate=Decimal("135000"), year=2026, month=8,
+            pay_type="salary", rate=Decimal("135000"), year=2026, month=8,
             days=_all_days(1, 31),
         )
         assert row.salary == Decimal("135000")
@@ -64,7 +64,7 @@ class TestPayTypes:
     def test_chief_partial_half_is_proportional(self):
         """Отмечено 10 дней из 15 → 67 500 × 10/15 = 45 000."""
         row = calculate_guard_row(
-            kind="chief", rate=Decimal("135000"), year=2026, month=8,
+            pay_type="salary", rate=Decimal("135000"), year=2026, month=8,
             days=_all_days(1, 10),
         )
         assert row.halves[1].salary == Decimal("45000")
@@ -72,7 +72,7 @@ class TestPayTypes:
     def test_chief_second_half_length_differs(self):
         """Вторая половина августа — 16 дней, полная её отработка = половина оклада."""
         row = calculate_guard_row(
-            kind="chief", rate=Decimal("135000"), year=2026, month=8,
+            pay_type="salary", rate=Decimal("135000"), year=2026, month=8,
             days=_all_days(16, 31),
         )
         assert row.halves[2].salary == Decimal("67500")
@@ -80,7 +80,7 @@ class TestPayTypes:
     def test_empty_slot_does_not_crash(self):
         """Пустой слот: ставка есть, смен нет — всё по нулям."""
         row = calculate_guard_row(
-            kind="guard", rate=Decimal("5000"), year=2026, month=8, days=set(),
+            pay_type="per_shift", rate=Decimal("5000"), year=2026, month=8, days=set(),
         )
         assert row.shifts == 0
         assert row.salary == Decimal("0")
@@ -92,7 +92,7 @@ class TestAccruedAndPayout:
 
     def test_accrued_is_salary_plus_premium_minus_penalty(self):
         row = calculate_guard_row(
-            kind="gbr", rate=Decimal("5000"), year=2026, month=8,
+            pay_type="per_shift", rate=Decimal("5000"), year=2026, month=8,
             days=_all_days(1, 15),
             premium={1: Decimal("230")}, penalty={1: Decimal("100")},
         )
@@ -101,7 +101,7 @@ class TestAccruedAndPayout:
     def test_net_payout_is_accrued_minus_official(self):
         """Сторожев в образце: 67 500 + 115 − оф. 12 615 = 55 000."""
         row = calculate_guard_row(
-            kind="chief", rate=Decimal("135000"), year=2026, month=8,
+            pay_type="salary", rate=Decimal("135000"), year=2026, month=8,
             days=_all_days(1, 15),
             premium={1: Decimal("115")}, official={1: Decimal("12615")},
         )
@@ -111,7 +111,7 @@ class TestAccruedAndPayout:
     def test_halves_are_independent(self):
         """Премия и штраф свои у каждой расчётной половины."""
         row = calculate_guard_row(
-            kind="guard", rate=Decimal("1000"), year=2026, month=8,
+            pay_type="per_shift", rate=Decimal("1000"), year=2026, month=8,
             days=_all_days(1, 31),
             premium={1: Decimal("500"), 2: Decimal("700")},
             penalty={2: Decimal("200")},
@@ -133,7 +133,7 @@ class TestDistribution:
         26 330,50 / 45 138,00 / 3 761,50. Цифры из листа «Охрана» образца.
         """
         row = calculate_guard_row(
-            kind="gbr", rate=Decimal("5000"), year=2026, month=8,
+            pay_type="per_shift", rate=Decimal("5000"), year=2026, month=8,
             days=_all_days(1, 15), premium={1: Decimal("230")},
         )
         assert row.salary == Decimal("75000")
@@ -151,7 +151,7 @@ class TestDistribution:
     def test_semencov_example(self):
         """Дозоров: 15 × 4 500 = 67 500, премия 115, итого 67 615, одно юрлицо."""
         row = calculate_guard_row(
-            kind="gbr", rate=Decimal("4500"), year=2026, month=8,
+            pay_type="per_shift", rate=Decimal("4500"), year=2026, month=8,
             days=_all_days(1, 15), premium={1: Decimal("115")},
         )
         assert row.accrued == Decimal("67615")
@@ -168,7 +168,7 @@ class TestDistribution:
 
     def test_penalty_reduces_the_base(self):
         row = calculate_guard_row(
-            kind="guard", rate=Decimal("1000"), year=2026, month=8,
+            pay_type="per_shift", rate=Decimal("1000"), year=2026, month=8,
             days=_all_days(1, 10), penalty={1: Decimal("500")},
         )
         assert row.accrued == Decimal("9500")
@@ -185,7 +185,7 @@ class TestNoRounding:
 
     def test_payout_rounds_up_to_500_accrued_keeps_kopecks(self):
         row = calculate_guard_row(
-            kind="guard", rate=Decimal("3333.33"), year=2026, month=8,
+            pay_type="per_shift", rate=Decimal("3333.33"), year=2026, month=8,
             days=_all_days(1, 3), premium={1: Decimal("0.55")},
         )
         assert row.salary == Decimal("9999.99")
@@ -211,7 +211,7 @@ class TestNoRounding:
 class TestHalfResultShape:
     def test_halves_cover_the_whole_month(self):
         row = calculate_guard_row(
-            kind="guard", rate=Decimal("100"), year=2026, month=2,
+            pay_type="per_shift", rate=Decimal("100"), year=2026, month=2,
             days=_all_days(1, 28),
         )
         assert isinstance(row.halves[1], GuardHalfResult)
@@ -222,7 +222,7 @@ class TestHalfResultShape:
     @pytest.mark.parametrize("month,days_in_month", [(2, 28), (4, 30), (8, 31)])
     def test_month_length_respected(self, month, days_in_month):
         row = calculate_guard_row(
-            kind="chief", rate=Decimal("30000"), year=2026, month=month,
+            pay_type="salary", rate=Decimal("30000"), year=2026, month=month,
             days=_all_days(1, days_in_month),
         )
         assert row.salary == Decimal("30000")

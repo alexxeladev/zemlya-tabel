@@ -78,7 +78,7 @@ def calculate_assignment(assignment: GuardAssignment, *, tax_percent: Decimal):
     `guard_duty.employer_tax_percent`.
     """
     return calculate_guard_row(
-        kind=assignment.kind,
+        pay_type=assignment.pay_type,
         rate=Decimal(str(assignment.rate)),
         year=assignment.year,
         month=assignment.month,
@@ -153,8 +153,9 @@ def _row_read(
         zone_id=zone.id if zone else None,
         zone_name=zone.name if zone else None,
         department_id=assignment.department_id or 0,
-        kind=assignment.kind,
-        kind_label=assignment.kind_label,
+        job_title_id=assignment.job_title_id,
+        job_title_name=assignment.job_title_name,
+        pay_type=assignment.pay_type,
         employee_id=employee.id if employee else None,
         position_id=assignment.position_id,
         employee_name=employee.full_name if employee else None,

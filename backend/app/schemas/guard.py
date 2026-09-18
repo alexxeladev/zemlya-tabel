@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ── Справочник: посты ─────────────────────────────────────────────────────────
 
@@ -203,8 +203,10 @@ class GuardRowRead(BaseModel):
     zone_id: int | None = None
     zone_name: str | None = None
     department_id: int
-    kind: str
-    kind_label: str
+    #: Должность строки — из справочника вахты; от неё способ оплаты.
+    job_title_id: int
+    job_title_name: str
+    pay_type: str
 
     # Пустой слот: пост есть, человека нет. Все поля сотрудника — None.
     employee_id: int | None = None
@@ -336,6 +338,42 @@ class GuardSettingsUpdate(BaseModel):
     employer_tax_percent: Decimal = Field(ge=0, le=100)
 
 
+# ── Справочник должностей охраны ──────────────────────────────────────────────
+
+class GuardJobTitleRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    #: per_shift — ставка за смену, salary — оклад за месяц.
+    pay_type: str
+    pay_type_label: str
+    default_for_post: bool
+    default_for_crew: bool
+    sort_order: int
+    is_active: bool
+    #: Сколько строк табеля (за все месяцы) стоят на этой должности — чтобы
+    #: экран предупредил, что смена способа оплаты пересчитает открытые месяцы.
+    usage_count: int = 0
+
+
+class GuardJobTitleCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    pay_type: str = "per_shift"
+    default_for_post: bool = False
+    default_for_crew: bool = False
+    sort_order: int | None = None
+
+
+class GuardJobTitleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=100)
+    pay_type: str | None = None
+    default_for_post: bool | None = None
+    default_for_crew: bool | None = None
+    sort_order: int | None = None
+    is_active: bool | None = None
+
+
 # ── Мутации ───────────────────────────────────────────────────────────────────
 
 class GuardAssignmentCreate(BaseModel):
@@ -344,9 +382,9 @@ class GuardAssignmentCreate(BaseModel):
     #: Место работы: пост объекта ЛИБО выездной экипаж ГБР — ровно одно из двух.
     post_id: int | None = None
     crew_id: int | None = None
-    #: Должность строки. Не задана — обычная для этого места: у экипажа ГБР,
-    #: у поста охранник.
-    kind: str | None = None
+    #: Должность строки (id из справочника). Не задана — та, что в справочнике
+    #: помечена «по умолчанию» для этого вида места (пост / экипаж ГБР).
+    job_title_id: int | None = None
     #: Кого ставим. None — пустой слот (незанятый пост).
     position_id: int | None = None
     #: Если у человека ещё нет рабочего места под этот пост — завести новое.
@@ -361,7 +399,7 @@ class GuardAssignmentCreate(BaseModel):
 
 class GuardAssignmentUpdate(BaseModel):
     #: Должность правится прямо в строке табеля.
-    kind: str | None = None
+    job_title_id: int | None = None
     rate: Decimal | None = Field(default=None, ge=0)
     is_official: bool | None = None
     note: str | None = None
@@ -403,8 +441,8 @@ class GuardQuickHireInput(BaseModel):
     #: Ровно одно из двух: пост объекта либо выездной экипаж ГБР.
     post_id: int | None = None
     crew_id: int | None = None
-    #: Должность нанимаемого; не задана — обычная для места.
-    kind: str | None = None
+    #: Должность нанимаемого (id из справочника); не задана — обычная для места.
+    job_title_id: int | None = None
     rate: Decimal | None = Field(default=None, ge=0)
     year: int | None = None
     month: int | None = None
@@ -449,9 +487,10 @@ class GuardStaffRead(BaseModel):
     tab_number: str | None = None
     department_id: int
     department_name: str
-    #: Должность: guard / gbr / dispatcher / chief. От неё тип оплаты.
-    kind: str
-    kind_label: str
+    #: Должность из справочника вахты. От неё тип оплаты. None — название
+    #: рабочего места не совпадает ни с одной должностью справочника.
+    job_title_id: int | None = None
+    job_title_name: str
     pay_type: str
     #: Оклад за месяц у начальника, ставка за смену у остальных.
     amount: Decimal | None = None
@@ -471,7 +510,7 @@ class GuardStaffCreate(BaseModel):
     #: Пусто — следующий номер общей нумерации.
     tab_number: str | None = None
     department_id: int
-    kind: str
+    job_title_id: int
     amount: Decimal | None = Field(default=None, ge=0)
     hire_date: datetime.date | None = None
     dismissal_date: datetime.date | None = None
@@ -482,7 +521,7 @@ class GuardStaffUpdate(BaseModel):
     Подразделение вне охраны — перевод, он требует `?confirm=true`."""
 
     department_id: int | None = None
-    kind: str | None = None
+    job_title_id: int | None = None
     amount: Decimal | None = Field(default=None, ge=0)
     hire_date: datetime.date | None = None
     dismissal_date: datetime.date | None = None

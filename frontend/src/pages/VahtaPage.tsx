@@ -29,7 +29,7 @@ import type {
   VahtaCandidate,
   VahtaCard,
   VahtaCrew,
-  VahtaKind,
+  GuardJobTitle,
   VahtaMonth,
   VahtaRow,
   VahtaSite,
@@ -38,14 +38,10 @@ import type {
 import { formatMoney } from '../utils/money'
 import { UI_KEYS } from '../utils/persist'
 import { companyLabel } from '../utils/companies'
+import { defaultJobTitleId, useGuardJobTitles } from '../hooks/useGuardJobTitles'
 
-/** Должности строк. Из должности следует и способ оплаты начальника охраны. */
-const KINDS: { value: VahtaKind; label: string }[] = [
-  { value: 'guard', label: 'Охранник' },
-  { value: 'gbr', label: 'ГБР' },
-  { value: 'dispatcher', label: 'Диспетчер' },
-  { value: 'chief', label: 'Начальник охраны' },
-]
+// Должности — справочник вахты (настройки → «Должности»), а не константа
+// экрана: грузятся хуком useGuardJobTitles и передаются строкам и окнам.
 
 /** Родительный падеж — «1–15 сентября». */
 const MONTHS_GEN = [
@@ -96,8 +92,6 @@ interface Place {
   kind: 'post' | 'crew'
   id: number
   label: string
-  /** Должность, обычная для этого места: у экипажа ГБР, у поста охранник. */
-  defaultKind: VahtaKind
   rate: string | null
 }
 
@@ -107,7 +101,6 @@ function placesOf(sites: VahtaSite[], crews: VahtaCrew[]): Place[] {
     kind: 'crew',
     id: c.id,
     label: c.name,
-    defaultKind: 'gbr',
     rate: c.shift_rate,
   }))
   const fromPosts: Place[] = sites.flatMap((site) =>
@@ -116,7 +109,6 @@ function placesOf(sites: VahtaSite[], crews: VahtaCrew[]): Place[] {
       kind: 'post' as const,
       id: post.id,
       label: `${site.name} · ${post.name}`,
-      defaultKind: 'guard',
       rate: post.effective_rate,
     })),
   )
@@ -144,7 +136,8 @@ interface PersonRowProps {
   onMoney: (row: VahtaRow, anchor: DOMRect) => void
   onReplace: (row: VahtaRow) => void
   onRemove: (row: VahtaRow) => void
-  onKind: (row: VahtaRow, kind: VahtaKind) => void
+  onKind: (row: VahtaRow, jobTitleId: number) => void
+  jobTitles: GuardJobTitle[]
 }
 
 /** Подсветка найденного куска — без неё в 85 строках совпадение не заметить. */
@@ -172,7 +165,7 @@ function highlight(text: string | null, query: string) {
 const PersonRow = memo(
   function PersonRow({
     row, firstDay, lastDay, midDay, showMoney, canManage, canEdit, canOpenCard, query,
-    onPaintStart, onPaintOver, onMoney, onReplace, onRemove, onKind,
+    onPaintStart, onPaintOver, onMoney, onReplace, onRemove, onKind, jobTitles,
   }: PersonRowProps) {
     const marked = useMemo(() => new Set(row.days), [row.days])
     const days = useMemo(
@@ -226,18 +219,22 @@ const PersonRow = memo(
         >
           {canEdit ? (
             <select
-              value={row.kind}
-              onChange={(e) => onKind(row, e.target.value as VahtaKind)}
+              value={row.job_title_id}
+              onChange={(e) => onKind(row, Number(e.target.value))}
               className="w-full cursor-pointer truncate rounded border border-transparent bg-transparent px-1 py-0.5 text-[11.5px] hover:border-slate-300 hover:bg-white"
             >
-              {KINDS.map((k) => (
-                <option key={k.value} value={k.value}>
-                  {k.label}
+              {/* Снятая должность строки остаётся в списке, иначе select показал бы пустоту. */}
+              {!jobTitles.some((t) => t.id === row.job_title_id) && (
+                <option value={row.job_title_id}>{row.job_title_name}</option>
+              )}
+              {jobTitles.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
                 </option>
               ))}
             </select>
           ) : (
-            row.kind_label
+            row.job_title_name
           )}
         </td>
 
@@ -385,7 +382,9 @@ const PersonRow = memo(
     a.row.penalty === b.row.penalty &&
     a.row.official_payout === b.row.official_payout &&
     a.row.rate === b.row.rate &&
-    a.row.kind === b.row.kind &&
+    a.row.job_title_id === b.row.job_title_id &&
+    a.row.job_title_name === b.row.job_title_name &&
+    a.jobTitles === b.jobTitles &&
     a.row.employee_name === b.row.employee_name &&
     a.query === b.query &&
     a.showMoney === b.showMoney &&
@@ -449,6 +448,7 @@ export function VahtaPage() {
   const places = useMemo(() => placesOf(sites, crews), [sites, crews])
   const showMoney = Boolean(data?.can_see_money)
   const canEdit = Boolean(data?.can_edit)
+  const jobTitles = useGuardJobTitles()
   // Месяц на проверке у бухгалтера или закрыт: бэк отклоняет любую правку
   // назначений (409), поэтому и кнопки «поставить / заменить / убрать», и правка
   // сумм гаснут вместе с днями.
@@ -470,7 +470,7 @@ export function VahtaPage() {
   const kinds = useMemo(
     () => [
       ...new Set(
-        zones.flatMap((z) => z.cards.flatMap((c) => c.rows.map((r) => r.kind_label))),
+        zones.flatMap((z) => z.cards.flatMap((c) => c.rows.map((r) => r.job_title_name))),
       ),
     ],
     [zones],
@@ -479,7 +479,7 @@ export function VahtaPage() {
   /** Отбор строк: поиск идёт и по человеку, и по месту работы. */
   const matches = useCallback(
     (row: VahtaRow, card: VahtaCard) => {
-      if (kindFilter && row.kind_label !== kindFilter) return false
+      if (kindFilter && row.job_title_name !== kindFilter) return false
       if (!query) return true
       const q = query.toLowerCase()
       return (
@@ -628,9 +628,9 @@ export function VahtaPage() {
   const onReplace = useCallback((row: VahtaRow) => setReplaceRow(row), [])
 
   const onKind = useCallback(
-    async (row: VahtaRow, kind: VahtaKind) => {
+    async (row: VahtaRow, jobTitleId: number) => {
       try {
-        await updateVahtaAssignment(row.id, { kind })
+        await updateVahtaAssignment(row.id, { job_title_id: jobTitleId })
         await reload()
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Не удалось сменить должность')
@@ -1028,6 +1028,7 @@ export function VahtaPage() {
                           onReplace={onReplace}
                           onRemove={handleRemove}
                           onKind={onKind}
+                          jobTitles={jobTitles}
                         />
                       ))}
                     </ZoneGroup>
@@ -1138,6 +1139,7 @@ export function VahtaPage() {
           year={year}
           month={month}
           places={placesOfCard(addTo)}
+          jobTitles={jobTitles}
           onClose={() => setAddTo(null)}
           onDone={() => {
             setAddTo(null)
@@ -1345,17 +1347,19 @@ function AddToPostModal({
   year,
   month,
   places,
+  jobTitles,
   onClose,
   onDone,
 }: {
   year: number
   month: number
   places: Place[]
+  jobTitles: GuardJobTitle[]
   onClose: () => void
   onDone: () => void
 }) {
   const [placeKey, setPlaceKey] = useState<string>(places[0]?.key ?? '')
-  const [kind, setKind] = useState<VahtaKind | ''>('')
+  const [jobTitleId, setJobTitleId] = useState<number | ''>('')
   const [candidates, setCandidates] = useState<VahtaCandidate[]>([])
   const [picked, setPicked] = useState<number[]>([])
   const [query, setQuery] = useState('')
@@ -1388,7 +1392,7 @@ function AddToPostModal({
         year,
         month,
         ...placeRef(place),
-        kind: kind || place.defaultKind,
+        job_title_id: jobTitleId || defaultJobTitleId(jobTitles, place.kind) || null,
         ...(empty ? { employee_id: null } : { employee_ids: picked }),
       })
       toast.success(empty ? 'Пустой слот добавлен' : `Поставлено: ${result.created}`)
@@ -1452,13 +1456,13 @@ function AddToPostModal({
       <label className="mb-3 block text-sm">
         <span className="mb-1 block text-gray-600">Должность</span>
         <select
-          value={kind || place?.defaultKind || 'guard'}
-          onChange={(e) => setKind(e.target.value as VahtaKind)}
+          value={jobTitleId || (place ? defaultJobTitleId(jobTitles, place.kind) : '') || ''}
+          onChange={(e) => setJobTitleId(Number(e.target.value))}
           className="w-full rounded-md border border-gray-300 px-3 py-2"
         >
-          {KINDS.map((k) => (
-            <option key={k.value} value={k.value}>
-              {k.label}
+          {jobTitles.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
             </option>
           ))}
         </select>

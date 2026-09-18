@@ -34,7 +34,6 @@ from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.guard_assignments import GuardAssignment, GuardShift
 from app.models.guard_posts import (
-    GUARD_KIND_LABELS,
     GuardCrew,
     GuardCrewShare,
     GuardPost,
@@ -366,7 +365,6 @@ def create_post(db: Session, data: dict) -> GuardPost:
     post = GuardPost(
         site_id=site.id,
         name=data["name"],
-        kind=data.get("kind") or "guard",
         # NULL — ставка берётся у объекта; заполнено — переопределяет её.
         shift_rate=data.get("shift_rate"),
         sort_order=data.get("sort_order") or 0,
@@ -377,7 +375,7 @@ def create_post(db: Session, data: dict) -> GuardPost:
 
 
 def update_post(db: Session, post: GuardPost, data: dict) -> GuardPost:
-    for field in ("name", "kind", "shift_rate", "sort_order", "is_active"):
+    for field in ("name", "shift_rate", "sort_order", "is_active"):
         if field in data:
             setattr(post, field, data[field])
     return post
@@ -522,7 +520,7 @@ def create_assignment(
     place,
     position: EmployeePosition | None,
     rate: Decimal | None = None,
-    kind: str | None = None,
+    job_title_id: int | None = None,
     fill_days: bool = True,
     days: set[int] | None = None,
 ) -> GuardAssignment:
@@ -532,9 +530,11 @@ def create_assignment(
     срок, снимаются исключения. Ставка берётся от места, если не задана явно.
 
     Должность — у СТРОКИ: на одном посту стоят люди разных должностей. Не
-    задана — берётся та, что для этого места обычна: у экипажа ГБР, у поста
-    охранник.
+    задана — та, что в справочнике помечена «по умолчанию» для этого вида места
+    (у поста и у экипажа ГБР своя).
     """
+    from app.services.guard_job_titles import resolve_job_title
+
     ensure_guard_position(db, position, place)
     is_post = isinstance(place, GuardPost)
     assignment = GuardAssignment(
@@ -543,7 +543,7 @@ def create_assignment(
         post_id=place.id if is_post else None,
         crew_id=None if is_post else place.id,
         position_id=position.id if position else None,
-        kind=kind or place.default_kind,
+        job_title_id=resolve_job_title(db, job_title_id, place).id,
         rate=rate if rate is not None else default_rate(place),
         sort_order=_next_sort_order(db, year, month, place),
     )
@@ -705,7 +705,7 @@ def replace_on_post(
         position=position,
         rate=rate if rate is not None else assignment.rate,
         # Сменщик встаёт на ту же должность, что и прежний.
-        kind=assignment.kind,
+        job_title_id=assignment.job_title_id,
         days=moved,
     )
     return assignment, successor
@@ -752,7 +752,7 @@ def copy_previous_period(
             post_id=old.post_id,
             crew_id=old.crew_id,
             position_id=position_id,
-            kind=old.kind,
+            job_title_id=old.job_title_id,
             rate=old.rate,
             is_official=old.is_official,
             sort_order=old.sort_order,
@@ -810,7 +810,7 @@ def next_tab_number(db: Session) -> str:
 
 def quick_hire(
     db: Session, *, full_name: str, place, rate: Decimal | None = None,
-    kind: str | None = None,
+    job_title_id: int | None = None,
 ) -> tuple[Employee, EmployeePosition]:
     """Оформить нового охранника из трёх полей: ФИО, пост, ставка.
 
@@ -822,13 +822,14 @@ def quick_hire(
     if len(full_name) < 3:
         raise GuardError("Укажите ФИО")
 
-    from app.services.guard_staff import apply_guard_kind
+    from app.services.guard_job_titles import resolve_job_title
+    from app.services.guard_staff import apply_job_title
 
-    kind = kind or place.default_kind
+    title = resolve_job_title(db, job_title_id, place)
     employee = Employee(
         full_name=full_name,
         tab_number=next_tab_number(db),
-        position=GUARD_KIND_LABELS.get(kind, "Охранник"),
+        position=title.name,
         is_active=True,
     )
     db.add(employee)
@@ -840,14 +841,14 @@ def quick_hire(
     # окладе, остальные посменно. Раньше здесь всем ставился посменный, и
     # начальник заводился со ставкой за смену. Сам расчёт вахты по-прежнему
     # берёт ставку из строки табеля.
-    apply_guard_kind(position, kind, rate if rate is not None else default_rate(place))
+    apply_job_title(position, title, rate if rate is not None else default_rate(place))
     db.flush()
     return employee, position
 
 
 def add_position_for_guard(
     db: Session, employee: Employee, place, rate: Decimal | None = None,
-    kind: str | None = None,
+    job_title_id: int | None = None,
 ) -> EmployeePosition:
     """Завести человеку ещё одно рабочее место под место работы охраны.
 
@@ -855,7 +856,8 @@ def add_position_for_guard(
     ставками 5 000 и 3 500 под одним табельным номером. Каждое место — своя
     позиция, иначе расчёт по ним не разделить.
     """
-    from app.services.guard_staff import apply_guard_kind
+    from app.services.guard_job_titles import resolve_job_title
+    from app.services.guard_staff import apply_job_title
 
     position = EmployeePosition(
         employee_id=employee.id,
@@ -863,8 +865,8 @@ def add_position_for_guard(
         is_primary=not employee.positions,
     )
     # Тип оплаты — от должности, как при найме.
-    apply_guard_kind(
-        position, kind or place.default_kind,
+    apply_job_title(
+        position, resolve_job_title(db, job_title_id, place),
         rate if rate is not None else default_rate(place),
     )
     db.add(position)

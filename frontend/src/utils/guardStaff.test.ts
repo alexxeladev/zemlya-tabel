@@ -14,7 +14,6 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import {
   GUARD_CONFIRM_CANCELLED,
-  GUARD_KIND_OPTIONS,
   guardAmountLabel,
   guardConfirmMessage,
   isGuardPosition,
@@ -24,21 +23,30 @@ import {
 const here = dirname(fileURLToPath(import.meta.url))
 const read = (p: string) => readFileSync(resolve(here, p), 'utf8')
 
-test('оклад только у начальника охраны — как pay_type_for_kind на бэке', () => {
-  assert.equal(guardAmountLabel('chief'), 'Оклад за месяц, ₽')
-  for (const kind of ['guard', 'gbr', 'dispatcher'] as const) {
-    assert.equal(guardAmountLabel(kind), 'Ставка за смену, ₽')
-  }
-  const backend = read('../../../backend/app/models/guard_posts.py')
-  assert.match(backend, /PAY_TYPE_SALARY if kind == GUARD_KIND_CHIEF else PAY_TYPE_PER_SHIFT/)
+test('подпись суммы — по способу оплаты должности из справочника', () => {
+  assert.equal(guardAmountLabel('salary'), 'Оклад за месяц, ₽')
+  assert.equal(guardAmountLabel('per_shift'), 'Ставка за смену, ₽')
+  assert.equal(guardAmountLabel(undefined), 'Ставка за смену, ₽')
+  // Два способа оплаты — те же, что у бэка; третьего в расчёте вахты нет.
+  const backend = read('../../../backend/app/models/guard_job_titles.py')
+  assert.match(backend, /GUARD_PAY_PER_SHIFT = "per_shift"/)
+  assert.match(backend, /GUARD_PAY_SALARY = "salary"/)
 })
 
-test('должности формы совпадают с должностями бэка', () => {
-  const backend = read('../../../backend/app/models/guard_posts.py')
-  for (const { value, label } of GUARD_KIND_OPTIONS) {
-    assert.match(backend, new RegExp(`= "${value}"`))
-    assert.ok(backend.includes(`"${label}"`), label)
+test('должности не захардкожены ни на одном экране — только справочник', () => {
+  for (const file of [
+    '../pages/VahtaPage.tsx',
+    '../pages/admin/VahtaStaffPage.tsx',
+    '../components/vahta/QuickHireModal.tsx',
+    '../components/vahta/CrewRoster.tsx',
+  ]) {
+    const src = read(file)
+    assert.doesNotMatch(src, /'Начальник охраны'|'Охранник'|'ГБР'|'Диспетчер'/, file)
+    assert.doesNotMatch(src, /'chief'|'gbr'|'dispatcher'/, file)
   }
+  assert.match(read('../pages/VahtaPage.tsx'), /useGuardJobTitles\(\)/)
+  assert.match(read('../pages/admin/VahtaStaffPage.tsx'), /useGuardJobTitles\(\)/)
+  assert.match(read('../components/vahta/QuickHireModal.tsx'), /useGuardJobTitles\(\)/)
 })
 
 test('охранная позиция — по флагу отдела, пришедшему с бэка', () => {

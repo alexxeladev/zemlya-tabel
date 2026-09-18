@@ -46,11 +46,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
-from app.models.guard_posts import (
-    GUARD_KIND_GUARD,
-    GUARD_KIND_LABELS,
-    PER_SHIFT_GUARD_KINDS,
-)
+from app.models.guard_job_titles import GuardJobTitle
 
 if TYPE_CHECKING:
     from app.models.employees import Employee
@@ -96,14 +92,12 @@ class GuardAssignment(Base):
         ForeignKey("employee_positions.id"), index=True, nullable=True
     )
 
-    #: ДОЛЖНОСТЬ этой строки: Охранник / ГБР / Диспетчер / Начальник охраны.
-    #: Принадлежит человеку, а не месту — в табеле заказчика это колонка рядом с
-    #: ФИО. На «КП Олимп» на одном посту стоят двое ГБР и трое охранников.
-    #: Из должности же следует способ оплаты: начальник охраны получает
-    #: фикс-оклад, остальные — посменно.
-    kind: Mapped[str] = mapped_column(
-        String(20), default=GUARD_KIND_GUARD, server_default=GUARD_KIND_GUARD,
-        nullable=False,
+    #: ДОЛЖНОСТЬ этой строки — из справочника `guard_job_titles`. Принадлежит
+    #: человеку, а не месту: в табеле заказчика это колонка рядом с ФИО, на «КП
+    #: Олимп» на одном посту стоят двое ГБР и трое охранников. Из должности
+    #: следует способ оплаты: ставка строки — цена смены либо оклад за месяц.
+    job_title_id: Mapped[int] = mapped_column(
+        ForeignKey("guard_job_titles.id"), index=True, nullable=False
     )
 
     #: Ставка ЭТОЙ строки. По умолчанию берётся от поста, но правится: в образце
@@ -154,6 +148,9 @@ class GuardAssignment(Base):
     post: Mapped[Optional[GuardPost]] = relationship("GuardPost")
     crew: Mapped[Optional[GuardCrew]] = relationship("GuardCrew")
     position: Mapped[Optional[EmployeePosition]] = relationship("EmployeePosition")
+    # joined: должность нужна каждой строке табеля (подпись и способ оплаты) —
+    # ленивая загрузка дала бы запрос на строку.
+    job_title: Mapped[GuardJobTitle] = relationship("GuardJobTitle", lazy="joined")
     shifts: Mapped[list[GuardShift]] = relationship(
         "GuardShift",
         back_populates="assignment",
@@ -182,14 +179,19 @@ class GuardAssignment(Base):
         return self.post if self.post_id is not None else self.crew
 
     @property
-    def kind_label(self) -> str:
+    def job_title_name(self) -> str:
         """Подпись должности для UI и выгрузок."""
-        return GUARD_KIND_LABELS.get(self.kind, GUARD_KIND_LABELS[GUARD_KIND_GUARD])
+        return self.job_title.name
+
+    @property
+    def pay_type(self) -> str:
+        """Способ оплаты строки — от должности: `per_shift` либо `salary`."""
+        return self.job_title.pay_type
 
     @property
     def is_per_shift(self) -> bool:
-        """Ставка строки — цена смены, а не месячный оклад начальника."""
-        return self.kind in PER_SHIFT_GUARD_KINDS
+        """Ставка строки — цена смены, а не месячный оклад."""
+        return self.job_title.is_per_shift
 
     @property
     def place_name(self) -> str:

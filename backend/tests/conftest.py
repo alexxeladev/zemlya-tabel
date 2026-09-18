@@ -25,9 +25,23 @@ engine = create_engine(
 TestingSessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
+def _seed_guard_job_titles(session_factory) -> None:
+    """Четыре должности охраны «из коробки» — без них вахте некого ставить на
+    пост. В проде их заводит миграция, здесь схема строится `create_all`."""
+    from app.services.guard_job_titles import seed_default_job_titles
+
+    db = session_factory()
+    try:
+        seed_default_job_titles(db)
+        db.commit()
+    finally:
+        db.close()
+
+
 @pytest.fixture(autouse=True)
 def setup_db():
     Base.metadata.create_all(bind=engine)
+    _seed_guard_job_titles(TestingSessionLocal)
     yield
     Base.metadata.drop_all(bind=engine)
 
@@ -169,7 +183,9 @@ def pg_sessions(pg_engine):
         if tables:
             names = ", ".join(f'"{t}"' for t in tables)
             conn.execute(text(f"truncate {names} restart identity cascade"))
-    return sessionmaker(bind=pg_engine, autocommit=False, autoflush=False)
+    factory = sessionmaker(bind=pg_engine, autocommit=False, autoflush=False)
+    _seed_guard_job_titles(factory)
+    return factory
 
 
 @pytest.fixture
