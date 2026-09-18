@@ -127,6 +127,24 @@ def compute_extra_companies_by_employee(
     return result
 
 
+def _resolve_cell_target(
+    db: Session, employee_id: int, position_id: int | None
+) -> tuple[Employee | None, "EmployeePosition | None"]:
+    """(сотрудник, его рабочее место ячейки) — ОДИН раз на операцию.
+
+    Все проверки ячейки (период, период работы, охранная позиция) и сама запись
+    получают эти объекты параметрами, а не грузят сотрудника заново по id:
+    после `populate_existing` в `lock_period` и каждого flush объект в сессии
+    истекает, и любой повторный `db.get` + `position_by_id` стоил три SELECT
+    (сотрудник, позиции, отдел). На одной ячейке это давало +5 запросов и
+    +80–140 мс (диагностика после этапа 1).
+    """
+    emp = db.get(Employee, employee_id)
+    if emp is None:
+        return None, None
+    return emp, emp.position_by_id(position_id)
+
+
 def _resolve_position_id(
     db: Session, employee_id: int, position_id: int | None
 ) -> int | None:
@@ -242,9 +260,15 @@ def _upsert_cell_no_commit(
     hours: Decimal,
     position_id: int | None = None,
     expected_version: int | None = None,
+    resolved: bool = False,
 ) -> TimesheetEntry | None:
-    """Core upsert logic — flush only, no commit. Caller owns the transaction."""
-    position_id = _resolve_position_id(db, employee_id, position_id)
+    """Core upsert logic — flush only, no commit. Caller owns the transaction.
+
+    `resolved=True` — `position_id` уже разрешён вызывающим (это id рабочего
+    места, а не «то, что прислал клиент»), сотрудника заново не грузим.
+    """
+    if not resolved:
+        position_id = _resolve_position_id(db, employee_id, position_id)
     existing = _find_cell(db, employee_id, work_date, company_id, position_id)
     # До любых записей: конфликт не должен ни снять код отсутствия, ни оставить
     # след в audit log.
@@ -300,6 +324,7 @@ def _upsert_cell_no_commit(
 def _check_period_lock(
     db: Session, employee_id: int, work_date: date, position_id: int | None = None,
     already_locked: set[tuple[int | None, int, int]] | None = None,
+    *, position: "EmployeePosition | None" = None, position_known: bool = False,
 ) -> None:
     """Raises PeriodLockedException if the period for this position+date is not draft.
 
@@ -313,10 +338,13 @@ def _check_period_lock(
         lock_period,
     )
 
-    emp = db.get(Employee, employee_id)
-    if emp is None:
-        return  # employee not found — let the FK check handle it
-    position = emp.position_by_id(position_id)
+    if not position_known:
+        # Вызывающие ячейки передают позицию готовой (`position_known`);
+        # отсутствия и ночные по-прежнему разрешают её здесь.
+        emp = db.get(Employee, employee_id)
+        if emp is None:
+            return  # employee not found — let the FK check handle it
+        position = emp.position_by_id(position_id)
     department_id = position.department_id if position is not None else None
     # Батч: период одного (отдел, месяц) блокируется и проверяется ОДИН раз, а не
     # на каждую ячейку — автозаполнение отдела это ~1500 ячеек на 1–2 периода.
@@ -336,14 +364,12 @@ def _check_period_lock(
         raise PeriodLockedException(period.status)
 
 
-def _ensure_hours_allowed(db: Session, employee_id: int, position_id: int | None) -> None:
+def _ensure_hours_allowed(db: Session, position: "EmployeePosition | None") -> None:
     """Часы на охранную позицию не вводятся — её смены ведёт вахта (аудит 2-Г).
     Зовётся только для НЕнулевых часов: удаление ячейки разрешено всегда."""
     from app.services.guard_staff import ensure_no_guard_accrual
 
-    emp = db.get(Employee, employee_id)
-    if emp is not None:
-        ensure_no_guard_accrual(db, emp.position_by_id(position_id), "Часы")
+    ensure_no_guard_accrual(db, position, "Часы")
 
 
 def upsert_cell(
@@ -356,24 +382,25 @@ def upsert_cell(
     position_id: int | None = None,
     expected_version: int | None = None,
 ) -> TimesheetEntry | None:
-    _check_period_lock(db, employee_id, work_date, position_id)
+    emp, position = _resolve_cell_target(db, employee_id, position_id)
+    resolved_id = position.id if position is not None else None
+    _check_period_lock(
+        db, employee_id, work_date, resolved_id, position=position, position_known=True,
+    )
     # Вне периода работы позиции день заполнять нельзя (task_employment_period).
     # hours=0 — это УДАЛЕНИЕ ячейки, его не блокируем никогда: иначе часы,
     # оставшиеся за новой границей, было бы нечем убрать.
     if hours != Decimal("0"):
-        check_employment_period(db, employee_id, work_date, position_id)
-        _ensure_hours_allowed(db, employee_id, position_id)
+        check_employment_period(db, employee_id, work_date, position_id, employee=emp)
+        _ensure_hours_allowed(db, position)
 
     def current_cell():
-        return _find_cell(
-            db, employee_id, work_date, company_id,
-            _resolve_position_id(db, employee_id, position_id),
-        )
+        return _find_cell(db, employee_id, work_date, company_id, resolved_id)
 
     with _cell_write(db, current_cell):
         result = _upsert_cell_no_commit(
-            db, actor, employee_id, work_date, company_id, hours, position_id,
-            expected_version,
+            db, actor, employee_id, work_date, company_id, hours, resolved_id,
+            expected_version, resolved=True,
         )
         db.commit()
     if result is not None:
@@ -407,13 +434,14 @@ def move_cell_company(
     уже есть часы, они ЗАМЕНЯЮТСЯ переносимыми (решение заказчика — не
     складывать и не отказывать).
     """
-    _check_period_lock(db, employee_id, work_date, position_id)
-    _ensure_hours_allowed(db, employee_id, position_id)
-    check_employment_period(db, employee_id, work_date, position_id)
-    source = _find_cell(
-        db, employee_id, work_date, old_company_id,
-        _resolve_position_id(db, employee_id, position_id),
+    emp, position = _resolve_cell_target(db, employee_id, position_id)
+    resolved_position_id = position.id if position is not None else None
+    _check_period_lock(
+        db, employee_id, work_date, resolved_position_id, position=position, position_known=True,
     )
+    _ensure_hours_allowed(db, position)
+    check_employment_period(db, employee_id, work_date, position_id, employee=emp)
+    source = _find_cell(db, employee_id, work_date, old_company_id, resolved_position_id)
     if source is None:
         # Клиент видел ячейку, а её уже нет — это конфликт редакторов, а не
         # «переносить нечего».
@@ -423,7 +451,6 @@ def move_cell_company(
     _check_expected_version(source, expected_version)
     hours = source.hours
     source_version = source.version
-    resolved_position_id = _resolve_position_id(db, employee_id, position_id)
 
     def conflicting_cell():
         # Опоздать можно на любой из двух ячеек. Исходная не тронута (версия та
@@ -435,10 +462,12 @@ def move_cell_company(
 
     with _cell_write(db, conflicting_cell):
         _upsert_cell_no_commit(
-            db, actor, employee_id, work_date, old_company_id, Decimal("0"), position_id
+            db, actor, employee_id, work_date, old_company_id, Decimal("0"),
+            resolved_position_id, resolved=True,
         )
         moved = _upsert_cell_no_commit(
-            db, actor, employee_id, work_date, new_company_id, hours, position_id
+            db, actor, employee_id, work_date, new_company_id, hours,
+            resolved_position_id, resolved=True,
         )
         db.commit()
     db.refresh(moved)
@@ -461,34 +490,47 @@ def upsert_cells_batch(
     # на ячейку (см. «Производительность» в CLAUDE.md).
     locked_periods: set[tuple[int | None, int, int]] = set()
     hours_allowed: set[tuple[int, int | None]] = set()
+    # (сотрудник, присланный position_id) → (объект сотрудника, объект позиции):
+    # разрешается один раз на рабочее место, а не на ячейку.
+    targets: dict[tuple[int, int | None], tuple] = {}
+
+    def target(employee_id: int, position_id: int | None):
+        key = (employee_id, position_id)
+        if key not in targets:
+            targets[key] = _resolve_cell_target(db, employee_id, position_id)
+        return targets[key]
+
     for cell in cells:
         position_id = cell[4] if len(cell) > 4 else None
-        _check_period_lock(db, cell[0], cell[1], position_id, locked_periods)
+        emp, position = target(cell[0], position_id)
+        _check_period_lock(
+            db, cell[0], cell[1], position.id if position else None, locked_periods,
+            position=position, position_known=True,
+        )
         if cell[3] != Decimal("0"):
-            check_employment_period(db, cell[0], cell[1], position_id)
+            check_employment_period(db, cell[0], cell[1], position_id, employee=emp)
             if (cell[0], position_id) not in hours_allowed:
-                _ensure_hours_allowed(db, cell[0], position_id)
+                _ensure_hours_allowed(db, position)
                 hours_allowed.add((cell[0], position_id))
 
     results = []
     last: list = []
 
     def conflicting_cell():
-        employee_id, work_date, company_id, position_id = last
-        return _find_cell(
-            db, employee_id, work_date, company_id,
-            _resolve_position_id(db, employee_id, position_id),
-        )
+        employee_id, work_date, company_id, resolved_id = last
+        return _find_cell(db, employee_id, work_date, company_id, resolved_id)
 
     with _cell_write(db, conflicting_cell):
         for cell in cells:
             employee_id, work_date, company_id, hours = cell[:4]
             position_id = cell[4] if len(cell) > 4 else None
             expected_version = cell[5] if len(cell) > 5 else None
-            last[:] = [employee_id, work_date, company_id, position_id]
+            _, position = target(employee_id, position_id)
+            resolved_id = position.id if position is not None else None
+            last[:] = [employee_id, work_date, company_id, resolved_id]
             result = _upsert_cell_no_commit(
-                db, actor, employee_id, work_date, company_id, hours, position_id,
-                expected_version,
+                db, actor, employee_id, work_date, company_id, hours, resolved_id,
+                expected_version, resolved=True,
             )
             results.append(result)
         db.commit()

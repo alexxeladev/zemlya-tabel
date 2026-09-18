@@ -146,14 +146,17 @@ def check_any_employment_period(
 
 
 def check_employment_period(
-    db: Session, employee_id: int, work_date: date, position_id: int | None = None
+    db: Session, employee_id: int, work_date: date, position_id: int | None = None,
+    *, employee: Employee | None = None,
 ) -> None:
     """Бросает `OutsideEmploymentPeriod`, если день вне периода работы.
 
     Ячейка без `position_id` (заведена до появления позиций) относится к
-    ОСНОВНОЙ — так же, как её читает `_check_period_lock`.
+    ОСНОВНОЙ — так же, как её читает `_check_period_lock`. `employee` — уже
+    загруженный объект (ячейка табеля даёт его, чтобы не грузить сотрудника
+    третий раз за запрос); без него — грузим сами.
     """
-    emp = db.get(Employee, employee_id)
+    emp = employee if employee is not None else db.get(Employee, employee_id)
     if emp is None:
         return  # сотрудника нет — пусть отработает проверка внешнего ключа
     position = emp.position_by_id(position_id)
