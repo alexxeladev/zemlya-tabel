@@ -181,11 +181,17 @@ export function StaffTab({
   // Ссылка на рабочее место, которого в списке нет (снято с учёта, чужое
   // подразделение, опечатка в адресе): сказать словами и убрать из адреса, а не
   // показывать пустую форму оформления.
+  //
+  // Проверяется САМО место из адреса, а не открытая форма, и не во время
+  // оформления нового: «Оформить» очищает адрес, но адрес обновляется на
+  // следующем кадре — в промежутке форма уже «новая», а `position_id` прежнего
+  // человека ещё в адресе, и проверка ложно кричала «такого места нет».
+  const addressedRowExists = positionId !== null && rows.some((r) => r.position_id === positionId)
   useEffect(() => {
-    if (loading || !loaded || positionId === null || editRow) return
+    if (creating || loading || !loaded || positionId === null || addressedRowExists) return
     toast.error('Такого рабочего места среди сотрудников охраны нет')
     onOpen(null)
-  }, [loading, loaded, positionId, editRow, onOpen])
+  }, [creating, loading, loaded, positionId, addressedRowExists, onOpen])
 
   if (!loading && guardDepts.length === 0) {
     return (
