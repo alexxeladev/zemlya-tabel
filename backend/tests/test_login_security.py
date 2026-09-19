@@ -382,4 +382,20 @@ def test_email_case_is_one_account_for_lock(
     assert listed[victim.id]["login_locked_until"] is not None
     assert any(i["entity_label"] == "Бухгалтер (victim@example.com)" for i in _journal(client, adm))
     client.post(f"/api/employees/{victim.id}/unlock-login", headers=_auth(adm))
+    # Главный сценарий: после снятия админом то же написание «VICTIM@» больше
+    # не заблокировано (раньше точка сброса для него не находилась — 429).
+    assert _login(client, "VICTIM@example.com", "wrong-pass").status_code == 401
     assert _login(client, "victim@example.com", "right-pass-1").status_code == 200
+
+
+def test_admin_unlock_covers_other_email_case(
+    client: TestClient, victim: Employee, admin_user: Employee,
+):
+    """Админ снял блокировку — написание «VICTIM@» больше не заблокировано.
+    Раньше для чужого регистра учётка не находилась, точки сброса не было — 429."""
+    for _ in range(LIMIT):
+        _login(client, "VICTIM@example.com", "wrong-pass")
+    adm = get_token(client, "admin@example.com", "admin123")
+    resp = client.post(f"/api/employees/{victim.id}/unlock-login", headers=_auth(adm))
+    assert resp.status_code == 200
+    assert _login(client, "VICTIM@example.com", "wrong-pass").status_code == 401

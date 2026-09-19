@@ -947,15 +947,26 @@ def get_company_shares(
     return _shares_response(db, emp, position)
 
 
-def _current_shares(db: Session, emp_id: int, position_id: int | None) -> list:
-    """Текущий набор процентов рабочего места — снимок «до» для журнала."""
-    rows = db.query(EmployeeCompanyShare).filter(
+def _position_shares_filter(emp_id: int, position):
+    """Строки процентов ЭТОГО рабочего места. Строки без позиции заведены до
+    совместительства и относятся к ОСНОВНОЙ (так их читает расчёт) — к ним
+    правка подработки не прикасается (task_stage2_access, то же правило, что у
+    месячного override в `PUT/DELETE /timesheet/distribution`)."""
+    position_id = position.id if position is not None else None
+    return (
         EmployeeCompanyShare.employee_id == emp_id,
         or_(
             EmployeeCompanyShare.position_id == position_id,
-            EmployeeCompanyShare.position_id.is_(None),
+            EmployeeCompanyShare.position_id.is_(None)
+            if position is None or position.is_primary
+            else False,
         ),
-    ).all()
+    )
+
+
+def _current_shares(db: Session, emp_id: int, position) -> list:
+    """Текущий набор процентов рабочего места — снимок «до» для журнала."""
+    rows = db.query(EmployeeCompanyShare).filter(*_position_shares_filter(emp_id, position)).all()
     return [(r.company_id, r.percent) for r in rows]
 
 
@@ -991,14 +1002,10 @@ def set_company_shares(
     # Журнал изменений (task_audit_log): набор переписывается целиком Core-DELETE
     # мимо ORM, поэтому события сессии его не видят — пишем ОДНОЙ записью
     # «было → стало». Снимок «до» надо снять ДО удаления строк.
-    shares_before = format_share_rows(db, _current_shares(db, emp_id, position_id))
+    shares_before = format_share_rows(db, _current_shares(db, emp_id, position))
 
     db.query(EmployeeCompanyShare).filter(
-        EmployeeCompanyShare.employee_id == emp_id,
-        or_(
-            EmployeeCompanyShare.position_id == position_id,
-            EmployeeCompanyShare.position_id.is_(None),
-        ),
+        *_position_shares_filter(emp_id, position)
     ).delete(synchronize_session=False)
     for s in positive:
         db.add(EmployeeCompanyShare(

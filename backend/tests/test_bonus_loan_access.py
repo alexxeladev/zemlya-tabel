@@ -509,3 +509,62 @@ def test_company_shares_read_checks_requested_workplace(client, setup):
     assert client.get(url, params={"position_id": second}, headers=b).status_code == 200
     assert client.get(url, headers=b).status_code == 403
     assert client.get(url, headers=a).status_code == 200
+
+
+# ── Доработки по третьему ревью ───────────────────────────────────────────────
+
+from app.models.company_shares import EmployeeCompanyShare  # noqa: E402
+
+
+def _admin(client):
+    return {"Authorization": f"Bearer {get_token(client, 'admin@example.com', 'admin123')}"}
+
+
+def test_card_shares_of_second_job_keep_legacy_primary_rows(
+    client, setup, db_session, company_id, admin_user,
+):
+    """Вторая копия правила (карточка): проценты подработки не стирают строки
+    без позиции — они принадлежат основной."""
+    w = setup["worker"]
+    db_session.add(EmployeeCompanyShare(employee_id=w.id, position_id=None,
+                                        company_id=company_id, percent=Decimal("100")))
+    db_session.commit()
+    resp = client.put(f"/api/employees/{w.id}/company-shares", headers=_admin(client), json={
+        "position_id": setup["second"].id,
+        "shares": [{"company_id": company_id, "percent": "100"}],
+    })
+    assert resp.status_code == 200
+    db_session.expire_all()
+    assert db_session.query(EmployeeCompanyShare).filter_by(position_id=None).count() == 1
+
+
+def test_card_shares_of_primary_replace_legacy_rows(
+    client, setup, db_session, company_id, admin_user,
+):
+    """Обратный случай: правка ОСНОВНОЙ заменяет и её строки без позиции."""
+    w = setup["worker"]
+    db_session.add(EmployeeCompanyShare(employee_id=w.id, position_id=None,
+                                        company_id=company_id, percent=Decimal("100")))
+    db_session.commit()
+    resp = client.put(f"/api/employees/{w.id}/company-shares", headers=_admin(client), json={
+        "shares": [{"company_id": company_id, "percent": "100"}],
+    })
+    assert resp.status_code == 200
+    db_session.expire_all()
+    assert db_session.query(EmployeeCompanyShare).filter_by(position_id=None).count() == 0
+
+
+def test_primary_override_replaces_legacy_rows(client, setup, db_session, company_id):
+    """Обратный случай для месячной правки: основная заменяет строки без позиции."""
+    w = setup["worker"]
+    db_session.add(CompanyShareOverride(employee_id=w.id, position_id=None,
+                                        company_id=company_id, year=2026, month=5,
+                                        percent=Decimal("100")))
+    db_session.commit()
+    resp = client.put("/api/timesheet/distribution", headers=_h(client, "mgr-a@example.com"), json={
+        "employee_id": w.id, "year": 2026, "month": 5,
+        "shares": [{"company_id": company_id, "percent": "100"}],
+    })
+    assert resp.status_code == 200
+    db_session.expire_all()
+    assert db_session.query(CompanyShareOverride).filter_by(position_id=None).count() == 0
