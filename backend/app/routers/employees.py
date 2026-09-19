@@ -935,12 +935,16 @@ def get_company_shares(
     emp = db.get(Employee, emp_id)
     if not emp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    # Отдел ЗАПРОШЕННОГО рабочего места, а не основного (task_stage2_access
+    # п.2.8): иначе менеджер основной позиции читал проценты подработки в чужом
+    # отделе, а менеджер подработки не видел своих.
+    position = emp.position_by_id(position_id)
     if is_department_scoped(current_user) and not can_access_department(
-        current_user, emp.department_id
+        current_user, position.department_id if position else None
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
 
-    return _shares_response(db, emp, emp.position_by_id(position_id))
+    return _shares_response(db, emp, position)
 
 
 def _current_shares(db: Session, emp_id: int, position_id: int | None) -> list:

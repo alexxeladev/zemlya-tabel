@@ -334,16 +334,26 @@ def test_foreign_manager_cannot_move_primary_cell_company(client, setup, db_sess
 
 
 def test_foreign_manager_cannot_mark_primary_night_shift(client, setup, db_session):
+    """У основной позиции ночные РАЗРЕШЕНЫ — до правки отметка прошла бы (200),
+    так что 403 здесь доказывает именно проверку отдела, а не отказ по флагу."""
+    from app.models.night_shifts import NightShift
+
+    setup["worker"].primary_position.has_night_shifts = True
+    db_session.commit()
     resp = client.put(
         "/api/timesheet/night-shift",
         headers=_h(client, "mgr-b@example.com"),
-        json={
-            "employee_id": setup["worker"].id,
-            "work_date": "2026-05-05",
-            "value": True,
-        },
+        json={"employee_id": setup["worker"].id, "work_date": "2026-05-05", "value": True},
     )
     assert resp.status_code == 403
+    assert db_session.query(NightShift).count() == 0
+    # Менеджер основного отдела ту же отметку ставит — сценарий рабочий.
+    resp = client.put(
+        "/api/timesheet/night-shift",
+        headers=_h(client, "mgr-a@example.com"),
+        json={"employee_id": setup["worker"].id, "work_date": "2026-05-05", "value": True},
+    )
+    assert resp.status_code == 200
 
 
 def test_foreign_manager_cannot_override_primary_distribution(
@@ -405,3 +415,97 @@ def test_foreign_manager_does_not_see_primary_premium(client, setup):
     assert [r["reason"] for r in b.json()] == ["подработка"]
     a = client.get("/api/timesheet/2026/5/adjustments", headers=_h(client, "mgr-a@example.com"))
     assert [r["reason"] for r in a.json()] == ["основная позиция"]
+
+
+# ── Доработки по второму ревью ────────────────────────────────────────────────
+
+
+def test_primary_manager_cannot_delete_all_overrides_touching_second_job(
+    client, setup, db_session, company_id,
+):
+    """Цикл по позициям в DELETE без position_id: менеджер ОСНОВНОЙ позиции не
+    сносит заодно правку подработки в чужом отделе."""
+    w = setup["worker"]
+    db_session.add_all([
+        CompanyShareOverride(employee_id=w.id, position_id=None, company_id=company_id,
+                             year=2026, month=5, percent=Decimal("100")),
+        CompanyShareOverride(employee_id=w.id, position_id=setup["second"].id,
+                             company_id=company_id, year=2026, month=5, percent=Decimal("100")),
+    ])
+    db_session.commit()
+    resp = client.delete(
+        f"/api/timesheet/distribution/{w.id}/2026/5", headers=_h(client, "mgr-a@example.com"),
+    )
+    assert resp.status_code == 403
+    assert db_session.query(CompanyShareOverride).count() == 2
+
+
+def test_second_job_override_keeps_legacy_primary_rows(client, setup, db_session, company_id):
+    """Строки без позиции — основной; правка подработки их не стирает."""
+    w = setup["worker"]
+    db_session.add(CompanyShareOverride(employee_id=w.id, position_id=None,
+                                        company_id=company_id, year=2026, month=5,
+                                        percent=Decimal("100")))
+    db_session.commit()
+    resp = client.put("/api/timesheet/distribution", headers=_h(client, "mgr-b@example.com"), json={
+        "employee_id": w.id, "position_id": setup["second"].id, "year": 2026, "month": 5,
+        "shares": [{"company_id": company_id, "percent": "100"}],
+    })
+    assert resp.status_code == 200
+    db_session.expire_all()
+    assert db_session.query(CompanyShareOverride).filter_by(position_id=None).count() == 1
+
+
+def test_owner_manager_still_writes_own_workplace(client, setup, db_session, company_id):
+    """Не перекрыто лишнего: всё то же самое на СВОЁМ месте с position_id."""
+    from app.models.night_shifts import NightShift
+
+    second = setup["second"]
+    second.has_night_shifts = True
+    other = Company(code="E", name="ООО Е", is_active=True)
+    db_session.add(other)
+    db_session.commit()
+    h = _h(client, "mgr-b@example.com")
+    w = setup["worker"].id
+    assert client.put("/api/timesheet/cell", headers=h, json={
+        "employee_id": w, "position_id": second.id, "work_date": "2026-05-05",
+        "company_id": company_id, "hours": 4,
+    }).status_code == 200
+    assert client.post("/api/timesheet/cells/batch", headers=h, json={"entries": [
+        {"employee_id": w, "position_id": second.id, "work_date": "2026-05-06",
+         "company_id": company_id, "hours": 4},
+    ]}).status_code == 200
+    assert client.put("/api/timesheet/cell/company", headers=h, json={
+        "employee_id": w, "position_id": second.id, "work_date": "2026-05-05",
+        "old_company_id": company_id, "new_company_id": other.id,
+    }).status_code == 200
+    assert client.put("/api/timesheet/night-shift", headers=h, json={
+        "employee_id": w, "position_id": second.id, "work_date": "2026-05-07", "value": True,
+    }).status_code == 200
+    assert db_session.query(NightShift).count() == 1
+    assert client.put("/api/timesheet/distribution", headers=h, json={
+        "employee_id": w, "position_id": second.id, "year": 2026, "month": 5,
+        "shares": [{"company_id": company_id, "percent": "100"}],
+    }).status_code == 200
+
+
+def test_manager_acts_on_inactive_second_job_of_own_department(client, setup, db_session):
+    """Снятая с учёта подработка своего отдела — всё ещё его: премию на ней
+    удалить можно (было 403 из-за проверки «по любому АКТИВНОМУ месту»)."""
+    setup["second"].is_active = False
+    db_session.commit()
+    resp = client.delete(
+        f"/api/timesheet/adjustments/{setup['second_premium'].id}",
+        headers=_h(client, "mgr-b@example.com"),
+    )
+    assert resp.status_code == 204
+
+
+def test_company_shares_read_checks_requested_workplace(client, setup):
+    w, second = setup["worker"].id, setup["second"].id
+    a, b = _h(client, "mgr-a@example.com"), _h(client, "mgr-b@example.com")
+    url = f"/api/employees/{w}/company-shares"
+    assert client.get(url, params={"position_id": second}, headers=a).status_code == 403
+    assert client.get(url, params={"position_id": second}, headers=b).status_code == 200
+    assert client.get(url, headers=b).status_code == 403
+    assert client.get(url, headers=a).status_code == 200

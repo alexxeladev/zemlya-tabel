@@ -190,9 +190,7 @@ def record_failure(
             )
 
 
-def unlock_login(
-    db: Session, employee: Employee, how: str, source: str | None = None,
-) -> None:
+def unlock_login(db: Session, employee: Employee, how: str) -> None:
     """Снять блокировку: неудачи до этого момента в порог больше не идут.
     Счётчик не трогается — история попыток остаётся. Была блокировка — в
     «Журнал изменений» пишется, кто и как её снял (`how`)."""
@@ -202,5 +200,4 @@ def unlock_login(
         record_login_event(
             db, email=email_key(employee.email or ""), employee=employee,
             field=LOGIN_LOCK_FIELD, old_value="вход закрыт", new_value=how,
-            source=source,
         )

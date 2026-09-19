@@ -314,3 +314,72 @@ def test_non_admin_cannot_read_login_journal(client: TestClient, victim: Employe
         client.get("/api/audit", params={"entity_type": "login"}, headers=_auth(tok)).status_code
         == 403
     )
+
+
+# ── Доработки по второму ревью ────────────────────────────────────────────────
+
+
+def test_every_reject_reason_reaches_journal(client: TestClient, admin_user: Employee, db_session):
+    gone = Employee(full_name="Уволенный", email="gone@example.com", role="accountant",
+                    hashed_password=hash_password("gone-pass-1"), is_active=False)
+    no_access = Employee(full_name="Без доступа", email="noaccess@example.com", role=None,
+                         hashed_password=hash_password("noacc-pass-1"), is_active=True)
+    db_session.add_all([gone, no_access])
+    db_session.commit()
+    _login(client, "gone@example.com", "gone-pass-1")
+    _login(client, "noaccess@example.com", "noacc-pass-1")
+    adm = get_token(client, "admin@example.com", "admin123")
+    values = {i["entity_label"]: i["new_value"] for i in _journal(client, adm)}
+    assert values["Уволенный (gone@example.com)"] == "сотрудник уволен"
+    assert values["Без доступа (noaccess@example.com)"] == "у сотрудника нет доступа в систему"
+
+
+def test_lock_event_written_once_attempts_during_lock_journaled(
+    client: TestClient, victim: Employee, admin_user: Employee,
+):
+    _lock(client)
+    for _ in range(3):
+        assert _login(client, "victim@example.com", "wrong-pass").status_code == 429
+    adm = get_token(client, "admin@example.com", "admin123")
+    items = _journal(client, adm)
+    assert len([i for i in items if i["field"] == "login_lock"]) == 1
+    assert [i["new_value"] for i in items if i["field"] == "login_failure"].count(
+        "отклонено: вход заблокирован"
+    ) == 3
+
+
+def test_cli_unlock_is_journaled(client: TestClient, victim: Employee, admin_user: Employee,
+                                 db_session, monkeypatch):
+    from app import cli
+
+    _lock(client)
+    monkeypatch.setattr("app.database.SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+    cli.reset_password("victim@example.com", "cli-reset-123")
+    adm = get_token(client, "admin@example.com", "admin123")
+    locks = [i for i in _journal(client, adm) if i["field"] == "login_lock"]
+    assert locks[0]["new_value"] == "снята сбросом пароля (CLI)"
+
+
+def test_admin_unlock_source_is_login(client: TestClient, victim: Employee, admin_user: Employee):
+    """Фильтр «Вход в систему» показывает и снятие блокировки админом."""
+    _lock(client)
+    adm = get_token(client, "admin@example.com", "admin123")
+    client.post(f"/api/employees/{victim.id}/unlock-login", headers=_auth(adm))
+    items = _journal(client, adm, source="login")
+    assert any(i["new_value"] == "снята администратором" for i in items)
+
+
+def test_email_case_is_one_account_for_lock(
+    client: TestClient, victim: Employee, admin_user: Employee,
+):
+    """«VICTIM@…» — та же учётка для счётчика: админ видит блокировку в списке
+    и снимает её, журнал подписан сотрудником."""
+    for _ in range(LIMIT):
+        _login(client, "VICTIM@example.com", "wrong-pass")
+    adm = get_token(client, "admin@example.com", "admin123")
+    listed = {e["id"]: e for e in client.get("/api/employees", headers=_auth(adm)).json()}
+    assert listed[victim.id]["login_locked_until"] is not None
+    assert any(i["entity_label"] == "Бухгалтер (victim@example.com)" for i in _journal(client, adm))
+    client.post(f"/api/employees/{victim.id}/unlock-login", headers=_auth(adm))
+    assert _login(client, "victim@example.com", "right-pass-1").status_code == 200

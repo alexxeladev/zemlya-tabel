@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user_allow_password_change
@@ -25,6 +26,7 @@ from app.schemas.employee import EmployeeRead
 from app.services.finance_masking import employee_for
 from app.services.login_guard import (
     client_ip,
+    email_key,
     login_locked_until,
     record_failure,
     serialize_attempts,
@@ -42,13 +44,20 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     ip = client_ip(request)
     serialize_attempts(db, payload.email)
     emp: Employee | None = db.query(Employee).filter(Employee.email == payload.email).first()
+    # Счётчик и журнал ведутся по email БЕЗ учёта регистра, поэтому и учётка для
+    # них — тоже: иначе «VICTIM@…» копил бы неудачи мимо точки сброса
+    # (последний вход, снятие админом) и мимо пометки в списке сотрудников.
+    # Сам вход, как и раньше, — по точному совпадению.
+    account = emp or db.query(Employee).filter(
+        func.lower(Employee.email) == email_key(payload.email)
+    ).first()
 
     def reject(reason: str, status_code: int, detail: str, headers: dict | None = None):
-        record_failure(db, payload.email, ip, reason, emp)
+        record_failure(db, payload.email, ip, reason, account)
         db.commit()
         raise HTTPException(status_code=status_code, detail=detail, headers=headers)
 
-    locked_until = login_locked_until(db, payload.email, emp)
+    locked_until = login_locked_until(db, payload.email, account)
     if locked_until is not None:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         retry = max(1, int((locked_until - now).total_seconds()))

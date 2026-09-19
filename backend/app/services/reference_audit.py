@@ -634,7 +634,6 @@ def record_login_event(
     old_value: str | None,
     new_value: str,
     actor_name: str | None = None,
-    source: str | None = None,
 ) -> None:
     """Событие входа в журнал изменений (task_stage2_access п.2.6): неудачная
     попытка, начало и снятие блокировки. Экран у журнала один — «Журнал
@@ -653,7 +652,9 @@ def record_login_event(
         [{
             "actor_id": None if actor_name else db.info.get(_ACTOR_ID),
             "actor_name": actor_name or db.info.get(_ACTOR_NAME),
-            "source": source or db.info.get(_SOURCE) or SOURCE_LOGIN,
+            # Всегда «Вход в систему», даже когда снимает админ из интерфейса:
+            # по этому источнику события входа и фильтруются.
+            "source": SOURCE_LOGIN,
             "operation_id": None,
             "entity_type": LOGIN_ENTITY,
             "entity_id": employee.id if employee is not None else None,

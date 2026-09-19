@@ -216,7 +216,12 @@ def _check_position_access(
     сотрудника — так менеджер отдела, где у человека совместительство, удалял
     премию основной позиции и правил заём из чужого отдела.
     """
-    target = _check_cell_access(actor, employee_id, db)
+    # Сначала позиция, потом ОДНА проверка по её отделу: предварительная
+    # проверка «по любому месту» требовала АКТИВНОЕ место в своём отделе и
+    # отказывала менеджеру на снятой с учёта подработке его же отдела.
+    target = db.get(Employee, employee_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     position = loan_position(target) if loan else target.position_by_id(position_id)
     _check_cell_access(actor, employee_id, db, position.id if position is not None else None)
     return target, position
@@ -438,7 +443,11 @@ def set_distribution_override(
         CompanyShareOverride.month == payload.month,
         or_(
             CompanyShareOverride.position_id == position_id,
-            CompanyShareOverride.position_id.is_(None),
+            # Строки без позиции заведены до неё и относятся к ОСНОВНОЙ — снимать
+            # их можно только правкой основной (то же правило, что в DELETE).
+            CompanyShareOverride.position_id.is_(None)
+            if position is not None and position.is_primary
+            else False,
         ),
     ).delete(synchronize_session=False)
     for s in payload.shares:
