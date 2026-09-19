@@ -48,8 +48,17 @@ def upgrade() -> None:
     op.create_index(
         "uq_employees_email_lower", "employees", [sa.text("lower(email)")], unique=True,
     )
+    # Логин (часть до «@») уникален и в БАЗЕ: проверку приложения
+    # (`account_conflict`) две одновременные выдачи доступа прошли бы обе
+    # (нашло ревью). split_part — только Postgres; в модели этого индекса нет,
+    # тестам на SQLite хватает проверки приложения.
+    op.create_index(
+        "uq_employees_login_name", "employees",
+        [sa.text("lower(split_part(email, '@', 1))")], unique=True,
+    )
 
 
 def downgrade() -> None:
     # Регистр почт до миграции не восстановить — он и не нужен.
+    op.drop_index("uq_employees_login_name", table_name="employees")
     op.drop_index("uq_employees_email_lower", table_name="employees")

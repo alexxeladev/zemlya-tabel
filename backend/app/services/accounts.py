@@ -14,10 +14,16 @@ VICTIM@example.com — одна учётка. Пользователи уже з
 """
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.employees import Employee
+
+#: Грубая проверка «похоже на почту» для мест без EmailStr (CLI): одна «@»,
+#: непустые части, точка в домене.
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 
 def normalize_email(email: str | None) -> str:

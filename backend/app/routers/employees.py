@@ -1,11 +1,13 @@
 import datetime
 import secrets
 import string
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -210,6 +212,23 @@ def _to_dict(emp: Employee) -> dict:
     }
 
 
+@contextmanager
+def _account_taken_as_409(db: Session, grants_access: bool):
+    """Почту или логин успела занять ОДНОВРЕМЕННАЯ выдача доступа: проверку
+    `account_conflict` прошли оба запроса, второго остановил уникальный индекс
+    (`uq_employees_email_lower` / `uq_employees_login_name`). Это 409, а не 500."""
+    try:
+        yield
+    except IntegrityError:
+        db.rollback()
+        if not grants_access:
+            raise
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Почта или логин уже заняты — повторите, обновив список сотрудников",
+        )
+
+
 def _gen_temp_password() -> str:
     alphabet = string.ascii_letters + string.digits
     # Сброс админом — тоже место, где задаётся пароль: 12 символов латиницы и
@@ -341,9 +360,10 @@ def create_employee(
         emp.must_change_password = True
 
     db.add(emp)
-    db.flush()
-    log_action(db, actor, "employee", emp.id, "create", after=_to_dict(emp))
-    db.commit()
+    with _account_taken_as_409(db, bool(payload.access)):
+        db.flush()
+        log_action(db, actor, "employee", emp.id, "create", after=_to_dict(emp))
+        db.commit()
     db.refresh(emp)
     return emp
 
@@ -517,9 +537,11 @@ def grant_access(
     emp.role = payload.role
     emp.must_change_password = True
     revoke_sessions(emp)
-    db.flush()
-    log_action(db, actor, "employee", emp.id, "access_granted", after={"email": emp.email, "role": emp.role})
-    db.commit()
+    with _account_taken_as_409(db, True):
+        db.flush()
+        log_action(db, actor, "employee", emp.id, "access_granted",
+                   after={"email": emp.email, "role": emp.role})
+        db.commit()
     db.refresh(emp)
     return emp
 

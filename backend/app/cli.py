@@ -23,7 +23,7 @@ def _require_password_policy(password: str) -> None:
 
 def create_admin(email: str, password: str, full_name: str) -> None:
     from app.core.security import hash_password
-    from app.services.accounts import account_conflict, normalize_email
+    from app.services.accounts import EMAIL_RE, account_conflict, normalize_email
     from app.database import SessionLocal
     from app.models.employees import Employee
 
@@ -39,6 +39,11 @@ def create_admin(email: str, password: str, full_name: str) -> None:
             )
             sys.exit(1)
 
+        # Логин — часть почты до «@»: без «@» в учётку не войти ни по логину,
+        # ни по почте, а системного админа потом не удалить (нашло ревью).
+        if not EMAIL_RE.fullmatch(normalize_email(email)):
+            print(f"Error: '{email}' — не адрес почты (нужен вида name@domain)", file=sys.stderr)
+            sys.exit(1)
         conflict = account_conflict(db, email)
         if conflict:
             print(f"Error: {conflict}", file=sys.stderr)

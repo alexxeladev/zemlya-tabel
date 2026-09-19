@@ -52,6 +52,10 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     # «victim@example.com» считаются вместе. Учётки нет — по введённой строке.
     key = normalize_email(emp.email) if emp is not None else email_key(payload.email)
     serialize_attempts(db, key)
+    # Учётку перечитать ПОСЛЕ очереди: успешный вход или снятие блокировки,
+    # закоммиченные, пока ждали, сдвигают точку отсчёта неудач.
+    if emp is not None:
+        db.refresh(emp)
 
     def reject(reason: str, status_code: int, detail: str, headers: dict | None = None):
         record_failure(db, key, ip, reason, emp)

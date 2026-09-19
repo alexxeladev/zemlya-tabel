@@ -138,13 +138,14 @@ def test_cli_reset_by_login(client: TestClient, victim: Employee, db_session, mo
     assert _login(client, "victim", "cli-reset-123").status_code == 200
 
 
-def test_cli_create_admin_rejects_taken_login(victim: Employee, db_session, monkeypatch):
+def test_cli_create_admin_rejects_taken_login(victim: Employee, db_session, monkeypatch, capsys):
     from app import cli
 
     monkeypatch.setattr("app.database.SessionLocal", lambda: db_session)
     monkeypatch.setattr(db_session, "close", lambda: None)
     with pytest.raises(SystemExit):
         cli.create_admin("Victim@root.ru", "admin-pass-1", "Root")
+    assert "Логин «victim» уже занят" in capsys.readouterr().err
 
 
 def test_helpers():
@@ -153,3 +154,33 @@ def test_helpers():
 
 def test_conflict_excludes_self(db_session, victim: Employee):
     assert account_conflict(db_session, "VICTIM@example.com", exclude_id=victim.id) is None
+
+
+def test_concurrent_grant_is_409_not_500(
+    client: TestClient, admin_user: Employee, victim: Employee, db_session, monkeypatch,
+):
+    """Гонку двух выдач доступа эмулируем, выключив проверку приложения: второй
+    запрос останавливает уникальный индекс — ответ 409, а не 500."""
+    monkeypatch.setattr("app.routers.employees.account_conflict", lambda *a, **k: None)
+    tok = get_token(client, "admin@example.com", "admin123")
+    resp = client.post("/api/employees", headers=_auth(tok), json={
+        "full_name": "Гонщик", "access": {
+            "email": "VICTIM@example.com", "role": "employee",
+            "initial_password": "start-pass-1",
+        },
+    })
+    assert resp.status_code == 409
+    db_session.rollback()
+    assert db_session.query(Employee).filter(Employee.full_name == "Гонщик").count() == 0
+
+
+def test_cli_create_admin_rejects_non_email(db_session, monkeypatch, capsys):
+    """Без «@» в учётку не войти ни по логину, ни по почте."""
+    from app import cli
+
+    monkeypatch.setattr("app.database.SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+    with pytest.raises(SystemExit):
+        cli.create_admin("admin", "admin-pass-1", "Root")
+    assert "не адрес почты" in capsys.readouterr().err
+    assert db_session.query(Employee).count() == 0
