@@ -212,11 +212,14 @@ def _to_dict(emp: Employee) -> dict:
     }
 
 
-# Ограничения уникальности учётки: индексы по почте без регистра и по логину
-# (миграция c7d8e9f0a1b2) плюс исходный unique колонки. SQLite пишет
-# «employees.email», Postgres — имя ограничения.
+# Ограничения уникальности учётки. Postgres называет в ошибке ИМЯ индекса:
+# ix_employees_email — исходный unique колонки (миграция a1b2c3d4e5f6), он
+# проверяется первым и ловит самую частую гонку «та же почта»;
+# uq_employees_email_lower и uq_employees_login_name — миграция c7d8e9f0a1b2.
+# SQLite пишет «employees.email» / имя индекса. Сверку держит PG-тест
+# test_pg_login_name.py::test_concurrent_grant_conflicts_are_409.
 _ACCOUNT_CONSTRAINTS = (
-    "uq_employees_email_lower", "uq_employees_login_name", "employees_email_key",
+    "ix_employees_email", "uq_employees_email_lower", "uq_employees_login_name",
     "employees.email",
 )
 

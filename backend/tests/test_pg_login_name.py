@@ -76,3 +76,37 @@ def test_migration_refuses_on_existing_duplicates(pg_sessions):
             ))
             db.commit()
         assert _alembic("upgrade", "head").returncode == 0
+
+
+@pytest.mark.parametrize("email", [
+    pytest.param("dup@example.com", id="same-email"),
+    pytest.param("DUP@Example.com", id="same-email-other-case"),
+    pytest.param("dup@other.org", id="same-login-other-domain"),
+])
+def test_concurrent_grant_conflicts_are_409(pg_client, pg_sessions, monkeypatch, email):
+    """Гонку двух выдач доступа эмулируем, выключив проверку приложения:
+    второго останавливает индекс Postgres, и ответ — 409, а не 500. Имена
+    ограничений в ошибке — Postgres-овские (ix_employees_email и т.д.), на
+    SQLite этот путь не проверить (нашло ревью: регрессия ушла незамеченной)."""
+    from app.core.security import hash_password
+    from tests.conftest import get_token
+
+    with pg_sessions() as db:
+        db.add_all([
+            Employee(full_name="Админ", email="root@example.com", role="admin",
+                     hashed_password=hash_password("root-pass-1"), is_active=True),
+            Employee(full_name="Первый", email="dup@example.com", role="employee",
+                     hashed_password=hash_password("dup-pass-1"), is_active=True),
+        ])
+        db.commit()
+    monkeypatch.setattr("app.routers.employees.account_conflict", lambda *a, **k: None)
+    token = get_token(pg_client, "root@example.com", "root-pass-1")
+    resp = pg_client.post(
+        "/api/employees", headers={"Authorization": f"Bearer {token}"},
+        json={"full_name": "Второй", "access": {
+            "email": email, "role": "employee", "initial_password": "start-pass-1",
+        }},
+    )
+    assert resp.status_code == 409, resp.text
+    with pg_sessions() as db:
+        assert db.query(Employee).filter(Employee.full_name == "Второй").count() == 0
