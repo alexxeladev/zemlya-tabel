@@ -71,6 +71,7 @@ from app.services.guard_staff import (
     pin_loan_before_primary_change,
     is_guard_position,
 )
+from app.services.accounts import account_conflict, normalize_email
 from app.services.login_guard import locked_until_by_employee, unlock_login
 from app.services.org_access import (
     accessible_department_ids,
@@ -330,9 +331,11 @@ def create_employee(
     emp = build_employee(payload)
 
     if payload.access:
-        if db.query(Employee).filter(Employee.email == payload.access.email).first():
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
-        emp.email = payload.access.email
+        # Почта — в нижнем регистре, логин (часть до «@») уникален (services/accounts).
+        conflict = account_conflict(db, payload.access.email)
+        if conflict:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=conflict)
+        emp.email = normalize_email(payload.access.email)
         emp.hashed_password = hash_password(payload.access.initial_password)
         emp.role = payload.access.role
         emp.must_change_password = True
@@ -505,10 +508,11 @@ def grant_access(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
     if emp.email is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Employee already has system access")
-    if db.query(Employee).filter(Employee.email == payload.email).first():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+    conflict = account_conflict(db, payload.email)
+    if conflict:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=conflict)
 
-    emp.email = payload.email
+    emp.email = normalize_email(payload.email)
     emp.hashed_password = hash_password(payload.initial_password)
     emp.role = payload.role
     emp.must_change_password = True

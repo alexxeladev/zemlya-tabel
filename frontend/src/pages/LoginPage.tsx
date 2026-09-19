@@ -11,7 +11,9 @@ import { FormField } from '../components/FormField'
 import { ErrorBox } from '../components/ErrorBox'
 
 const schema = z.object({
-  email: z.string().email({ message: 'Введите корректный email' }),
+  // Логин — часть почты до «@» — или полная почта, регистр не важен (бэк:
+  // services/accounts). Поле называется email ради совместимости API.
+  email: z.string().trim().min(1, { message: 'Введите логин или почту' }),
   password: z.string().min(6, { message: 'Минимум 6 символов' }),
 })
 
@@ -41,7 +43,7 @@ export function LoginPage() {
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 401) {
-          setServerError('Неверный email или пароль')
+          setServerError('Неверный логин или пароль')
         } else if (err.status === 403) {
           setServerError('Учётная запись заблокирована')
         } else {
@@ -61,12 +63,14 @@ export function LoginPage() {
           <p className="text-sm text-gray-500">Вход в систему</p>
         </div>
         <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-4">
-          <FormField label="Email" error={errors.email?.message}>
+          <FormField label="Логин или почта" error={errors.email?.message}>
             <Input
               {...register('email')}
-              type="email"
-              placeholder="admin@example.com"
-              autoComplete="email"
+              type="text"
+              placeholder="ivanov или ivanov@zemlya-mo.ru"
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
               error={!!errors.email}
             />
           </FormField>

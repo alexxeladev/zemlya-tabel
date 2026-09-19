@@ -940,6 +940,12 @@ export function EmployeesPage() {
                     {...form.register('email')}
                     className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
+                  {/* Логин = часть почты до «@», регистр не важен (бэк: services/accounts). */}
+                  {(form.watch('email') ?? '').includes('@') && (
+                    <p className="text-xs text-gray-500">
+                      Вход по логину «{(form.watch('email') ?? '').trim().toLowerCase().split('@')[0]}» или по полной почте
+                    </p>
+                  )}
                 </div>
                 <Select
                   label="Роль"

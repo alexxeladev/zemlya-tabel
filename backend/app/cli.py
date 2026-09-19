@@ -23,6 +23,7 @@ def _require_password_policy(password: str) -> None:
 
 def create_admin(email: str, password: str, full_name: str) -> None:
     from app.core.security import hash_password
+    from app.services.accounts import account_conflict, normalize_email
     from app.database import SessionLocal
     from app.models.employees import Employee
 
@@ -38,9 +39,11 @@ def create_admin(email: str, password: str, full_name: str) -> None:
             )
             sys.exit(1)
 
-        if db.query(Employee).filter(Employee.email == email).first():
-            print(f"Error: employee with email '{email}' already exists.", file=sys.stderr)
+        conflict = account_conflict(db, email)
+        if conflict:
+            print(f"Error: {conflict}", file=sys.stderr)
             sys.exit(1)
+        email = normalize_email(email)
 
         emp = Employee(
             full_name=full_name,
@@ -62,12 +65,14 @@ def reset_password(email: str, new_password: str) -> None:
     from app.core.security import hash_password, revoke_sessions
     from app.database import SessionLocal
     from app.models.employees import Employee
+    from app.services.accounts import find_account
     from app.services.login_guard import unlock_login
 
     _require_password_policy(new_password)
     db = SessionLocal()
     try:
-        emp = db.query(Employee).filter(Employee.email == email).first()
+        # Как при входе: полная почта или логин, без учёта регистра.
+        emp = find_account(db, email)
         if not emp:
             print(f"Error: no employee with email '{email}' found.", file=sys.stderr)
             sys.exit(1)

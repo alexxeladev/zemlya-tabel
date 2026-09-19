@@ -5,7 +5,18 @@ import enum
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -52,6 +63,11 @@ def _position_field(position_attr: str):
 
 class Employee(Base):
     __tablename__ = "employees"
+    # Почта уникальна БЕЗ учёта регистра: Victim@ и victim@ — одна учётка
+    # (services/accounts, миграция c7d8e9f0a1b2).
+    __table_args__ = (
+        Index("uq_employees_email_lower", func.lower(text("email")), unique=True),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 

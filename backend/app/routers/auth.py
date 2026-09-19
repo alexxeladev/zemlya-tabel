@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user_allow_password_change
@@ -15,6 +14,7 @@ from app.core.security import (
 from app.database import get_db
 from app.models.employees import Employee
 from app.models.login_failures import (
+    REASON_AMBIGUOUS,
     REASON_INACTIVE,
     REASON_LOCKED,
     REASON_NO_ACCESS,
@@ -23,6 +23,7 @@ from app.models.login_failures import (
 )
 from app.schemas.auth import ChangePasswordRequest, LoginRequest, TokenResponse
 from app.schemas.employee import EmployeeRead
+from app.services.accounts import find_accounts, normalize_email
 from app.services.finance_masking import employee_for
 from app.services.login_guard import (
     client_ip,
@@ -42,22 +43,22 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     (task_stage2_access п.2.6). Блокировка проверяется ДО пароля: во время неё
     даже верный пароль не пускает, иначе перебор продолжался бы."""
     ip = client_ip(request)
-    serialize_attempts(db, payload.email)
-    emp: Employee | None = db.query(Employee).filter(Employee.email == payload.email).first()
-    # Счётчик и журнал ведутся по email БЕЗ учёта регистра, поэтому и учётка для
-    # них — тоже: иначе «VICTIM@…» копил бы неудачи мимо точки сброса
-    # (последний вход, снятие админом) и мимо пометки в списке сотрудников.
-    # Сам вход, как и раньше, — по точному совпадению.
-    account = emp or db.query(Employee).filter(
-        func.lower(Employee.email) == email_key(payload.email)
-    ).first()
+    # Логин — часть почты до «@» или полная почта, регистр не важен
+    # (services/accounts). Больше одной учётки — инвариант сломан в обход
+    # приложения: не угадываем, в какую пускать.
+    found = find_accounts(db, payload.email)
+    emp: Employee | None = found[0] if len(found) == 1 else None
+    # Счётчик, журнал и очередь попыток — по УЧЁТКЕ: «victim», «Victim» и
+    # «victim@example.com» считаются вместе. Учётки нет — по введённой строке.
+    key = normalize_email(emp.email) if emp is not None else email_key(payload.email)
+    serialize_attempts(db, key)
 
     def reject(reason: str, status_code: int, detail: str, headers: dict | None = None):
-        record_failure(db, payload.email, ip, reason, account)
+        record_failure(db, key, ip, reason, emp)
         db.commit()
         raise HTTPException(status_code=status_code, detail=detail, headers=headers)
 
-    locked_until = login_locked_until(db, payload.email, account)
+    locked_until = login_locked_until(db, key, emp)
     if locked_until is not None:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         retry = max(1, int((locked_until - now).total_seconds()))
@@ -68,6 +69,8 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
             f"ещё на {minutes} мин. Снять блокировку раньше может администратор.",
             {"Retry-After": str(retry)},
         )
+    if len(found) > 1:
+        reject(REASON_AMBIGUOUS, status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
     if not emp:
         reject(REASON_UNKNOWN_EMAIL, status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
     if emp.hashed_password is None or not verify_password(payload.password, emp.hashed_password):

@@ -1,10 +1,12 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.security import validate_password
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    # Логин (часть почты до «@») ИЛИ полная почта, регистр не важен
+    # (services/accounts). Поле называется email для совместимости с клиентами.
+    email: str = Field(min_length=1, max_length=255)
     password: str
 
 

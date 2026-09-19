@@ -13,6 +13,9 @@ REASON_UNKNOWN_EMAIL = "unknown_email"
 REASON_WRONG_PASSWORD = "wrong_password"
 REASON_NO_ACCESS = "no_access"
 REASON_INACTIVE = "inactive"
+# Логин подошёл нескольким учёткам — возможно, только если уникальность части
+# почты до «@» нарушили в обход приложения (services/accounts).
+REASON_AMBIGUOUS = "ambiguous"
 # Попытка во время блокировки: пишется в журнал, но в порог НЕ считается —
 # иначе блокировка продлевалась бы, пока кто-то стучится.
 REASON_LOCKED = "locked"
@@ -23,6 +26,7 @@ REASON_LABELS = {
     REASON_WRONG_PASSWORD: "неверный пароль",
     REASON_NO_ACCESS: "у сотрудника нет доступа в систему",
     REASON_INACTIVE: "сотрудник уволен",
+    REASON_AMBIGUOUS: "логин подходит нескольким учёткам",
     REASON_LOCKED: "отклонено: вход заблокирован",
 }
 
