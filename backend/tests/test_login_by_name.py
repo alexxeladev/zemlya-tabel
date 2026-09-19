@@ -184,3 +184,23 @@ def test_cli_create_admin_rejects_non_email(db_session, monkeypatch, capsys):
         cli.create_admin("admin", "admin-pass-1", "Root")
     assert "не адрес почты" in capsys.readouterr().err
     assert db_session.query(Employee).count() == 0
+
+
+def test_other_integrity_errors_are_not_reported_as_taken_login(
+    client: TestClient, admin_user: Employee, db_session, monkeypatch,
+):
+    """Гонка по табельному номеру — не «почта или логин заняты»: иначе админ
+    искал бы несуществующий конфликт почты (нашло ревью)."""
+    from sqlalchemy.exc import IntegrityError
+
+    db_session.add(Employee(full_name="Старый", tab_number="T-9001", is_active=True))
+    db_session.commit()
+    monkeypatch.setattr("app.routers.employees._ensure_tab_number_free", lambda *a, **k: None)
+    tok = get_token(client, "admin@example.com", "admin123")
+    with pytest.raises(IntegrityError, match="tab_number"):
+        client.post("/api/employees", headers=_auth(tok), json={
+            "full_name": "Новый", "tab_number": "T-9001", "access": {
+                "email": "fresh@example.com", "role": "employee",
+                "initial_password": "start-pass-1",
+            },
+        })

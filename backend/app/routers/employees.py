@@ -212,6 +212,15 @@ def _to_dict(emp: Employee) -> dict:
     }
 
 
+# Ограничения уникальности учётки: индексы по почте без регистра и по логину
+# (миграция c7d8e9f0a1b2) плюс исходный unique колонки. SQLite пишет
+# «employees.email», Postgres — имя ограничения.
+_ACCOUNT_CONSTRAINTS = (
+    "uq_employees_email_lower", "uq_employees_login_name", "employees_email_key",
+    "employees.email",
+)
+
+
 @contextmanager
 def _account_taken_as_409(db: Session, grants_access: bool):
     """Почту или логин успела занять ОДНОВРЕМЕННАЯ выдача доступа: проверку
@@ -219,9 +228,11 @@ def _account_taken_as_409(db: Session, grants_access: bool):
     (`uq_employees_email_lower` / `uq_employees_login_name`). Это 409, а не 500."""
     try:
         yield
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
-        if not grants_access:
+        # Только ограничения почты/логина; прочие (таб.№, внешние ключи) — со
+        # своей причиной дальше, иначе админ искал бы несуществующий конфликт почты.
+        if not grants_access or not any(name in str(exc.orig) for name in _ACCOUNT_CONSTRAINTS):
             raise
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

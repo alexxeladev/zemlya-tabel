@@ -67,6 +67,14 @@ class Employee(Base):
     # (services/accounts, миграция c7d8e9f0a1b2).
     __table_args__ = (
         Index("uq_employees_email_lower", func.lower(text("email")), unique=True),
+        # Логин (часть почты до «@») уникален и в базе. split_part есть только в
+        # Postgres, поэтому индекс строится лишь там (ddl_if); объявлен здесь,
+        # чтобы autogenerate не предлагал его удалить (нашло ревью).
+        Index(
+            "uq_employees_login_name",
+            func.lower(func.split_part(text("email"), "@", 1)),
+            unique=True,
+        ).ddl_if(dialect="postgresql"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
