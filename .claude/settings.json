@@ -2,13 +2,17 @@
   "permissions": {
     "ask": [
       "Bash(git commit *)",
-      "Bash(git push)",
-      "Bash(git push *)",
       "Bash(./deploy.sh)",
       "Bash(./deploy.sh *)",
       "Bash(./install.sh)",
-      "Bash(./install.sh *)",
-      "Bash(ssh *)"
+      "Bash(./install.sh *)"
+    ],
+    "allow": [
+      "Bash(git push *)",
+      "Bash(git push)",
+      "Bash(scp *)",
+      "Bash(ssh *)",
+      "Bash(sshpass *)"
     ]
   },
   "hooks": {
