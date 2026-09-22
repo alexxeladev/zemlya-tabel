@@ -15,6 +15,8 @@ import pytest
 
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
+from app.models.schedules import Schedule
+from app.services.dashboard import build_dashboard
 from app.services.guard_duty import (
     create_assignment,
     official_by_assignment,
@@ -321,3 +323,115 @@ class TestRemovalConfirmation:
         )
         assert resp.status_code == 422
         assert "официальную зарплату" in resp.json()["detail"]
+
+
+# ── Охранное место без строки вахты ───────────────────────────────────────────
+
+class TestNotOnPost:
+    @pytest.fixture
+    def with_schedule(self, db_session, rodionov):
+        """Охранное место с графиком и ставкой — «как раньше» бы заплатило."""
+        schedule = Schedule(name="5/2", schedule_type="weekday", hours_per_shift=8,
+                            is_active=True)
+        db_session.add(schedule)
+        db_session.commit()
+        position = rodionov.primary_position
+        position.schedule_id = schedule.id
+        position.shift_rate = Decimal("5000")
+        db_session.commit()
+        return position
+
+    def test_statement_row_is_zero(self, db_session, with_schedule, rodionov):
+        row = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH).rows[0]
+        assert row.accrued_total == _ZERO
+        assert row.net_payout == _ZERO
+        assert row.fact_hours == _ZERO
+        # Строка расчётная: ноль — полный ответ, а не «карточка не заполнена».
+        assert row.is_calculable is True
+        assert row.distribution_total == _ZERO
+
+    def test_dashboard_does_not_pay_it(self, db_session, with_schedule, rodionov):
+        dashboard = build_dashboard(db_session, _admin(db_session), YEAR, MONTH)
+        assert dashboard.payroll is not None
+        assert dashboard.payroll.total == _ZERO
+        assert dashboard.hours.total_hours == _ZERO
+
+    def test_official_payout_needs_a_post(self, db_session, rodionov):
+        """Не на посту — выплаты и налога нет, даже если место официальное.
+
+        Банк платит, пока человек стоит на посту: выплата считается по строкам
+        месяца. Решение зафиксировано тестом, потому что из формулы «половина
+        зарплаты в каждую половину» оно прямо не следует — см. отчёт по задаче.
+        """
+        _official(rodionov.primary_position)
+        db_session.commit()
+        row = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH).rows[0]
+        assert row.deductions == _ZERO
+        assert row.guard_tax_amount == _ZERO
+
+    def test_payout_covers_the_whole_month_of_a_posted_place(
+        self, db_session, gbr_place, rodionov
+    ):
+        """Смены только в первой половине — выплата всё равно за обе.
+
+        «Дни на месте» — календарные, а не смены: во второй половине человек на
+        месте числится, и банк платит ему половину зарплаты.
+        """
+        _official(rodionov.primary_position)
+        create_assignment(
+            db_session, year=YEAR, month=MONTH, place=gbr_place,
+            position=rodionov.primary_position, days=FIRST_HALF,
+        )
+        db_session.commit()
+        row = build_guard_month(db_session, _admin(db_session), YEAR, MONTH) \
+            .zones[0].cards[0].rows[0]
+        assert [h.official_payout for h in row.halves] == [
+            Decimal("12615.00"), Decimal("12615.00"),
+        ]
+        # Во второй половине начислений нет — «к выплате» уходит в минус, и
+        # такой долг НЕ округляется (правило вахты).
+        assert row.halves[1].net_payout == Decimal("-12615.00")
+
+    def test_premiums_and_loan_survive_without_a_post(
+        self, db_session, users, rodionov
+    ):
+        """«Не на посту» обнуляет ЗАРАБОТОК, но не премии и не заём.
+
+        Правило вахты про закрытый общий ввод прямо говорит: сами данные запрет
+        не трогает, в месяцы без назначения они участвуют в расчёте. Ревью
+        поймало, что первая версия обнуляла и их — из ведомости пропадали
+        премии и удержание займа, а остаток займа продолжал уменьшаться.
+        """
+        from datetime import date
+
+        from app.models.employee_adjustments import EmployeeAdjustment
+
+        db_session.add(EmployeeAdjustment(
+            employee_id=rodionov.id, position_id=rodionov.primary_position.id,
+            year=YEAR, month=MONTH, kind="premium", amount=Decimal("10000"),
+            reason="за объект", created_by_id=users["admin"].id,
+        ))
+        rodionov.loan_amount = Decimal("60000")
+        rodionov.loan_term_months = 10
+        rodionov.loan_start_date = date(YEAR, MONTH, 1)
+        db_session.commit()
+
+        row = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH).rows[0]
+        assert row.base_salary == _ZERO          # заработка нет
+        assert row.premium_amount == Decimal("10000")
+        # Удержание займа (60 000 / 10 мес) осталось в ведомости.
+        assert row.deductions == Decimal("6000")
+        assert row.accrued_total == Decimal("10000")
+        assert row.net_payout == Decimal("4000")
+
+    def test_row_on_a_post_is_paid_as_usual(
+        self, db_session, with_schedule, gbr_place, rodionov
+    ):
+        """Та же позиция со строкой вахты считается вахтой, а не по нулям."""
+        create_assignment(
+            db_session, year=YEAR, month=MONTH, place=gbr_place,
+            position=rodionov.primary_position, days=FIRST_HALF,
+        )
+        db_session.commit()
+        row = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH).rows[0]
+        assert row.accrued_total == Decimal("75000")

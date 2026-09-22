@@ -64,8 +64,10 @@ from app.services.company_shares import (
 )
 from app.services.distribution import distribute, distribute_largest_remainder
 from app.services.guard_payroll import distribute_guard_amount
+from app.services.guard_staff import guard_position_ids
 from app.services.guard_statement import (
     SOURCE_GUARD_POST,
+    guard_idle_payroll,
     guard_payroll_read,
     load_guard_rows,
 )
@@ -195,6 +197,12 @@ def build_payroll_summary(
         [pos.id for emp in employees for pos in emp.positions],
         year, month,
     )
+    # Охранное рабочее место БЕЗ строки вахты в месяце — «не на посту», 0 ₽:
+    # в общий расчёт его не пускает предикат `guard_staff`, а не отсутствие
+    # графика (task_guard_form_rate_official). Ставки на охранной позиции нет.
+    guard_positions = guard_position_ids(
+        db, [pos for emp in employees for pos in emp.positions]
+    )
 
     payroll_items: list[EmployeePayrollRead] = []
     for emp, position in _payroll_rows(employees, actor, department_id):
@@ -204,18 +212,24 @@ def build_payroll_summary(
                 guard_payroll_read(emp, position, guard_row, year, month)
             )
             continue
-
-        # Часы позиции: строки без position_id — доположенческие, они принадлежат
-        # основной позиции (иначе миграция потеряла бы часы).
-        by_position = entries_by_position(emp, entries_by_employee.get(emp.id, []))
-        emp_entries = by_position.get(position.id, []) if position is not None else []
-        p = calculate_position_payroll(
-            emp, position, emp_entries, calendar_data, year, month, companies_by_id,
-            absences=absences_by_employee.get(emp.id, []),
-            sick_days_used_before=sick_used_before.get(emp.id, 0),
-            night_shifts=night.shifts_of(position),
-            night_rate=night.rate_of(position),
-        )
+        # Охранное место без строки вахты — «не на посту»: ЗАРАБОТОК ноль, а
+        # премии/KPI/аванс и заём ниже применяются как всем (они адресованы
+        # рабочему месту, а не посту).
+        idle_guard = position is not None and position.id in guard_positions
+        if idle_guard:
+            p = guard_idle_payroll(emp, position)
+        else:
+            # Часы позиции: строки без position_id — доположенческие, они
+            # принадлежат основной позиции (иначе миграция потеряла бы часы).
+            by_position = entries_by_position(emp, entries_by_employee.get(emp.id, []))
+            emp_entries = by_position.get(position.id, []) if position is not None else []
+            p = calculate_position_payroll(
+                emp, position, emp_entries, calendar_data, year, month, companies_by_id,
+                absences=absences_by_employee.get(emp.id, []),
+                sick_days_used_before=sick_used_before.get(emp.id, 0),
+                night_shifts=night.shifts_of(position),
+                night_rate=night.rate_of(position),
+            )
 
         # Премии/KPI/аванс и займ адресованы КОНКРЕТНОЙ позиции: деньги
         # начисляются человеку, но попадают в «к выплате» того рабочего места,
@@ -318,6 +332,9 @@ def build_payroll_summary(
             breakdown_by_company=breakdown,
             is_calculable=p.is_calculable,
             reason_if_not_calculable=p.reason_if_not_calculable,
+            # Строка охранного места (на посту или «не на посту») помечена как
+            # вахтовая: по этому признаку ведомость ищет её расклад по юрлицам.
+            is_guard_row=idle_guard,
         ))
 
     return PayrollSummaryRead(

@@ -43,6 +43,7 @@ from app.services.company_order import (
     order_index,
 )
 from app.services.guard_payroll import distribute_guard_amount
+from app.services.guard_staff import guard_position_ids
 from app.services.guard_statement import (
     GuardStatementRow,
     guard_payroll_read,
@@ -112,6 +113,19 @@ class _GuardMonthPayroll:
     overtime_hours: Decimal = Decimal("0")
     norm_hours: Decimal | None = None
     is_calculable: bool = True
+
+
+#: Охранное место, не стоящее в этом месяце ни на одном посту: денег нет,
+#: часов нет, норма не считается. Строка расчётная — ноль здесь полный ответ,
+#: а не «карточка не заполнена» (см. `guard_statement.guard_idle_payroll`).
+_GUARD_IDLE_PAYROLL = _GuardMonthPayroll(
+    total_amount=_ZERO,
+    base_amount=_ZERO,
+    overtime_amount=_ZERO,
+    off_schedule_amount=_ZERO,
+    holiday_amount=_ZERO,
+    breakdown_by_company=(),
+)
 
 
 def _guard_month_payroll(
@@ -272,6 +286,12 @@ def _compute_month_payrolls(
     guard_rows = load_guard_rows(
         db, [pos.id for emp in employees for pos in emp.positions], year, month,
     )
+    # Охранное место без строки вахты — «не на посту», 0 ₽ и никаких часов:
+    # в общий расчёт оно не идёт (task_guard_form_rate_official). Тот же
+    # предикат и та же ветка, что в `build_payroll_summary`.
+    guard_positions = guard_position_ids(
+        db, [pos for emp in employees for pos in emp.positions]
+    )
 
     # По одной строке на ПОЗИЦИЮ (task_positions ч.A) — так же, как считает
     # /payroll: иначе у совместителя ФОТ дашборда разошёлся бы с табелем.
@@ -285,6 +305,9 @@ def _compute_month_payrolls(
                     emp, position,
                     _guard_month_payroll(emp, position, guard_row, year, month),
                 ))
+                continue
+            if position is not None and position.id in guard_positions:
+                results.append((emp, position, _GUARD_IDLE_PAYROLL))
                 continue
             results.append((
                 emp,
