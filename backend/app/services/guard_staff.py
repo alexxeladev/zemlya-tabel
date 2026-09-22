@@ -100,6 +100,31 @@ def is_guard_position(db: Session, position: EmployeePosition | None) -> bool:
     return position is not None and is_guard_department_id(db, position.department_id)
 
 
+def guard_position_ids(db: Session, positions) -> set[int]:
+    """Какие из рабочих мест охранные — ОДНИМ запросом, тем же флагом отдела.
+
+    Тот же предикат, что `is_guard_position`, но для списка: расчёт месяца
+    спрашивает его у каждой позиции всех сотрудников выдачи, и запрос на
+    позицию там недопустим.
+    """
+    department_ids = {p.department_id for p in positions if p is not None}
+    department_ids.discard(None)
+    if not department_ids:
+        return set()
+    guard_departments = {
+        d_id
+        for (d_id,) in db.query(Department.id).filter(
+            Department.id.in_(department_ids),
+            Department.is_guard_department == True,  # noqa: E712
+        )
+    }
+    return {
+        p.id
+        for p in positions
+        if p is not None and p.department_id in guard_departments
+    }
+
+
 # ── Запрет правки из общего справочника ───────────────────────────────────────
 
 def _differs(old, new) -> bool:
@@ -378,6 +403,25 @@ def _check_amount(amount: Decimal | None) -> None:
         raise GuardStaffError("Сумма не может быть отрицательной")
 
 
+def _check_official(
+    is_official: bool, official_salary: Decimal | None
+) -> Decimal | None:
+    """Официальная зарплата обязательна при включённом признаке и не хранится
+    при выключенном: два состояния одного факта иначе разъедутся.
+
+    Возвращает сумму, которую надо записать в позицию.
+    """
+    if not is_official:
+        return None
+    _check_amount(official_salary)
+    if official_salary is None or official_salary <= Decimal("0"):
+        raise GuardStaffError(
+            "Укажите официальную зарплату на руки — от неё считается "
+            "официальная выплата и налог"
+        )
+    return official_salary
+
+
 def create_staff(
     db: Session,
     *,
@@ -385,15 +429,20 @@ def create_staff(
     tab_number: str | None,
     department_id: int,
     job_title_id: int,
-    amount: Decimal | None,
     hire_date: datetime.date | None,
     dismissal_date: datetime.date | None,
+    is_official: bool = False,
+    official_salary: Decimal | None = None,
 ) -> tuple[Employee, EmployeePosition]:
     """Новый человек с рабочим местом в охране. Коммит снаружи.
 
     Табельный номер — из ОБЩЕЙ нумерации (`next_tab_number` вахты), вручную —
     с той же проверкой занятости, что в справочнике. Даты — у ПОЗИЦИИ: даты
     человека ведёт общий справочник.
+
+    **Ставки у охранного места нет**: цена смены живёт на объекте, посте или
+    экипаже и в строке табеля (task_guard_form_rate_official). Здесь задаётся
+    только официальное трудоустройство и оф. зарплата на руки.
     """
     full_name = (full_name or "").strip()
     if len(full_name) < 3:
@@ -401,7 +450,7 @@ def create_staff(
     if not is_guard_department_id(db, department_id):
         raise GuardStaffError("Выберите подразделение охраны")
     _check_dates(hire_date, dismissal_date)
-    _check_amount(amount)
+    official_salary = _check_official(is_official, official_salary)
     from app.services.guard_job_titles import get_job_title
 
     title = get_job_title(db, job_title_id)
@@ -423,9 +472,12 @@ def create_staff(
     db.flush()
     position = employee.ensure_primary_position()
     position.department_id = department_id
-    apply_job_title(position, title, amount)
+    # Сумма — None: ставки на охранном месте нет, тип оплаты берётся у должности.
+    apply_job_title(position, title, None)
     position.hire_date = hire_date
     position.dismissal_date = dismissal_date
+    position.is_official = is_official
+    position.official_salary = official_salary
     db.flush()
     return employee, position
 
@@ -436,6 +488,54 @@ class TransferOutWarning:
 
     department_name: str
     issues: list[str] = field(default_factory=list)
+    #: Незакрытые месяцы с начисленной официальной выплатой: перевод гасит
+    #: признак «официально устроен», и выплата с налогом станут нулевыми.
+    official_months: list[tuple[int, int, Decimal]] = field(default_factory=list)
+
+
+@dataclass
+class OfficialRemovalWarning:
+    """Снятие признака «официально устроен» обнулит начисленные выплаты.
+
+    Месяцы — только НЕзакрытые: закрытый период не правится, и предупреждать о
+    нём нечем. Снапшотов расчёта в системе нет, поэтому закрытые месяцы
+    пересчитываются из текущих справочников, как и при смене оклада в основной
+    системе — своего механизма вахта не заводит.
+    """
+
+    months: list[tuple[int, int, Decimal]] = field(default_factory=list)
+
+    @property
+    def total(self) -> Decimal:
+        return sum((amount for *_, amount in self.months), Decimal("0"))
+
+
+def official_open_months(
+    db: Session, position: EmployeePosition
+) -> list[tuple[int, int, Decimal]]:
+    """Незакрытые месяцы, где этому месту уже начислена официальная выплата."""
+    from app.models.guard_assignments import GuardAssignment
+    from app.services.guard_duty import official_month_payouts
+    from app.services.timesheet_periods import month_lock_status
+
+    if not position.is_official or not position.official_salary:
+        return []
+    months = {
+        (year, month)
+        for year, month in db.query(GuardAssignment.year, GuardAssignment.month)
+        .filter(GuardAssignment.position_id == position.id)
+        .distinct()
+    }
+    out: list[tuple[int, int, Decimal]] = []
+    for year, month in sorted(months):
+        if month_lock_status(db, position.department_id, year, month) == "closed":
+            continue
+        total = sum(
+            official_month_payouts(position, year, month).values(), Decimal("0")
+        )
+        if total > Decimal("0"):
+            out.append((year, month, total))
+    return out
 
 
 def update_staff(
@@ -444,16 +544,22 @@ def update_staff(
     position: EmployeePosition,
     data: dict,
     confirm: bool,
-) -> TransferOutWarning | None:
+) -> TransferOutWarning | OfficialRemovalWarning | None:
     """Правка охранного рабочего места из вахты. Коммит снаружи.
 
-    `data` — только присланные поля: department_id, job_title_id, amount, hire_date,
-    dismissal_date. ФИО и таб. № здесь не правятся — это поля ЧЕЛОВЕКА, их ведёт
-    общий справочник.
+    `data` — только присланные поля: department_id, job_title_id, hire_date,
+    dismissal_date, is_official, official_salary и `amount` ТОЛЬКО для перевода.
+    ФИО и таб. № здесь не правятся — это поля ЧЕЛОВЕКА, их ведёт общий
+    справочник.
 
     Отдел вне охраны — перевод. Без `confirm` ничего не пишется, возвращается
     предупреждение с причинами, по которым место не войдёт в расчёт; с
-    `confirm` перевод сохраняется, и дальше позицию ведёт справочник.
+    `confirm` перевод сохраняется, и дальше позицию ведёт справочник. Ставку или
+    оклад для нового отдела вводят здесь же, при переводе: у охранного места
+    суммы нет (task_guard_form_rate_official).
+
+    Снятие признака «официально устроен» при уже начисленных выплатах тоже
+    требует подтверждения: выплата и налог незакрытых месяцев станут нулевыми.
     """
     if not is_guard_position(db, position):
         raise GuardStaffError(
@@ -486,15 +592,45 @@ def update_staff(
         if not is_guard_department(dept):
             warning = TransferOutWarning(department_name=dept.name)
 
-    # Должность меняется только явно; сумма — всегда по текущему типу оплаты.
-    # Раньше при несовпавшей должности сумма молча не сохранялась (ревью).
+    # Официальное трудоустройство — свойство ОХРАННОГО места. Уходит место из
+    # охраны — признак и зарплата гасятся здесь же: на обычной позиции их никто
+    # не показывает и не правит, а строки вахты прошлых месяцев продолжали бы
+    # по ним считать (нашло второе ревью).
+    if warning is not None:
+        is_official, official_salary = False, None
+    else:
+        is_official = data["is_official"] if "is_official" in data else position.is_official
+        official_salary = (
+            data["official_salary"] if "official_salary" in data else position.official_salary
+        )
+        official_salary = _check_official(is_official, official_salary)
+
+    # Снятие признака обнуляет уже начисленные выплаты незакрытых месяцев,
+    # поэтому спрашиваем. При переводе своего вопроса НЕ задаём: одно
+    # «Продолжить?» не может подтверждать два разных действия — суммы уходят
+    # в предупреждение о переводе (`official_months`).
+    losing_official = position.is_official and not is_official
+    if losing_official and warning is None and not confirm:
+        months = official_open_months(db, position)
+        if months:
+            return OfficialRemovalWarning(months=months)
+    if losing_official and warning is not None:
+        warning.official_months = official_open_months(db, position)
+
+    # Должность меняется только явно. Сумма пишется ТОЛЬКО при переводе в
+    # обычное подразделение (`warning is not None`): там без неё расчёт не
+    # состоится, а у охранного места суммы нет вовсе и присланную мы
+    # игнорируем — второй цене смены взяться неоткуда.
+    leaving_now = warning is not None
     if new_title is not None:
-        apply_job_title(position, new_title, amount)
-    elif "amount" in data:
+        apply_job_title(position, new_title, amount if leaving_now else None)
+    elif leaving_now and "amount" in data:
         apply_amount(position, amount)
     position.hire_date = hire
     position.dismissal_date = dismissal
     position.department_id = target
+    position.is_official = is_official
+    position.official_salary = official_salary
 
     if warning is not None:
         # Причины — по карточке ПОСЛЕ правки: ровно то, что увидит расчёт.

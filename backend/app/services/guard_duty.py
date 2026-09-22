@@ -32,7 +32,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.departments import Department
 from app.models.employees import Employee
-from app.models.guard_assignments import GuardAssignment, GuardShift
+from app.models.guard_assignments import (
+    GUARD_HALVES,
+    GuardAssignment,
+    GuardShift,
+    half_of_day,
+)
 from app.models.guard_posts import (
     GuardCrew,
     GuardCrewShare,
@@ -43,6 +48,8 @@ from app.models.guard_posts import (
 )
 from app.models.guard_settings import DEFAULT_EMPLOYER_TAX_PERCENT, GuardSettings
 from app.models.positions import EmployeePosition
+from app.services.distribution import distribute
+from app.services.guard_payroll import KOPECK, half_bounds, official_half_payout
 from app.services.org_access import can_access_department, is_department_scoped
 
 _ZERO = Decimal("0")
@@ -600,6 +607,91 @@ def employment_allows(assignment: GuardAssignment, day: int) -> bool:
     return is_within_employment(position.employee, position, work_date)
 
 
+# ── Официальная выплата: вычисляется из оф. зарплаты рабочего места ───────────
+
+def days_on_place(position: EmployeePosition | None, year: int, month: int, half: int) -> int:
+    """Сколько КАЛЕНДАРНЫХ дней половины человек числится на этом месте.
+
+    Границы — тот же `services.employment_period`, что у табеля: пересечение
+    дат позиции и дат человека. Нет позиции (пустой слот) — считать нечего.
+    """
+    from app.services.employment_period import is_within_employment
+
+    if position is None:
+        return 0
+    first, last = half_bounds(year, month, half)
+    employee = position.employee
+    return sum(
+        1
+        for day in range(first, last + 1)
+        if is_within_employment(employee, position, datetime.date(year, month, day))
+    )
+
+
+def official_month_payouts(
+    position: EmployeePosition | None, year: int, month: int
+) -> dict[int, Decimal]:
+    """Официальная выплата РАБОЧЕГО МЕСТА за месяц, по половинам.
+
+    Источник — признак «официально устроен» и оф. зарплата НА РУКИ самого
+    рабочего места (task_guard_form_rate_official): раньше суммы вбивали в
+    строку табеля каждый месяц, и официальной зарплаты в системе не было вовсе.
+    """
+    if position is None or not position.is_official or not position.official_salary:
+        return {half: _ZERO for half in GUARD_HALVES}
+    return {
+        half: official_half_payout(
+            position.official_salary, year, month, half,
+            days_on_place(position, year, month, half),
+        )
+        for half in GUARD_HALVES
+    }
+
+
+def official_by_assignment(
+    assignments: list[GuardAssignment],
+) -> dict[int, dict[int, Decimal]]:
+    """{id строки: {половина: оф. выплата}} для набора строк ОДНОГО месяца.
+
+    Выплата считается ОДИН РАЗ НА РАБОЧЕЕ МЕСТО за месяц и раскладывается по
+    строкам пропорционально отмеченным сменам половины: перевод на другой пост
+    внутри месяца даёт две строки, но банк платит человеку один раз. Смен в
+    половине нет ни у одной строки — выплата целиком идёт первой из них, иначе
+    деньги рабочего места просто исчезли бы.
+
+    Округление — тем же `distribute` с шагом в копейку, что и разнесение по
+    юрлицам: сумма частей ровно равна выплате половины.
+    """
+    by_position: dict[tuple[int, int, int], list[GuardAssignment]] = {}
+    result: dict[int, dict[int, Decimal]] = {
+        a.id: {half: _ZERO for half in GUARD_HALVES} for a in assignments
+    }
+    for assignment in assignments:
+        if assignment.position_id is None:
+            continue
+        key = (assignment.position_id, assignment.year, assignment.month)
+        by_position.setdefault(key, []).append(assignment)
+
+    for (_, year, month), rows in by_position.items():
+        rows = sorted(rows, key=lambda a: (a.sort_order, a.id))
+        payouts = official_month_payouts(rows[0].position, year, month)
+        for half, total in payouts.items():
+            if total <= _ZERO:
+                continue
+            weights = {
+                a.id: Decimal(
+                    sum(1 for d in marked_days(a) if half_of_day(d) == half)
+                )
+                for a in rows
+            }
+            parts = distribute(total, weights, main_key=rows[0].id, step=KOPECK)
+            if not parts:  # смен в половине нет ни у одной строки
+                parts = {rows[0].id: total}
+            for assignment_id, amount in parts.items():
+                result[assignment_id][half] = amount
+    return result
+
+
 def set_days(db: Session, assignment: GuardAssignment, days: set[int]) -> None:
     """Задать набор отмеченных дней строки целиком (снятые дни удаляются).
 
@@ -763,7 +855,6 @@ def copy_previous_period(
             position_id=position_id,
             job_title_id=old.job_title_id,
             rate=old.rate,
-            is_official=old.is_official,
             sort_order=old.sort_order,
         )
         db.add(new)
@@ -847,10 +938,11 @@ def quick_hire(
     position = employee.ensure_primary_position()
     position.department_id = place.department_id
     # Тип оплаты — от ДОЛЖНОСТИ (task_guard_ownership): начальник охраны на
-    # окладе, остальные посменно. Раньше здесь всем ставился посменный, и
-    # начальник заводился со ставкой за смену. Сам расчёт вахты по-прежнему
-    # берёт ставку из строки табеля.
-    apply_job_title(position, title, rate if rate is not None else default_rate(place))
+    # окладе, остальные посменно. Суммы у охранного места НЕТ вовсе
+    # (task_guard_form_rate_official): цена смены живёт на месте работы и в
+    # строке табеля. Ставку в строку кладёт РОУТЕР отдельным `create_assignment`;
+    # `rate` здесь остался ради совместимости вызовов и никуда не пишется.
+    apply_job_title(position, title, None)
     db.flush()
     return employee, position
 
@@ -873,11 +965,8 @@ def add_position_for_guard(
         department_id=place.department_id,
         is_primary=not employee.positions,
     )
-    # Тип оплаты — от должности, как при найме.
-    apply_job_title(
-        position, resolve_job_title(db, job_title_id, place),
-        rate if rate is not None else default_rate(place),
-    )
+    # Тип оплаты — от должности, как при найме; суммы у охранного места нет.
+    apply_job_title(position, resolve_job_title(db, job_title_id, place), None)
     db.add(position)
     db.flush()
     return position

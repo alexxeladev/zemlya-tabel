@@ -940,14 +940,15 @@ export interface VahtaStaff {
   job_title_id: number | null
   job_title_name: string
   pay_type: PayType
-  /** оклад за месяц у начальника, ставка за смену у остальных */
-  amount: string | null
   /** период работы на этом месте */
   hire_date: string | null
   dismissal_date: string | null
   employee_is_active: boolean
   places: string[]
-  is_official: boolean | null
+  /** официально устроен — свойство РАБОЧЕГО МЕСТА, а не месяца */
+  is_official: boolean
+  /** официальная зарплата на руки, ₽/мес; null — не задана или скрыта */
+  official_salary: string | null
 }
 
 export interface VahtaStaffInput {
@@ -955,9 +956,12 @@ export interface VahtaStaffInput {
   tab_number?: string | null
   department_id?: number
   job_title_id?: number
+  /** ставка/оклад — только при переводе в обычное подразделение */
   amount?: string | null
   hire_date?: string | null
   dismissal_date?: string | null
+  is_official?: boolean
+  official_salary?: string | null
 }
 
 export interface VahtaDepartment {

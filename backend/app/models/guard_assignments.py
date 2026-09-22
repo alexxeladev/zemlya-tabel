@@ -22,9 +22,10 @@
 уникальности по (месяц, пост) здесь нет и быть не может.
 
 Месяц ведётся целиком, но внутри у него ДВЕ РАСЧЁТНЫЕ ПОЛОВИНЫ (1–15 и
-16–конец): выплата дважды, поэтому премия, штраф и официальная выплата свои у
-каждой половины. Отдельной таблицы под них нет — половин ровно две и больше не
-станет, а join ради шести чисел ничего не улучшает.
+16–конец): выплата дважды, поэтому премия и штраф свои у каждой половины.
+Отдельной таблицы под них нет — половин ровно две и больше не станет, а join
+ради четырёх чисел ничего не улучшает. Официальная выплата тоже своя у каждой
+половины, но она не хранится вовсе: считается из оф. зарплаты рабочего места.
 """
 from __future__ import annotations
 
@@ -33,7 +34,6 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
-    Boolean,
     CheckConstraint,
     Date,
     ForeignKey,
@@ -107,16 +107,17 @@ class GuardAssignment(Base):
         Numeric(12, 2), default=Decimal("0"), server_default="0", nullable=False
     )
 
-    #: «Трудоустройство» в образце — отметка «Официальный».
-    is_official: Mapped[bool] = mapped_column(
-        Boolean, default=False, server_default="false", nullable=False
-    )
-
     # ── Деньги по расчётным половинам ─────────────────────────────────────────
     # Премия — ручная, произвольная; ею же добивают сумму до круглой (поэтому в
     # вахте ничего не округляется). Штраф — простое удержание без обоснования,
-    # он УМЕНЬШАЕТ «итого начислено». Официальная выплата — часть, выданная
-    # через банк; остаток идёт из кассы и показывается как «к выплате».
+    # он УМЕНЬШАЕТ «итого начислено».
+    #
+    # Официальной выплаты и отметки «официальный» здесь НЕТ
+    # (task_guard_form_rate_official): и то, и другое — свойства РАБОЧЕГО МЕСТА
+    # (`EmployeePosition.is_official` / `.official_salary`), а выплата половины
+    # ВЫЧИСЛЯЕТСЯ из зарплаты (`guard_duty.official_month_payouts`). Пока они
+    # жили здесь, флаг ни на что не влиял, суммы вбивали заново каждый месяц, и
+    # с флагом они связаны не были.
     premium_h1: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), default=Decimal("0"), server_default="0", nullable=False
     )
@@ -129,13 +130,6 @@ class GuardAssignment(Base):
     penalty_h2: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), default=Decimal("0"), server_default="0", nullable=False
     )
-    official_payout_h1: Mapped[Decimal] = mapped_column(
-        Numeric(12, 2), default=Decimal("0"), server_default="0", nullable=False
-    )
-    official_payout_h2: Mapped[Decimal] = mapped_column(
-        Numeric(12, 2), default=Decimal("0"), server_default="0", nullable=False
-    )
-
     note: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     sort_order: Mapped[int] = mapped_column(
@@ -211,11 +205,6 @@ class GuardAssignment(Base):
 
     def penalty(self, half: int) -> Decimal:
         return self.penalty_h1 if half == HALF_FIRST else self.penalty_h2
-
-    def official_payout(self, half: int) -> Decimal:
-        return (
-            self.official_payout_h1 if half == HALF_FIRST else self.official_payout_h2
-        )
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return (

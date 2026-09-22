@@ -63,12 +63,16 @@ def guard_manager(client, db_session, guard_dept) -> dict:
     return _auth(get_token(client, "gm@example.com", "Test1234!"))
 
 
-def _hire(client, headers, dept, kind="guard", amount="3500", **extra):
-    """`kind` — прежний код должности; в запрос уходит id из справочника."""
+def _hire(client, headers, dept, kind="guard", **extra):
+    """`kind` — прежний код должности; в запрос уходит id из справочника.
+
+    Суммы в форме охранника нет (task_guard_form_rate_official): цена смены
+    живёт на объекте, посте или экипаже и в строке табеля.
+    """
     return client.post(
         "/api/vahta/staff",
         json={"full_name": "Караулов Олег Петрович", "department_id": dept.id,
-              "job_title_id": _title_by_kind(client, headers, kind), "amount": amount, **extra},
+              "job_title_id": _title_by_kind(client, headers, kind), **extra},
         headers=headers,
     )
 
@@ -118,23 +122,25 @@ def ordinary_emp(db_session, other_dept, schedule) -> Employee:
 
 class TestCreate:
     def test_shift_guard(self, client, admin, guard_dept, db_session):
-        resp = _hire(client, admin, guard_dept, kind="guard", amount="3500")
+        resp = _hire(client, admin, guard_dept, kind="guard")
         assert resp.status_code == 201, resp.text
         body = resp.json()
         assert body["pay_type"] == "per_shift"
-        assert Decimal(body["amount"]) == Decimal("3500")
+        # Ставки в ответе нет вовсе — поле снято вместе с полем формы.
+        assert "amount" not in body
         pos = db_session.get(EmployeePosition, body["position_id"])
-        assert pos.shift_rate == Decimal("3500") and pos.rate is None
+        assert pos.shift_rate is None and pos.rate is None
         assert pos.title == "Охранник"
 
     def test_chief_on_salary(self, client, admin, guard_dept, db_session):
-        resp = _hire(client, admin, guard_dept, kind="chief", amount="135000")
+        resp = _hire(client, admin, guard_dept, kind="chief")
         assert resp.status_code == 201, resp.text
         body = resp.json()
         assert body["pay_type"] == "salary"
         assert body["job_title_name"] == "Начальник охраны"
         pos = db_session.get(EmployeePosition, body["position_id"])
-        assert pos.rate == Decimal("135000") and pos.shift_rate is None
+        # Тип оплаты — от должности, а суммы у охранного места нет ни у кого.
+        assert pos.rate is None and pos.shift_rate is None
 
     def test_gbr_is_per_shift(self, client, admin, guard_dept):
         assert _hire(client, admin, guard_dept, kind="gbr").json()["pay_type"] == "per_shift"
@@ -179,7 +185,8 @@ class TestCreate:
             rate=Decimal("135000"), job_title_id=_title_id(db_session, "Начальник охраны"),
         )
         assert position.pay_type == "salary"
-        assert position.rate == Decimal("135000")
+        # Оклад в карточку не пишется: у вахты своя цена смены/оклад в строке.
+        assert position.rate is None
 
 
 def test_chief_placed_on_post_gets_salary_position(
@@ -255,7 +262,8 @@ class TestDirectoryReadOnly:
         # отдельной страницы сотрудников охраны больше нет — это вкладка настроек.
         assert "«Настройки» → «Сотрудники охраны»" in resp.json()["detail"]
         db_session.expire_all()
-        assert db_session.get(EmployeePosition, pid).shift_rate == Decimal("3500")
+        # Ставки у охранного места нет и не появляется — запрос отклонён.
+        assert db_session.get(EmployeePosition, pid).shift_rate is None
 
     def test_patch_flat_compat_field_rejected(self, client, admin, guard_staff):
         resp = client.patch(
@@ -303,7 +311,7 @@ class TestDirectoryReadOnly:
         resp = client.patch(
             f"/api/employees/{guard_staff['employee_id']}",
             json={"full_name": "Караулов Олег П.", "department_id": guard_dept.id,
-                  "shift_rate": "3500", "pay_type": "per_shift"},
+                  "pay_type": "per_shift"},
             headers=admin,
         )
         assert resp.status_code == 200, resp.text
@@ -408,19 +416,24 @@ class TestTransfer:
         resp = client.patch(url, json={"department_id": other_dept.id}, headers=admin)
         assert resp.status_code == 409
         detail = resp.json()["detail"]
-        # Те же формулировки, что пишет расчёт.
-        assert detail["issues"] == ["Не задан график"]
+        # Те же формулировки, что пишет расчёт. Ставки у охранного места нет —
+        # её и вводят при переводе, поэтому она в списке причин.
+        assert detail["issues"] == ["Не задан график", "Не задана ставка за смену"]
         db_session.expire_all()
         pos = db_session.get(EmployeePosition, guard_staff["position_id"])
         assert pos.department_id != other_dept.id  # без подтверждения — ничего
 
+        # Ставку для нового отдела вводят здесь же, при переводе.
         resp = client.patch(
-            url, params={"confirm": True}, json={"department_id": other_dept.id},
+            url, params={"confirm": True},
+            json={"department_id": other_dept.id, "amount": "4000"},
             headers=admin,
         )
         assert resp.status_code == 200, resp.text
         db_session.expire_all()
-        assert db_session.get(EmployeePosition, guard_staff["position_id"]).department_id == other_dept.id
+        moved = db_session.get(EmployeePosition, guard_staff["position_id"])
+        assert moved.department_id == other_dept.id
+        assert moved.shift_rate == Decimal("4000")
 
         # Владение сменилось: вахта не видит, справочник правит.
         assert client.patch(url, json={"amount": "1"}, headers=admin).status_code == 404
@@ -431,7 +444,7 @@ class TestTransfer:
         assert resp.status_code == 200
 
     def test_out_of_guard_lists_missing_base(self, client, admin, guard_dept, other_dept):
-        staff = _hire(client, admin, guard_dept, amount=None).json()
+        staff = _hire(client, admin, guard_dept).json()
         resp = client.patch(
             f"/api/vahta/staff/{staff['position_id']}",
             json={"department_id": other_dept.id}, headers=admin,
@@ -461,15 +474,18 @@ class TestTransfer:
     def test_edit_within_guard(self, client, admin, guard_staff, db_session):
         resp = client.patch(
             f"/api/vahta/staff/{guard_staff['position_id']}",
-            json={"job_title_id": _title_id(db_session, "Начальник охраны"), "amount": "120000",
-                  "dismissal_date": "2026-09-30"},
+            json={"job_title_id": _title_id(db_session, "Начальник охраны"),
+                  "amount": "120000", "dismissal_date": "2026-09-30"},
             headers=admin,
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["pay_type"] == "salary"
         pos = db_session.get(EmployeePosition, guard_staff["position_id"])
         db_session.refresh(pos)
-        assert pos.rate == Decimal("120000") and pos.shift_rate is None
+        # Сумма внутри охраны ИГНОРИРУЕТСЯ: у охранного места её нет, даже если
+        # устаревший клиент прислал поле.
+        assert pos.rate is None and pos.shift_rate is None
+        assert pos.dismissal_date is not None
 
 
 # ── Обычные позиции без послаблений и перемен ─────────────────────────────────

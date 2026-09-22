@@ -255,19 +255,24 @@ class TestPositionsAreLinkedByKey:
         assert resp.json() == {"result": "deactivated"}
         assert db_session.get(GuardJobTitle, dispatcher) is not None
 
-    def test_editing_amount_does_not_rewrite_the_title(self, client, users, db_session, rodionov):
-        """Правка суммы при снятой должности не подменяет должность фолбэком."""
+    def test_editing_dates_does_not_rewrite_the_title(self, client, users, db_session, rodionov):
+        """Правка карточки при снятой должности не подменяет должность фолбэком.
+
+        Раньше правили сумму — суммы у охранного места больше нет
+        (task_guard_form_rate_official), поэтому правим даты: важна сама правка
+        без указания должности.
+        """
         dispatcher = _title_id(db_session, "Диспетчер")
         client.patch(f"/api/vahta/staff/{rodionov.primary_position.id}",
-                     json={"job_title_id": dispatcher, "amount": "4000"}, headers=_auth(client, "admin"))
+                     json={"job_title_id": dispatcher}, headers=_auth(client, "admin"))
         client.patch(f"{URL}/{dispatcher}", json={"is_active": False}, headers=_auth(client, "admin"))
 
         resp = client.patch(f"/api/vahta/staff/{rodionov.primary_position.id}",
-                            json={"amount": "4500"}, headers=_auth(client, "admin"))
+                            json={"hire_date": "2026-08-10"}, headers=_auth(client, "admin"))
 
         assert resp.status_code == 200, resp.text
         assert resp.json()["job_title_name"] == "Диспетчер"
-        assert Decimal(resp.json()["amount"]) == Decimal("4500")
+        assert resp.json()["hire_date"] == "2026-08-10"
 
     def test_legacy_position_without_link_is_matched_by_name_once(self, client, users, db_session, rodionov):
         """Позиции до миграции: название совпало с должностью — привязка ставится

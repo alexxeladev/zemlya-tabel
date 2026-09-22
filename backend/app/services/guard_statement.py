@@ -40,7 +40,12 @@ from app.models.guard_assignments import GuardAssignment
 from app.models.guard_posts import GuardCrew, GuardPost, GuardSite
 from app.models.positions import PAY_TYPE_PER_SHIFT, EmployeePosition
 from app.schemas.payroll import EmployeePayrollRead
-from app.services.guard_duty import employer_tax_percent, shares_map
+from app.services.payroll import EmployeePayroll
+from app.services.guard_duty import (
+    employer_tax_percent,
+    official_by_assignment,
+    shares_map,
+)
 from app.services.guard_month import calculate_assignment
 from app.services.guard_payroll import (
     HOURS_PER_SHIFT,
@@ -114,9 +119,15 @@ def load_guard_rows(
     )
 
     tax_percent = employer_tax_percent(db) if assignments else None
+    # Официальная выплата — из оф. зарплаты рабочего места, одна на место за
+    # месяц (task_guard_form_rate_official). Считаем по всему набору строк: при
+    # замене внутри месяца выплата делится между строками, а не удваивается.
+    official = official_by_assignment(assignments)
     rows: dict[int, GuardStatementRow] = {}
     for assignment in assignments:
-        result = calculate_assignment(assignment, tax_percent=tax_percent)
+        result = calculate_assignment(
+            assignment, tax_percent=tax_percent, official=official.get(assignment.id)
+        )
         existing = rows.get(assignment.position_id)
         if existing is None:
             rows[assignment.position_id] = GuardStatementRow(
@@ -213,6 +224,76 @@ def guard_payroll_read(
         is_calculable=True,
         reason_if_not_calculable=None,
         is_guard_row=True,
+    )
+
+
+def guard_idle_payroll(employee, position: EmployeePosition) -> EmployeePayroll:
+    """Нулевой РАСЧЁТ охранного места, которое в этом месяце НЕ СТОИТ НА ПОСТУ.
+
+    Работа охранника — только отметки смен вахты. Рабочее место без строки
+    табеля вахты не заработало ничего, и в общий расчёт его пускать нельзя ни
+    при каком графике: посменная оплата посчитала бы «плановые смены графика ×
+    ставку», а ставки у охранной позиции больше нет вовсе (см. правила вахты,
+    «Цена смены охранника»). До этой правки на деве так начислялось 653 704 ₽
+    за июль и 435 111 ₽ за август — деньги из графика и часов, оставшихся от
+    демо-данных.
+
+    Обнуляется ТОЛЬКО заработок. Премии/KPI/аванс и удержание займа к строке
+    применяет общий путь ведомости — они адресованы рабочему месту и от того,
+    стоял ли человек на посту, не зависят: «сами данные запрет не трогает»
+    (правило вахты про закрытый общий ввод).
+
+    Строка остаётся РАСЧЁТНОЙ (`is_calculable=True`): ноль здесь — полный и
+    верный ответ, а не «карточка не заполнена». В KPI «не вошли в расчёт ФОТ»
+    такие места попадать не должны.
+    """
+    return EmployeePayroll(
+        employee_id=employee.id,
+        employee_name=employee.full_name,
+        position_id=position.id,
+        position_title=position.title,
+        is_primary_position=bool(position.is_primary),
+        rate=None,
+        schedule_name=None,
+        pay_type=position.pay_type,
+        shift_rate=None,
+        hour_rate=None,
+        worked_shifts=0,
+        norm_shifts=0,
+        base_shifts=0,
+        # Ни плана, ни факта: на посту в этом месяце человека не было.
+        total_hours=_ZERO,
+        norm_hours=_ZERO,
+        delta_hours=_ZERO,
+        overtime_hours=_ZERO,
+        off_schedule_hours=_ZERO,
+        holiday_hours=_ZERO,
+        norm_days=0,
+        fact_days=0,
+        hourly_rate=None,
+        base_amount=_ZERO,
+        overtime_amount=_ZERO,
+        off_schedule_amount=_ZERO,
+        holiday_amount=_ZERO,
+        total_amount=_ZERO,
+        night_shifts=0,
+        night_rate=None,
+        night_amount=_ZERO,
+        vacation_days=0,
+        unpaid_days=0,
+        sick_days=0,
+        absent_days=0,
+        vacation_paid_days=0,
+        sick_paid_days=0,
+        vacation_amount=_ZERO,
+        sick_amount=_ZERO,
+        sick_limit_days=0,
+        sick_days_used_before=0,
+        sick_unpaid_days=0,
+        sick_limit_remaining=0,
+        breakdown_by_company=[],
+        is_calculable=True,
+        reason_if_not_calculable=None,
     )
 
 

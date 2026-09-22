@@ -60,12 +60,21 @@ export function guardAmountLabel(payType: 'per_shift' | 'salary' | undefined): s
 }
 
 // ── Подтверждения 409 ─────────────────────────────────────────────────────────
-// Два случая, когда охранные рабочие места переходят в общий справочник:
-// перевод позиции в обычный отдел и снятие флага охраны у отдела. Бэк их не
-// запрещает, а откатывает и отвечает 409 с причинами — спрашиваем и повторяем.
+// Три случая, когда бэк не запрещает операцию, а откатывает её и отвечает 409 с
+// причинами: переход рабочего места в общий справочник (перевод позиции в
+// обычный отдел, снятие флага охраны у отдела) и снятие признака «официально
+// устроен» при уже начисленной выплате. Спрашиваем и повторяем с `confirm`.
 
 const TRANSFER_ERROR = 'guard_transfer_out_confirmation_required'
 const FLAG_ERROR = 'guard_flag_removal_confirmation_required'
+const OFFICIAL_ERROR = 'guard_official_removal_confirmation_required'
+
+const CONFIRM_ERRORS = [TRANSFER_ERROR, FLAG_ERROR, OFFICIAL_ERROR]
+
+const MONTHS_RU = [
+  'январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь',
+]
 
 type GuardConfirmDetail = {
   error?: string
@@ -73,13 +82,52 @@ type GuardConfirmDetail = {
   issues?: string[]
   position_count?: number
   not_calculable_count?: number
+  /** Снятие признака «официально устроен»: месяцы с начисленной выплатой. */
+  months?: { year: number; month: number; amount: string }[]
+  total?: string
+  /** Перевод из охраны гасит признак: те же месяцы, что обнулятся. */
+  official_months?: { year: number; month: number; amount: string }[]
 }
 
-/** Текст подтверждения или `null`, если ошибка не про переход из охраны. */
+/** «• август 2026 — 25 230 ₽» построчно. */
+function monthLines(
+  months: { year: number; month: number; amount: string }[],
+): string {
+  return months
+    .map((m) => `• ${MONTHS_RU[m.month - 1] ?? m.month} ${m.year} — ${money(m.amount)}`)
+    .join('\n')
+}
+
+/** Сумма из ответа бэка в «12 615 ₽»: Decimal приходит строкой. */
+function money(value: string | undefined): string {
+  const n = parseFloat(value ?? '0')
+  if (Number.isNaN(n)) return `${value} ₽`
+  return `${n.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽`
+}
+
+/** Текст подтверждения или `null`, если ошибка не из этих трёх. */
 export function guardConfirmMessage(detail: unknown): string | null {
   if (typeof detail !== 'object' || detail === null) return null
   const d = detail as GuardConfirmDetail
-  if (d.error !== TRANSFER_ERROR && d.error !== FLAG_ERROR) return null
+  if (!d.error || !CONFIRM_ERRORS.includes(d.error)) return null
+
+  if (d.error === OFFICIAL_ERROR) {
+    const lines = [
+      d.message ??
+        'У рабочего места уже начислена официальная выплата — после снятия ' +
+          'признака она и налог станут нулевыми',
+    ]
+    const months = d.months ?? []
+    if (months.length) {
+      lines.push(
+        'Обнулится выплата:\n' +
+          monthLines(months) +
+          (d.total ? `\nВсего ${money(d.total)}` : ''),
+      )
+    }
+    lines.push('Продолжить?')
+    return lines.join('\n\n')
+  }
 
   const lines = [d.message ?? 'Рабочие места перейдут в общий справочник.']
   const issues = d.issues ?? []
@@ -92,6 +140,15 @@ export function guardConfirmMessage(detail: unknown): string | null {
         '\n' + issues.map((i) => `• ${i}`).join('\n'),
     )
     lines.push('Недостающее заполняется в общем справочнике сотрудников.')
+  }
+  // Перевод из охраны снимает «официально устроен» — одно подтверждение должно
+  // назвать ОБА последствия, иначе про обнулённые выплаты никто не узнает.
+  const official = d.official_months ?? []
+  if (official.length) {
+    lines.push(
+      'Признак «официально устроен» будет снят, обнулится выплата:\n' +
+        monthLines(official),
+    )
   }
   lines.push('Продолжить?')
   return lines.join('\n\n')

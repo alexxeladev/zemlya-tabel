@@ -87,7 +87,10 @@ def setup(db_session: Session):
         position=position, days=FIRST_HALF,
     )
     assignment.premium_h1 = Decimal("230")
-    assignment.is_official = True
+    # «Официальный» — свойство РАБОЧЕГО МЕСТА (task_guard_form_rate_official).
+    # Зарплата здесь не задаётся намеренно: проверяются колонки выгрузки, а не
+    # налог, и цифры остаются теми же, что в образце заказчика.
+    position.is_official = True
     db_session.commit()
     return {
         "actor": actor, "companies": companies, "employee": emp,

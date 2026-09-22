@@ -30,17 +30,12 @@ export function placePeriod(hire: string | null, dismissal: string | null): stri
 }
 
 /** «Официально» за месяц: у человека не на посту признака нет. */
-export function officialLabel(value: boolean | null): string {
-  return value === null ? 'не на посту' : value ? 'да' : 'нет'
-}
-
-/** Единица суммы по способу оплаты. */
-export function amountUnit(payType: string | null | undefined): string {
-  return payType === 'salary' ? 'в месяц' : 'за смену'
+export function officialLabel(value: boolean): string {
+  return value ? 'да' : 'нет'
 }
 
 /** Каких полей коснулась правка — словами для подписи «Изменено: …». */
-export function changedFields<T extends Record<string, string>>(
+export function changedFields<T extends Record<string, string | boolean>>(
   before: T,
   after: T,
   labels: Partial<Record<keyof T, string>>,

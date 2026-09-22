@@ -35,6 +35,9 @@ FINANCIAL_POSITION_FIELDS = (
     "holiday_coefficient",
     "holiday_fixed_rate",
     "overtime_coefficient",
+    # Официальная зарплата на руки (вахта): по ней считается официальная
+    # выплата и налог — это деньги человека, а не факт времени.
+    "official_salary",
 )
 
 # То же в «плоской» карточке сотрудника (это compat-вид основной позиции) плюс займ.

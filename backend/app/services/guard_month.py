@@ -54,6 +54,7 @@ from app.schemas.guard import (
 from app.services.company_order import company_order_by
 from app.services.guard_duty import (
     employer_tax_percent,
+    official_by_assignment,
     guard_department_ids,
     list_assignments,
     list_zones,
@@ -70,12 +71,22 @@ from app.services.timesheet_periods import month_lock_status
 
 _ZERO = Decimal("0")
 
-def calculate_assignment(assignment: GuardAssignment, *, tax_percent: Decimal):
+def calculate_assignment(
+    assignment: GuardAssignment,
+    *,
+    tax_percent: Decimal,
+    official: dict[int, Decimal] | None = None,
+):
     """Расчёт одной строки табеля из её данных.
 
     `tax_percent` обязателен и без значения по умолчанию: забытая ставка молча
     дала бы нулевой налог и заниженную базу разнесения. Берётся из
     `guard_duty.employer_tax_percent`.
+
+    `official` — официальная выплата ЭТОЙ строки по половинам. Считает её
+    `guard_duty.official_by_assignment` из оф. зарплаты рабочего места: одна
+    выплата на место за месяц, разложенная по его строкам. Не передана — выплаты
+    нет (пустой слот, неофициальное место).
     """
     return calculate_guard_row(
         pay_type=assignment.pay_type,
@@ -85,20 +96,25 @@ def calculate_assignment(assignment: GuardAssignment, *, tax_percent: Decimal):
         days=marked_days(assignment),
         premium={h: assignment.premium(h) for h in GUARD_HALVES},
         penalty={h: assignment.penalty(h) for h in GUARD_HALVES},
-        official={h: assignment.official_payout(h) for h in GUARD_HALVES},
+        official=official or {},
         tax_percent=tax_percent,
     )
 
 
 def assignment_distribution(
-    assignment: GuardAssignment, *, tax_percent: Decimal
+    assignment: GuardAssignment,
+    *,
+    tax_percent: Decimal,
+    official: dict[int, Decimal] | None = None,
 ) -> dict[int, Decimal]:
     """Разбивка затрат строки (начислено + налог) по юрлицам её МЕСТА РАБОТЫ.
 
     У поста проценты берутся от объекта, у экипажа — от него самого; решает это
     один `shares_map`, чтобы «откуда проценты» не расползлось по коду.
     """
-    result = calculate_assignment(assignment, tax_percent=tax_percent)
+    result = calculate_assignment(
+        assignment, tax_percent=tax_percent, official=official
+    )
     return distribute_guard_amount(
         result.distribution_base, shares_map(assignment.place)
     )
@@ -109,8 +125,11 @@ def _row_read(
     with_money: bool,
     tax_percent: Decimal,
     half: int | None = None,
+    official: dict[int, Decimal] | None = None,
 ) -> GuardRowRead:
-    result = calculate_assignment(assignment, tax_percent=tax_percent)
+    result = calculate_assignment(
+        assignment, tax_percent=tax_percent, official=official
+    )
     if half is not None:
         # Режим половины: суммы строки — только за неё (см. шапку модуля).
         result = result.only_half(half)
@@ -163,7 +182,9 @@ def _row_read(
         # Ставка — денежное поле: табельщику её не отдаём, иначе «смены × ставка»
         # он посчитает в уме, и маскирование сумм ничего не закроет.
         rate=Decimal(str(assignment.rate)) if with_money else None,
-        is_official=assignment.is_official,
+        # Признак официального трудоустройства — с РАБОЧЕГО МЕСТА, а не со
+        # строки: в строке его больше нет (task_guard_form_rate_official).
+        is_official=bool(position.is_official) if position is not None else False,
         note=assignment.note,
         days=sorted(marked_days(assignment)),
         shifts=result.shifts,
@@ -229,12 +250,17 @@ def build_guard_month(
     locks = {month_lock_status(db, d, year, month) for d in department_ids} - {None}
     period_lock = "closed" if "closed" in locks else next(iter(locks), None)
     assignments = list_assignments(db, year, month, department_ids)
+    # Официальная выплата вычисляется из оф. зарплаты рабочего места — ОДИН РАЗ
+    # на место за месяц, поэтому считается по всему набору строк сразу.
+    official = official_by_assignment(assignments)
     zones = list_zones(db, department_ids)
 
     rows_by_crew: dict[int, list[GuardRowRead]] = {}
     rows_by_site: dict[int, list[GuardRowRead]] = {}
     for assignment in assignments:
-        row = _row_read(assignment, with_money, tax_percent, half)
+        row = _row_read(
+            assignment, with_money, tax_percent, half, official.get(assignment.id)
+        )
         if assignment.crew_id is not None:
             rows_by_crew.setdefault(assignment.crew_id, []).append(row)
         elif row.site_id is not None:

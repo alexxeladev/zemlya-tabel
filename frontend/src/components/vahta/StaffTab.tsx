@@ -23,6 +23,7 @@ import { listDepartments } from '../../api/departments'
 import {
   createVahtaStaff,
   findSimilarEmployees,
+  getVahtaSettings,
   getVahtaDepartments,
   getVahtaMonth,
   listVahtaStaff,
@@ -51,7 +52,6 @@ import { formatMoney } from '../../utils/money'
 import { MONTHS_RU, MONTHS_RU_PREP } from '../../utils/ruDate'
 import { useGuardJobTitles } from '../../hooks/useGuardJobTitles'
 import {
-  amountUnit,
   changedFields,
   monthFactHint,
   monthFactsByPosition,
@@ -66,9 +66,12 @@ type Draft = {
   tab_number: string
   department_id: string
   job_title_id: string
+  /** Ставка или оклад — ТОЛЬКО при переводе в обычное подразделение. */
   amount: string
   hire_date: string
   dismissal_date: string
+  is_official: boolean
+  official_salary: string
 }
 
 const emptyDraft = (deptId: number | undefined): Draft => ({
@@ -79,6 +82,8 @@ const emptyDraft = (deptId: number | undefined): Draft => ({
   amount: '',
   hire_date: '',
   dismissal_date: '',
+  is_official: false,
+  official_salary: '',
 })
 
 const toDraft = (s: VahtaStaff): Draft => ({
@@ -86,9 +91,11 @@ const toDraft = (s: VahtaStaff): Draft => ({
   tab_number: s.tab_number ?? '',
   department_id: String(s.department_id),
   job_title_id: s.job_title_id != null ? String(s.job_title_id) : '',
-  amount: s.amount != null ? String(parseFloat(s.amount)) : '',
+  amount: '',
   hire_date: s.hire_date ?? '',
   dismissal_date: s.dismissal_date ?? '',
+  is_official: s.is_official,
+  official_salary: s.official_salary != null ? String(parseFloat(s.official_salary)) : '',
 })
 
 const orNull = (v: string) => (v.trim() === '' ? null : v.trim())
@@ -97,9 +104,11 @@ const orNull = (v: string) => (v.trim() === '' ? null : v.trim())
 const FIELD_LABELS: Partial<Record<keyof Draft, string>> = {
   department_id: 'подразделение',
   job_title_id: 'должность',
-  amount: 'ставка',
+  amount: 'ставка при переводе',
   hire_date: 'дата приёма',
   dismissal_date: 'дата увольнения',
+  is_official: 'официальное трудоустройство',
+  official_salary: 'официальная зарплата',
 }
 
 export function StaffTab({
@@ -256,14 +265,9 @@ export function StaffTab({
                     Пост ({monthName})
                   </th>
                 )}
-                <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2 text-right">Ставка</th>
+                <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2">Официально</th>
                 {!panelOpen && (
-                  <>
-                    <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2">На месте</th>
-                    <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2">
-                      Официально ({monthName})
-                    </th>
-                  </>
+                  <th className="border-b border-ds-line-strong bg-ds-surface-2 px-3 py-2">На месте</th>
                 )}
               </tr>
             </thead>
@@ -314,33 +318,28 @@ export function StaffTab({
                         {place}
                       </td>
                     )}
-                    <td className="whitespace-nowrap border-b border-ds-line px-3 py-2 text-right">
-                      {r.amount != null ? (
-                        <>
-                          <span className="tabular-nums">{formatMoney(r.amount)}</span>{' '}
-                          <span className="text-[11.5px] text-ds-muted">{amountUnit(r.pay_type)}</span>
-                        </>
-                      ) : (
-                        <span className="text-ds-muted">не задана</span>
+                    <td
+                      className={`whitespace-nowrap border-b border-ds-line px-3 py-2 ${
+                        r.is_official ? '' : 'text-ds-muted'
+                      }`}
+                    >
+                      {officialLabel(r.is_official)}
+                      {r.is_official && (
+                        <span className="block text-[11.5px] text-ds-muted">
+                          {r.official_salary != null
+                            ? `${formatMoney(r.official_salary)} ₽/мес на руки`
+                            : 'зарплата не задана'}
+                        </span>
                       )}
                     </td>
                     {!panelOpen && (
-                      <>
-                        <td
-                          className={`whitespace-nowrap border-b border-ds-line px-3 py-2 ${
-                            r.hire_date || r.dismissal_date ? '' : 'text-ds-muted'
-                          }`}
-                        >
-                          {placePeriod(r.hire_date, r.dismissal_date)}
-                        </td>
-                        <td
-                          className={`whitespace-nowrap border-b border-ds-line px-3 py-2 ${
-                            r.is_official === null ? 'text-ds-muted' : ''
-                          }`}
-                        >
-                          {officialLabel(r.is_official)}
-                        </td>
-                      </>
+                      <td
+                        className={`whitespace-nowrap border-b border-ds-line px-3 py-2 ${
+                          r.hire_date || r.dismissal_date ? '' : 'text-ds-muted'
+                        }`}
+                      >
+                        {placePeriod(r.hire_date, r.dismissal_date)}
+                      </td>
                     )}
                   </tr>
                 )
@@ -417,6 +416,14 @@ function StaffPanel({
   )
   const [draft, setDraft] = useState<Draft>(initial)
   const jobTitles = useGuardJobTitles()
+  // Ставка налога — настройка вахты (вкладка «Налог»), а не константа: в
+  // подсказке про «налоги сверху» она должна быть той же, что в расчёте.
+  const [taxPercent, setTaxPercent] = useState<string | null>(null)
+  useEffect(() => {
+    getVahtaSettings()
+      .then((s) => setTaxPercent(String(parseFloat(s.employer_tax_percent))))
+      .catch(() => setTaxPercent(null))
+  }, [])
   const [similar, setSimilar] = useState<VahtaSimilarEmployee[]>([])
   const [saving, setSaving] = useState(false)
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }))
@@ -445,9 +452,20 @@ function StaffPanel({
         // Перевод из охраны — должность не нужна (в обычном отделе её ведёт
         // справочник); пустой выбор не шлём вовсе, иначе бэк искал бы должность #0.
         ...(draft.job_title_id && !transferOut ? { job_title_id: Number(draft.job_title_id) } : {}),
-        amount: orNull(draft.amount),
+        // Ставка — только для перевода в обычное подразделение: у охранного
+        // места её нет, цена смены живёт на посту и в строке табеля.
+        ...(transferOut ? { amount: orNull(draft.amount) } : {}),
         hire_date: orNull(draft.hire_date),
         dismissal_date: orNull(draft.dismissal_date),
+        // При переводе официальные поля не шлём: место уходит из охраны, и
+        // признак гасит сам бэк — иначе одно «Продолжить?» подтверждало бы два
+        // разных действия (нашло ревью).
+        ...(transferOut
+          ? {}
+          : {
+              is_official: draft.is_official,
+              official_salary: draft.is_official ? orNull(draft.official_salary) : null,
+            }),
       }
       if (row) {
         const saved = await withGuardConfirm(
@@ -455,7 +473,11 @@ function StaffPanel({
           (message) => window.confirm(message),
         )
         if (saved === GUARD_CONFIRM_CANCELLED) {
-          toast.info('Перевод отменён — ничего не изменилось')
+          toast.info(
+            transferOut
+              ? 'Перевод отменён — ничего не изменилось'
+              : 'Отменено — ничего не изменилось',
+          )
           return
         }
         toast.success(transferOut ? 'Переведён — дальше ведётся в общем справочнике' : 'Сохранено')
@@ -619,26 +641,57 @@ function StaffPanel({
                 ))}
               </SelectField>
             </FieldRow>
-            <FieldRow
-              label={guardAmountLabel(payType)}
-              htmlFor="staff-amount"
-              hint={
-                payType === 'salary'
-                  ? 'Половина оклада на каждую половину месяца'
-                  : row
-                    ? monthFactHint(fact, monthPrep)
-                    : undefined
-              }
-            >
-              <TextField
-                id="staff-amount"
-                value={draft.amount}
-                onChange={(e) => set('amount', e.target.value.replace(',', '.'))}
-                inputMode="decimal"
-                className="max-w-[160px] text-right font-ds-mono"
-              />
+            <p className="mb-2.5 text-[11.5px] text-ds-muted">
+              {payType === 'salary'
+                ? 'Оклад здесь не задаётся: он стоит в строке табеля (колонка «Ставка / оклад») и по умолчанию берётся от поста.'
+                : 'Ставка за смену здесь не задаётся: цена смены — у объекта, поста или экипажа, а правится в строке табеля.'}
+            </p>
+            <FieldRow label="Официально устроен" htmlFor="staff-official">
+              <label className="flex cursor-pointer items-center gap-2 text-[13px]">
+                <input
+                  id="staff-official"
+                  type="checkbox"
+                  checked={draft.is_official}
+                  onChange={(e) => set('is_official', e.target.checked)}
+                />
+                <span>{draft.is_official ? 'да' : 'нет'}</span>
+              </label>
             </FieldRow>
+            {draft.is_official && (
+              <FieldRow
+                label="Официальная зарплата на руки, ₽/мес"
+                htmlFor="staff-official-salary"
+                hint={
+                  'Сумма на карту после НДФЛ. Налоги' +
+                  (taxPercent ? ` ${taxPercent} %` : '') +
+                  ' добавляются сверху при разнесении по юрлицам'
+                }
+              >
+                <TextField
+                  id="staff-official-salary"
+                  value={draft.official_salary}
+                  onChange={(e) => set('official_salary', e.target.value.replace(',', '.'))}
+                  inputMode="decimal"
+                  className="max-w-[160px] text-right font-ds-mono"
+                />
+              </FieldRow>
+            )}
           </>
+        )}
+        {transferOut && (
+          <FieldRow
+            label={guardAmountLabel(payType)}
+            htmlFor="staff-amount"
+            hint="Нужна расчёту в обычном подразделении — в охране суммы у места нет"
+          >
+            <TextField
+              id="staff-amount"
+              value={draft.amount}
+              onChange={(e) => set('amount', e.target.value.replace(',', '.'))}
+              inputMode="decimal"
+              className="max-w-[160px] text-right font-ds-mono"
+            />
+          </FieldRow>
         )}
       </div>
 
@@ -666,15 +719,15 @@ function StaffPanel({
           <dl className="m-0 grid grid-cols-[140px_1fr] gap-x-3 gap-y-1 text-[12.5px]">
             <dt className="text-ds-muted">Пост</dt>
             <dd className="m-0 text-ds-ink-2">{row.places.length ? row.places.join(', ') : 'не на посту'}</dd>
-            <dt className="text-ds-muted">Официально</dt>
-            <dd className="m-0 text-ds-ink-2">{officialLabel(row.is_official)}</dd>
             <dt className="text-ds-muted">Смен</dt>
             <dd className="m-0 text-ds-ink-2">
               {fact === null ? 'загружается…' : fact === 'error' ? 'не загрузились' : fact.shifts || 'нет'}
             </dd>
+            <dt className="text-ds-muted">Начислено</dt>
+            <dd className="m-0 text-ds-ink-2">{monthFactHint(fact, monthPrep) ?? '—'}</dd>
           </dl>
           <p className="mb-0 mt-1.5 text-[11.5px] text-ds-muted">
-            Пост и «официально» задаются в строке табеля — помесячно.
+            Пост задаётся в строке табеля — помесячно.
           </p>
         </div>
       )}

@@ -178,14 +178,13 @@ export const updateVahtaAssignment = (
     /** Должность строки — правится прямо в табеле. */
     job_title_id: number
     rate: string
-    is_official: boolean
     note: string | null
     premium_h1: string
     premium_h2: string
     penalty_h1: string
     penalty_h2: string
-    official_payout_h1: string
-    official_payout_h2: string
+    // Официальной выплаты и отметки «официальный» здесь нет: они — свойства
+    // рабочего места, выплата вычисляется (task_guard_form_rate_official).
   }>,
 ) => apiClient.patch(`/api/vahta/assignments/${id}`, data).then((r) => r.data)
 

@@ -485,12 +485,17 @@ class TestStatementIntegration:
             position=rodionov.primary_position, days=FIRST_HALF,
         )
         assignment.premium_h1 = Decimal("230")
-        assignment.official_payout_h1 = Decimal("25230.50")
+        # Оф. выплата вычисляется из зарплаты места: 50 461 / 2 = 25 230,50
+        # в каждую половину (task_guard_form_rate_official).
+        rodionov.primary_position.is_official = True
+        rodionov.primary_position.official_salary = Decimal("50461")
         db_session.commit()
         statement = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH)
         row = statement.rows[0]
-        assert row.net_payout_exact == Decimal("49999.50")
-        assert row.net_payout == Decimal("50000")
+        # 1-я половина: 75 230 − 25 230,50 = 49 999,50 → 50 000 (вверх до 500 ₽).
+        # 2-я: смен нет, 0 − 25 230,50 = −25 230,50 — долг не округляется.
+        assert row.net_payout_exact == Decimal("24769.00")
+        assert row.net_payout == Decimal("24769.50")
         assert row.rounding_tail == Decimal("-0.50")
         # Разнесение от округления не зависит: база — начислено + налог.
         assert row.accrued_total == Decimal("75230")
@@ -807,7 +812,9 @@ class TestQuickHire:
         db_session.commit()
         assert employee.tab_number
         assert position.department_id == guard_dept.id
-        assert position.shift_rate == Decimal("4200")
+        # Ставки у охранного рабочего места нет вовсе: 4 200 уходят в СТРОКУ
+        # табеля, а не в карточку (task_guard_form_rate_official).
+        assert position.shift_rate is None
         # В общем справочнике он обычный сотрудник (п.1а).
         assert db_session.query(Employee).filter_by(id=employee.id).first() is not None
 
@@ -819,10 +826,12 @@ class TestQuickHire:
         db_session.commit()
         assert employee.tab_number == "T-0201"
 
-    def test_rate_defaults_to_the_place(self, db_session, gbr_place):
+    def test_hire_leaves_no_rate_on_the_position(self, db_session, gbr_place):
+        """Цена смены живёт на месте работы и в строке табеля, не в карточке."""
         _, position = quick_hire(db_session, full_name="Без Ставки", place=gbr_place)
         db_session.commit()
-        assert position.shift_rate == Decimal("5000.00")
+        assert position.shift_rate is None
+        assert position.rate is None
 
 
 # ── Права ─────────────────────────────────────────────────────────────────────

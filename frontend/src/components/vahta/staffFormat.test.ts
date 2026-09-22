@@ -6,7 +6,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  amountUnit,
   changedFields,
   monthFactHint,
   monthFactsByPosition,
@@ -26,7 +25,6 @@ test('числительные', () => {
 
 test('пустое — словами', () => {
   assert.equal(placePeriod(null, null), 'без ограничений')
-  assert.equal(officialLabel(null), 'не на посту')
   assert.equal(officialLabel(true), 'да')
   assert.equal(officialLabel(false), 'нет')
 })
@@ -39,8 +37,6 @@ test('период на месте по-русски', () => {
 })
 
 test('единица суммы и изменённые поля', () => {
-  assert.equal(amountUnit('salary'), 'в месяц')
-  assert.equal(amountUnit('per_shift'), 'за смену')
   assert.deepEqual(
     changedFields({ a: '1', b: '2' }, { a: '1', b: '3' }, { a: 'ставка', b: 'дата' }),
     ['дата'],

@@ -54,16 +54,25 @@ def _days(first: int, last: int) -> set[int]:
     return set(range(first, last + 1))
 
 
-def _karaulov(db, place, person, *, official_h1="25230", official_h2="0",
+def _karaulov(db, place, person, *, official_salary="25230",
               days=FIRST_HALF, premium_h1="230"):
-    """Проверочная строка: 15 смен × 5 000 + премия 230, оф. выплата 25 230."""
+    """Проверочная строка: 15 смен × 5 000 + премия 230, оф. выплата 25 230.
+
+    Официальная выплата больше не вводится руками: она вычисляется из оф.
+    зарплаты РАБОЧЕГО МЕСТА (task_guard_form_rate_official). Полный месяц на
+    месте → 12 615 в каждую половину, за месяц те же 25 230, что в образце
+    заказчика, и тот же налог 10 092.
+    """
+    position = person.primary_position
+    position.is_official = bool(official_salary and Decimal(official_salary) > 0)
+    position.official_salary = (
+        Decimal(official_salary) if position.is_official else None
+    )
     assignment = create_assignment(
         db, year=YEAR, month=MONTH, place=place,
-        position=person.primary_position, days=days,
+        position=position, days=days,
     )
     assignment.premium_h1 = Decimal(premium_h1)
-    assignment.official_payout_h1 = Decimal(official_h1)
-    assignment.official_payout_h2 = Decimal(official_h2)
     db.commit()
     return assignment
 
@@ -260,7 +269,7 @@ class TestMonthScreen:
     def test_row_without_official_payout_is_unchanged(
         self, db_session, gbr_place, rodionov, companies
     ):
-        _karaulov(db_session, gbr_place, rodionov, official_h1="0")
+        _karaulov(db_session, gbr_place, rodionov, official_salary="0")
         row = build_guard_month(db_session, _admin(db_session), YEAR, MONTH) \
             .zones[0].cards[0].rows[0]
         assert row.tax == _ZERO
@@ -289,7 +298,7 @@ class TestHalfView:
 
     def _setup(self, db, place, person):
         assignment = _karaulov(
-            db, place, person, days=_days(1, 31), official_h2="10000",
+            db, place, person, days=_days(1, 31),
         )
         assignment.penalty_h2 = Decimal("500")
         db.commit()
@@ -302,7 +311,8 @@ class TestHalfView:
         assert (month.first_day, month.last_day) == (1, 31)
         assert row.shifts == 31
         assert row.accrued == Decimal("154730")
-        assert row.tax == Decimal("14092.00")
+        # Оф. зарплата 25 230 на руки → по 12 615 в каждую половину, налог 40 %.
+        assert row.tax == Decimal("10092.00")
         assert [h.half for h in month.halves] == [1, 2]
 
     def test_first_half_view(self, db_session, gbr_place, rodionov, companies):
@@ -315,16 +325,18 @@ class TestHalfView:
         assert row.salary == Decimal("75000")
         assert row.premium == Decimal("230")
         assert row.penalty == _ZERO
-        assert row.official_payout == Decimal("25230")
+        # Половина оф. зарплаты: 25 230 / 2 (человек на месте весь месяц).
+        assert row.official_payout == Decimal("12615.00")
         assert row.accrued == Decimal("75230")
-        assert row.net_payout == Decimal("50000")
-        assert row.tax == Decimal("10092.00")
-        assert row.distribution[companies["ZMO"].id] == Decimal("29862.70")
+        # 75 230 − 12 615 = 62 615 → вверх до 500 ₽.
+        assert row.net_payout == Decimal("63000")
+        assert row.tax == Decimal("5046.00")
+        assert row.distribution[companies["ZMO"].id] == Decimal("28096.60")
         assert [h.half for h in row.halves] == [1]
         assert month.total_shifts == 15
         assert month.total_accrued == Decimal("75230")
-        assert month.total_net_payout == Decimal("50000")
-        assert sum(t.amount for t in month.company_totals) == Decimal("85322.00")
+        assert month.total_net_payout == Decimal("63000")
+        assert sum(t.amount for t in month.company_totals) == Decimal("80276.00")
         assert [h.half for h in month.halves] == [1]
         assert month.zones[0].total_shifts == 15
         assert month.zones[0].total_accrued == Decimal("75230")
@@ -338,14 +350,15 @@ class TestHalfView:
         assert row.salary == Decimal("80000")
         assert row.premium == _ZERO
         assert row.penalty == Decimal("500")
-        assert row.official_payout == Decimal("10000")
+        assert row.official_payout == Decimal("12615.00")
         assert row.accrued == Decimal("79500")
-        assert row.net_payout == Decimal("69500")
+        # 79 500 − 12 615 = 66 885 → вверх до 500 ₽.
+        assert row.net_payout == Decimal("67000")
         # Налог — от официальной выплаты ЭТОЙ половины.
-        assert row.tax == Decimal("4000.00")
-        assert row.distribution_base == Decimal("83500.00")
-        assert month.total_tax == Decimal("4000.00")
-        assert sum(t.amount for t in month.company_totals) == Decimal("83500.00")
+        assert row.tax == Decimal("5046.00")
+        assert row.distribution_base == Decimal("84546.00")
+        assert month.total_tax == Decimal("5046.00")
+        assert sum(t.amount for t in month.company_totals) == Decimal("84546.00")
 
     def test_half_view_keeps_all_day_marks(self, db_session, gbr_place, rodionov):
         """Отметки — данные, а не итог: фронт шлёт набор дней строки целиком."""
@@ -399,7 +412,7 @@ class TestStatement:
     def test_guard_row_without_official_payout_unchanged(
         self, db_session, gbr_place, rodionov
     ):
-        _karaulov(db_session, gbr_place, rodionov, official_h1="0")
+        _karaulov(db_session, gbr_place, rodionov, official_salary="0")
         row = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH).rows[0]
         assert row.guard_tax_amount == _ZERO
         assert row.distribution_total == row.accrued_total == Decimal("75230")
@@ -539,20 +552,24 @@ class TestPayoutRounding:
 
     def test_accrued_tax_and_distribution_are_not_rounded(self, db_session, gbr_place,
                                                            rodionov, companies):
-        _karaulov(db_session, gbr_place, rodionov, official_h1="25000")
+        # Полный месяц на посту: оф. зарплата 50 000 → по 25 000 в половину.
+        _karaulov(db_session, gbr_place, rodionov, official_salary="50000",
+                  days=_days(1, 31))
         row = build_guard_month(db_session, _admin(db_session), YEAR, MONTH) \
             .zones[0].cards[0].rows[0]
-        assert row.net_payout_exact == Decimal("50230")
-        assert row.net_payout == Decimal("50500")
-        assert row.accrued == Decimal("75230")
-        assert row.tax == Decimal("10000.00")
-        assert row.distribution_base == Decimal("85230.00")
-        assert sum(row.distribution.values()) == Decimal("85230.00")
+        # 1-я: 75 230 − 25 000 = 50 230 → 50 500; 2-я: 80 000 − 25 000 = 55 000.
+        assert row.net_payout_exact == Decimal("105230")
+        assert row.net_payout == Decimal("105500")
+        assert row.accrued == Decimal("155230")
+        assert row.tax == Decimal("20000.00")
+        assert row.distribution_base == Decimal("175230.00")
+        assert sum(row.distribution.values()) == Decimal("175230.00")
 
     def test_statement_row_carries_exact_and_tail(self, db_session, gbr_place, rodionov):
-        _karaulov(db_session, gbr_place, rodionov, official_h1="25000")
+        _karaulov(db_session, gbr_place, rodionov, official_salary="50000",
+                  days=_days(1, 31))
         row = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH).rows[0]
-        assert row.net_payout == Decimal("50500")
-        assert row.net_payout_exact == Decimal("50230")
+        assert row.net_payout == Decimal("105500")
+        assert row.net_payout_exact == Decimal("105230")
         assert row.rounding_tail == Decimal("-270")
-        assert row.distribution_total == Decimal("85230.00")
+        assert row.distribution_total == Decimal("175230.00")

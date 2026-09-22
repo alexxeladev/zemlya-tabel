@@ -120,6 +120,10 @@ AUDITED_FIELDS: dict[type, tuple[str, ...]] = {
         "holiday_fixed_rate",
         "overtime_coefficient",
         "has_night_shifts",
+        # Официальное трудоустройство и оф. зарплата на руки (вахта): от них
+        # считаются официальная выплата, налог и «к выплате».
+        "is_official",
+        "official_salary",
         "is_primary",
         "is_active",
     ),
@@ -227,6 +231,8 @@ FIELD_LABELS: dict[str, str] = {
     "holiday_fixed_rate": "Праздничные: фикс. ставка",
     "overtime_coefficient": "Коэффициент переработки",
     "has_night_shifts": "Ночные смены",
+    "is_official": "Официально устроен",
+    "official_salary": "Официальная зарплата на руки",
     "is_primary": "Основная позиция",
     "name": "Название",
     "code": "Код",

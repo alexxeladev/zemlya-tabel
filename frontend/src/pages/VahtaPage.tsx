@@ -319,7 +319,9 @@ const PersonRow = memo(
             <input
               autoFocus
               value={rateDraft}
-              aria-label={`Ставка строки: ${row.employee_name ?? 'вакансия'}`}
+              aria-label={`${
+                row.pay_type === 'salary' ? 'Оклад за месяц' : 'Ставка за смену'
+              }: ${row.employee_name ?? 'вакансия'}`}
               onChange={(e) => setRateDraft(e.target.value)}
               onBlur={() => void saveRate()}
               onKeyDown={(e) => {
@@ -333,14 +335,22 @@ const PersonRow = memo(
               type="button"
               onClick={() => setRateDraft(String(parseFloat(row.rate ?? '0')))}
               title={
-                ownRate
-                  ? `Своя ставка строки; у места ${money(placeRate)}. Клик — изменить`
-                  : 'Ставка этой строки. Клик — изменить'
+                // У окладной должности (начальник охраны) в этой же колонке
+                // лежит ОКЛАД ЗА МЕСЯЦ, а не цена смены: способ оплаты задаёт
+                // должность строки. Другого места ввода нет — в форме
+                // сотрудника суммы не бывает (task_guard_form_rate_official).
+                (row.pay_type === 'salary'
+                  ? 'Оклад за месяц по этой строке. Клик — изменить'
+                  : 'Ставка за смену по этой строке. Клик — изменить') +
+                (ownRate ? `; у места ${money(placeRate)}` : '')
               }
               className="inline-flex h-[26px] cursor-pointer items-center gap-1 rounded-ds-sm border border-dashed border-transparent px-1.5 tabular-nums hover:border-ds-control-line hover:bg-ds-surface"
             >
               {ownRate && <span className="text-[10.5px] font-medium text-ds-accent">своя</span>}
               {money(row.rate)}
+              {row.pay_type === 'salary' && (
+                <span className="text-[10.5px] text-ds-muted">/мес</span>
+              )}
             </button>
           ) : (
             <>
@@ -970,7 +980,7 @@ export function VahtaPage() {
                 className="sticky top-0 z-30 border-r border-r-ds-line-strong border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right"
                 style={{ left: LEFT_RATE, width: COL_RATE_W, minWidth: COL_RATE_W }}
               >
-                {showMoney ? 'Ставка' : ''}
+                {showMoney ? 'Ставка / оклад' : ''}
               </th>
               {days.map((day) => (
                 <th
@@ -1377,9 +1387,6 @@ function MoneyPopover({
     premium_h2: half(2)?.premium ?? '0',
     penalty_h1: half(1)?.penalty ?? '0',
     penalty_h2: half(2)?.penalty ?? '0',
-    official_payout_h1: half(1)?.official_payout ?? '0',
-    official_payout_h2: half(2)?.official_payout ?? '0',
-    is_official: row.is_official,
     note: row.note ?? '',
   })
   const [saving, setSaving] = useState(false)
@@ -1408,17 +1415,14 @@ function MoneyPopover({
           ? {
               premium_h1: form.premium_h1 || '0',
               penalty_h1: form.penalty_h1 || '0',
-              official_payout_h1: form.official_payout_h1 || '0',
             }
           : {}),
         ...(shownHalves.includes(2)
           ? {
               premium_h2: form.premium_h2 || '0',
               penalty_h2: form.penalty_h2 || '0',
-              official_payout_h2: form.official_payout_h2 || '0',
             }
           : {}),
-        is_official: form.is_official,
         note: form.note || null,
       })
       onDone()
@@ -1450,6 +1454,7 @@ function MoneyPopover({
               <th className="font-semibold">Премия</th>
               <th className="font-semibold">Штраф</th>
               <th className="font-semibold">Оф. выплата</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -1458,7 +1463,10 @@ function MoneyPopover({
               <td className="pr-2 text-right text-[11.5px] text-slate-500">1–{midDay}</td>
               <td className="p-0.5">{field('premium_h1')}</td>
               <td className="p-0.5">{field('penalty_h1')}</td>
-              <td className="p-0.5">{field('official_payout_h1')}</td>
+              <td className="p-0.5 pl-2 text-right tabular-nums text-slate-600">
+                {money(half(1)?.official_payout)}
+              </td>
+              <td />
             </tr>
             )}
             {shownHalves.includes(2) && (
@@ -1468,20 +1476,22 @@ function MoneyPopover({
               </td>
               <td className="p-0.5">{field('premium_h2')}</td>
               <td className="p-0.5">{field('penalty_h2')}</td>
-              <td className="p-0.5">{field('official_payout_h2')}</td>
+              <td className="p-0.5 pl-2 text-right tabular-nums text-slate-600">
+                {money(half(2)?.official_payout)}
+              </td>
+              <td />
             </tr>
             )}
           </tbody>
         </table>
 
-        <label className="mt-2.5 flex items-center gap-2 text-[12px]">
-          <input
-            type="checkbox"
-            checked={form.is_official}
-            onChange={(e) => setForm((f) => ({ ...f, is_official: e.target.checked }))}
-          />
-          Трудоустройство: официальный
-        </label>
+        <p className="mt-1.5 mb-0 text-[11px] leading-snug text-slate-500">
+          Оф. выплата — <b>из формы сотрудника</b>: половина официальной зарплаты на
+          каждую половину месяца, пропорционально дням на месте. Руками не вводится.
+          {row.is_official
+            ? ' Это рабочее место оформлено официально.'
+            : ' Это рабочее место оформлено неофициально — выплаты нет.'}
+        </p>
 
         <input
           value={form.note}

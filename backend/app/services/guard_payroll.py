@@ -223,6 +223,34 @@ def employer_tax(official_payout: Decimal, tax_percent: Decimal) -> Decimal:
     return (official_payout * _money(tax_percent) / 100).quantize(KOPECK)
 
 
+def official_half_payout(
+    official_salary: Decimal | None,
+    year: int,
+    month: int,
+    half: int,
+    days_on_place: int,
+) -> Decimal:
+    """Официальная (банковская) выплата ПОЛОВИНЫ месяца.
+
+    Через банк всегда уходит половина официальной зарплаты в каждую половину
+    месяца (решение заказчика, task_guard_form_rate_official). Руками выплату
+    больше не вводят — она вычисляется:
+
+        выплата половины = оф. ЗП / 2 × дней на месте в половине / дней в половине
+
+    «Дни на месте» — КАЛЕНДАРНЫЕ дни периода работы на рабочем месте, а не
+    смены: вахта круглосуточная, графика у неё нет. Полный месяц даёт ровно
+    оф. ЗП (по половине в каждую половину), приём или увольнение внутри месяца —
+    пропорционально. Округление до копейки, дальше не округляем (правило вахты).
+    """
+    salary = _money(official_salary)
+    length = half_length(year, month, half)
+    if salary <= _ZERO or length <= 0 or days_on_place <= 0:
+        return _ZERO
+    days = min(days_on_place, length)
+    return (salary / 2 * Decimal(days) / Decimal(length)).quantize(KOPECK)
+
+
 def _half_salary(
     pay_type: str, rate: Decimal, year: int, month: int, half: int, shifts: int
 ) -> Decimal:

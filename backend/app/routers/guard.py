@@ -114,6 +114,7 @@ from app.services.guard_job_titles import (
     save_job_title,
 )
 from app.services.guard_staff import (
+    OfficialRemovalWarning,
     amount_of,
     create_staff,
     is_guard_position,
@@ -950,10 +951,14 @@ def patch_assignment(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    """Правка строки: ставка, премия, штраф, официальная выплата, примечание.
+    """Правка строки: должность, ставка, премия, штраф, примечание.
 
-    Всё, кроме примечания и отметки трудоустройства, — деньги, поэтому
-    табельщику эндпойнт закрыт целиком: смены он ведёт другими вызовами.
+    Должность и примечание — не деньги, их правит и табельщик; ставка, премия и
+    штраф денежные, и на них стоит `_require_money`.
+
+    **Официальной выплаты здесь нет** (task_guard_form_rate_official): она
+    вычисляется из оф. зарплаты рабочего места, и ввести её руками нельзя ни с
+    экрана, ни запросом — поля просто нет в схеме.
     """
     _require_timesheet_edit(actor)
     assignment = _editable_assignment_or_404(db, actor, assignment_id)
@@ -1264,8 +1269,8 @@ def export_excel(
 def _staff_read(
     position: EmployeePosition,
     places: dict[int, list[str]],
-    official: dict[int, bool],
     titles: dict[str, GuardJobTitle],
+    with_money: bool = True,
 ) -> GuardStaffRead:
     employee = position.employee
     # `titles` — справочник одним запросом на весь список (ревью: было по два
@@ -1281,23 +1286,28 @@ def _staff_read(
         job_title_id=title.id if title else None,
         job_title_name=title.name if title else (position.title or ""),
         pay_type=position.pay_type,
-        amount=amount_of(position),
         hire_date=position.hire_date,
         dismissal_date=position.dismissal_date,
         employee_is_active=employee.is_active,
         places=places.get(position.id, []),
-        is_official=official.get(position.id),
+        # Признак — свойство рабочего места, а не месяца. Зарплата — деньги:
+        # тем, кто их не видит, приходит None, как остальные суммы вахты.
+        is_official=bool(position.is_official),
+        official_salary=position.official_salary if with_money else None,
     )
 
 
 def _staff_month_context(
     db: Session, department_ids: list[int], year: int | None, month: int | None
-) -> tuple[dict[int, list[str]], dict[int, bool]]:
-    """Где стоит каждое рабочее место в месяце и официален ли он там."""
+) -> dict[int, list[str]]:
+    """Где стоит каждое рабочее место в выбранном месяце.
+
+    Официальное трудоустройство сюда не входит: это свойство самого рабочего
+    места, а не месяца (task_guard_form_rate_official).
+    """
     places: dict[int, list[str]] = {}
-    official: dict[int, bool] = {}
     if year is None or month is None:
-        return places, official
+        return places
     for assignment in list_assignments(db, year, month, department_ids):
         if assignment.position_id is None:
             continue
@@ -1305,10 +1315,7 @@ def _staff_month_context(
         label = _place_label(assignment)
         if label not in labels:
             labels.append(label)
-        official[assignment.position_id] = (
-            official.get(assignment.position_id, False) or bool(assignment.is_official)
-        )
-    return places, official
+    return places
 
 
 def _staff_position_or_404(
@@ -1336,10 +1343,11 @@ def get_staff(
     if department_id is not None:
         _access(db, actor, department_id)
         department_ids = [department_id]
-    places, official = _staff_month_context(db, department_ids, year, month)
+    places = _staff_month_context(db, department_ids, year, month)
     titles = title_index(db)
+    with_money = can_see_finances(actor)
     return [
-        _staff_read(p, places, official, titles)
+        _staff_read(p, places, titles, with_money)
         for p in list_staff_positions(db, department_ids)
     ]
 
@@ -1350,7 +1358,11 @@ def post_staff(
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
-    """Оформить сотрудника охраны: охранника со ставкой или начальника с окладом."""
+    """Оформить сотрудника охраны: человек с рабочим местом в охране.
+
+    Суммы у охранного места нет (task_guard_form_rate_official): способ оплаты
+    берётся от должности, а цена смены или оклад стоят в строке табеля.
+    """
     _require_vahta(actor)
     _require_settings(actor)
     _access(db, actor, payload.department_id)
@@ -1361,9 +1373,10 @@ def post_staff(
             tab_number=payload.tab_number,
             department_id=payload.department_id,
             job_title_id=payload.job_title_id,
-            amount=payload.amount,
             hire_date=payload.hire_date,
             dismissal_date=payload.dismissal_date,
+            is_official=payload.is_official,
+            official_salary=payload.official_salary,
         )
     except GuardError as exc:
         raise _guard_error(exc)
@@ -1374,7 +1387,7 @@ def post_staff(
     )
     db.commit()
     db.refresh(position)
-    return _staff_read(position, {}, {}, title_index(db))
+    return _staff_read(position, {}, title_index(db), can_see_finances(actor))
 
 
 @router.patch("/staff/{position_id}", response_model=GuardStaffRead)
@@ -1382,7 +1395,11 @@ def patch_staff(
     position_id: int,
     payload: GuardStaffUpdate,
     confirm: bool = Query(
-        False, description="Подтвердить перевод из охраны в обычное подразделение"
+        False,
+        description=(
+            "Подтвердить перевод из охраны в обычное подразделение или снятие "
+            "признака «официально устроен» с начисленной выплатой"
+        ),
     ),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
@@ -1400,12 +1417,33 @@ def patch_staff(
         "amount": str(amount_of(position)) if amount_of(position) is not None else None,
         "hire_date": str(position.hire_date) if position.hire_date else None,
         "dismissal_date": str(position.dismissal_date) if position.dismissal_date else None,
+        "is_official": position.is_official,
+        "official_salary": (
+            str(position.official_salary) if position.official_salary is not None else None
+        ),
     }
     try:
         warning = update_staff(db, actor, position, data, confirm)
     except GuardError as exc:
         db.rollback()
         raise _guard_error(exc)
+    if isinstance(warning, OfficialRemovalWarning):
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "guard_official_removal_confirmation_required",
+                "message": (
+                    "У рабочего места уже начислена официальная выплата — "
+                    "после снятия признака она и налог станут нулевыми"
+                ),
+                "months": [
+                    {"year": year, "month": month, "amount": str(amount)}
+                    for year, month, amount in warning.months
+                ],
+                "total": str(warning.total),
+            },
+        )
     if warning is not None:
         db.rollback()
         raise HTTPException(
@@ -1418,6 +1456,12 @@ def patch_staff(
                 ),
                 "department_name": warning.department_name,
                 "issues": warning.issues,
+                # Перевод гасит «официально устроен»: выплата и налог этих
+                # месяцев станут нулевыми — подтверждение должно назвать суммы.
+                "official_months": [
+                    {"year": year, "month": month, "amount": str(amount)}
+                    for year, month, amount in warning.official_months
+                ],
             },
         )
     log_action(
@@ -1426,4 +1470,4 @@ def patch_staff(
     )
     db.commit()
     db.refresh(position)
-    return _staff_read(position, {}, {}, title_index(db))
+    return _staff_read(position, {}, title_index(db), can_see_finances(actor))

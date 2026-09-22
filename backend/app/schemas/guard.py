@@ -405,14 +405,14 @@ class GuardAssignmentUpdate(BaseModel):
     #: Должность правится прямо в строке табеля.
     job_title_id: int | None = None
     rate: Decimal | None = Field(default=None, ge=0)
-    is_official: bool | None = None
     note: str | None = None
     premium_h1: Decimal | None = Field(default=None, ge=0)
     premium_h2: Decimal | None = Field(default=None, ge=0)
     penalty_h1: Decimal | None = Field(default=None, ge=0)
     penalty_h2: Decimal | None = Field(default=None, ge=0)
-    official_payout_h1: Decimal | None = Field(default=None, ge=0)
-    official_payout_h2: Decimal | None = Field(default=None, ge=0)
+    # Официальной выплаты и отметки «официальный» здесь нет: они — свойства
+    # рабочего места, а выплата вычисляется (task_guard_form_rate_official).
+    # Руками её не ввести ни с экрана, ни запросом к API.
 
 
 class GuardDayInput(BaseModel):
@@ -480,9 +480,13 @@ class GuardCandidateRead(BaseModel):
 class GuardStaffRead(BaseModel):
     """Строка экрана «Сотрудники охраны» — одно рабочее место в охране.
 
-    Пост и признак официального трудоустройства — не свойства карточки, а
-    строки табеля месяца: человека ставят на пост помесячно. Поэтому они
-    приходят за выбранный месяц и могут быть пустыми.
+    Пост — не свойство карточки, а строки табеля месяца: человека ставят на
+    пост помесячно, поэтому `places` приходят за выбранный месяц и могут быть
+    пустыми. Официальное трудоустройство, наоборот, свойство САМОГО места
+    (task_guard_form_rate_official) и от месяца не зависит.
+
+    Ставки здесь нет: цена смены живёт на объекте, посте или экипаже и в строке
+    табеля.
     """
 
     employee_id: int
@@ -496,8 +500,6 @@ class GuardStaffRead(BaseModel):
     job_title_id: int | None = None
     job_title_name: str
     pay_type: str
-    #: Оклад за месяц у начальника, ставка за смену у остальных.
-    amount: Decimal | None = None
     #: Период работы НА ЭТОМ МЕСТЕ — правится здесь.
     hire_date: datetime.date | None = None
     dismissal_date: datetime.date | None = None
@@ -505,8 +507,11 @@ class GuardStaffRead(BaseModel):
     employee_is_active: bool = True
     #: Где стоит в выбранном месяце: «Объект · Пост» или экипаж ГБР.
     places: list[str] = []
-    #: Официально трудоустроен в выбранном месяце; None — не стоит нигде.
-    is_official: bool | None = None
+    #: Официально трудоустроен на этом рабочем месте.
+    is_official: bool = False
+    #: Официальная зарплата НА РУКИ, ₽/мес (после НДФЛ). Деньги: табельщику
+    #: приходит None, как остальные суммы.
+    official_salary: Decimal | None = None
 
 
 class GuardStaffCreate(BaseModel):
@@ -515,9 +520,12 @@ class GuardStaffCreate(BaseModel):
     tab_number: str | None = None
     department_id: int
     job_title_id: int
-    amount: Decimal | None = Field(default=None, ge=0)
     hire_date: datetime.date | None = None
     dismissal_date: datetime.date | None = None
+    #: Официальное трудоустройство: признак и зарплата НА РУКИ (₽/мес).
+    #: Признак включён — зарплата обязательна.
+    is_official: bool = False
+    official_salary: Decimal | None = Field(default=None, ge=0)
 
 
 class GuardStaffUpdate(BaseModel):
@@ -526,6 +534,11 @@ class GuardStaffUpdate(BaseModel):
 
     department_id: int | None = None
     job_title_id: int | None = None
+    #: Ставка или оклад — ТОЛЬКО при переводе в обычное подразделение: там она
+    #: нужна расчёту, а у охранного места суммы нет вовсе. Присланная при
+    #: правке охранного места — игнорируется.
     amount: Decimal | None = Field(default=None, ge=0)
     hire_date: datetime.date | None = None
     dismissal_date: datetime.date | None = None
+    is_official: bool | None = None
+    official_salary: Decimal | None = Field(default=None, ge=0)

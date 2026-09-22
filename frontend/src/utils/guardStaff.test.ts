@@ -78,6 +78,45 @@ test('снятие флага охраны: число мест и скольк�
   assert.match(msg!, /не войдут в расчёт: 2/)
 })
 
+test('снятие «официально устроен»: месяцы и суммы, которые обнулятся', () => {
+  // Без этой ветки экран показывал сырой JSON, а повтор с confirm не уходил
+  // вовсе — снять признак было нельзя (task_guard_form_rate_official).
+  const msg = guardConfirmMessage({
+    error: 'guard_official_removal_confirmation_required',
+    message: 'У рабочего места уже начислена официальная выплата',
+    months: [
+      { year: 2026, month: 8, amount: '25230.00' },
+      { year: 2026, month: 9, amount: '12615.00' },
+    ],
+    total: '37845.00',
+  })
+  assert.ok(msg)
+  assert.match(msg!, /начислена официальная выплата/)
+  assert.match(msg!, /август 2026/)
+  assert.match(msg!, /сентябрь 2026/)
+  // Суммы форматируются по-русски, пробел в них неразрывный.
+  assert.match(msg!, /25\s230\s?₽/)
+  assert.match(msg!, /12\s615\s?₽/)
+  assert.match(msg!, /Всего/)
+  assert.match(msg!, /Продолжить\?/)
+})
+
+test('перевод из охраны называет и обнуляемые выплаты — одно подтверждение', () => {
+  // Раньше при «снять признак + перевести» пользователь видел текст только про
+  // выплаты, а перевод проходил заодно и молча.
+  const msg = guardConfirmMessage({
+    error: 'guard_transfer_out_confirmation_required',
+    message: 'Рабочее место переходит в «ИТО»',
+    issues: ['Не задан график'],
+    official_months: [{ year: 2026, month: 8, amount: '25230.00' }],
+  })
+  assert.ok(msg)
+  assert.match(msg!, /переходит в «ИТО»/)
+  assert.match(msg!, /не войдёт в расчёт/)
+  assert.match(msg!, /«официально устроен» будет снят/)
+  assert.match(msg!, /август 2026 — 25\s230\s?₽/)
+})
+
 test('чужие 409 не перехватываются', () => {
   assert.equal(guardConfirmMessage({ error: 'employment_period_clearing_required' }), null)
   assert.equal(guardConfirmMessage('строка'), null)
