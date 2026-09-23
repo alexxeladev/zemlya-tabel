@@ -7,8 +7,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import SimpleNamespace
 from decimal import ROUND_HALF_EVEN, Decimal
+from types import SimpleNamespace
 from typing import Optional
 
 from sqlalchemy import or_
@@ -57,6 +57,7 @@ from app.services.org_access import (
 )
 from app.services.payroll import EmployeePayroll, calculate_position_payroll
 from app.services.payroll_statement import build_payroll_statement
+from app.services.period_snapshots import snapshot_position_ids, substitute_dashboard_rows
 from app.services.positions import (
     department_employment_rows,
     departments_with_employees,
@@ -218,7 +219,11 @@ def _month_payrolls(
     ровно те же строки, что дал бы живой расчёт по его отделам.
     """
     from app.services.dashboard_cache import (
-        current_versions, load_month, restore_results, serialize_results, store_month,
+        current_versions,
+        load_month,
+        restore_results,
+        serialize_results,
+        store_month,
     )
     from app.services.org_access import accessible_department_ids
 
@@ -233,33 +238,40 @@ def _month_payrolls(
     # кэш и отдаём актору его часть.
     versions = current_versions(db, year, month)
     full, extras = _compute_month_payrolls(db, year, month, companies_by_id, calendars_cache)
-    rows = serialize_results(full, extras)
+    # Позиции закрытых отделов — из снимка периода (task_stage3_historicity):
+    # у кэша нет своего источника для закрытого месяца, поэтому разойтись с
+    # закрытой ведомостью ему негде. Живой расчёт для них не делается.
+    rows = substitute_dashboard_rows(db, year, month, serialize_results(full, extras))
     store_month(db, year, month, versions, rows)
     return restore_results(rows, allowed, only_emp)
 
 
-def _compute_month_payrolls(
+def compute_results_for(
     db: Session,
+    employees: list,
+    entries: list,
     year: int,
     month: int,
-    companies_by_id: dict[int, tuple[str, str]],
-    calendars_cache: dict[int, dict | None],
-) -> tuple[_MonthResults, dict[tuple[int, int | None], tuple[Decimal, Decimal]]]:
-    """Живой расчёт месяца по ВСЕМ сотрудникам и активным позициям (область
-    admin): результат идёт в кэш, из него режется видимость.
+    position_ids: set[int] | None = None,
+    skip_positions: set[int] | None = None,
+    companies_by_id: dict[int, tuple[str, str]] | None = None,
+    calendar_data: dict | None = None,
+) -> _MonthResults:
+    """Итоги дашборда по рабочим местам — живой расчёт.
 
-    Вторым значением — по рабочему месту два показателя округления из
-    ВЕДОМОСТИ (`build_payroll_statement`, без actor-а = все активные позиции):
-    хвост округления «к выплате» и нераспределённый остаток. Из результатов
-    расчёта их не получить (там нет премий/удержаний и распределения), а без
-    кэша ведомость всей компании строилась бы при каждом открытии (~1 с)."""
-    if year not in calendars_cache:
+    `position_ids` — только эти места (снимок закрытого периода считает свой
+    отдел); `skip_positions` — кроме этих (их строки берутся из снимка).
+    """
+    if companies_by_id is None:
+        companies_by_id = {
+            c.id: (c.code, c.name)
+            for c in db.query(Company).filter(Company.is_active == True)  # noqa: E712
+            .order_by(*company_order_by())
+        }
+    if calendar_data is None:
         cal = db.query(ProductionCalendar).filter_by(year=year).first()
-        calendars_cache[year] = cal.data if cal else None
-    calendar_data = calendars_cache[year]
+        calendar_data = cal.data if cal else None
 
-    employees = _all_employees_for_month(db, year, month)
-    entries = get_month_entries(db, employees, year, month)
     by_emp: dict[int, list] = {}
     for e in entries:
         by_emp.setdefault(e.employee_id, []).append(e)
@@ -299,6 +311,11 @@ def _compute_month_payrolls(
     for emp in employees:
         by_position = entries_by_position(emp, by_emp.get(emp.id, []))
         for position in emp.active_positions or [emp.primary_position]:
+            pid = position.id if position is not None else None
+            if position_ids is not None and pid not in position_ids:
+                continue
+            if skip_positions and pid in skip_positions:
+                continue
             guard_row = guard_rows.get(position.id) if position is not None else None
             if guard_row is not None:
                 results.append((
@@ -322,6 +339,38 @@ def _compute_month_payrolls(
                     night_rate=night.rate_of(position),
                 ),
             ))
+
+    return results
+
+
+def _compute_month_payrolls(
+    db: Session,
+    year: int,
+    month: int,
+    companies_by_id: dict[int, tuple[str, str]],
+    calendars_cache: dict[int, dict | None],
+) -> tuple[_MonthResults, dict[tuple[int, int | None], tuple[Decimal, Decimal]]]:
+    """Живой расчёт месяца по ВСЕМ сотрудникам и активным позициям (область
+    admin): результат идёт в кэш, из него режется видимость.
+
+    Вторым значением — по рабочему месту два показателя округления из
+    ВЕДОМОСТИ (`build_payroll_statement`, без actor-а = все активные позиции):
+    хвост округления «к выплате» и нераспределённый остаток. Из результатов
+    расчёта их не получить (там нет премий/удержаний и распределения), а без
+    кэша ведомость всей компании строилась бы при каждом открытии (~1 с)."""
+    if year not in calendars_cache:
+        cal = db.query(ProductionCalendar).filter_by(year=year).first()
+        calendars_cache[year] = cal.data if cal else None
+    calendar_data = calendars_cache[year]
+
+    employees = _all_employees_for_month(db, year, month)
+    entries = get_month_entries(db, employees, year, month)
+    snapshot_positions = snapshot_position_ids(db, year, month)
+    results = compute_results_for(
+        db, employees, entries, year, month,
+        skip_positions=snapshot_positions,
+        companies_by_id=companies_by_id, calendar_data=calendar_data,
+    )
 
     statement = build_payroll_statement(db, employees, entries, year, month)
     extras = {

@@ -40,6 +40,8 @@ from app.models.guard_posts import GuardCrew, GuardCrewShare, GuardPost, GuardSi
 from app.models.guard_settings import GuardSettings
 from app.models.loan_deductions import LoanDeduction
 from app.models.night_shifts import NightShift
+from app.models.period_snapshots import GuardTaxRate, PeriodSnapshot
+from app.models.position_terms import PositionTerms
 from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
@@ -70,6 +72,8 @@ def _month_of(obj) -> tuple[int, int] | None:
 _MONTH_KEYED: tuple[type, ...] = (
     TimesheetEntry, EmployeeAbsence, NightShift, EmployeeAdjustment, LoanDeduction,
     CompanyShareOverride, GuardAssignment, GuardShift, TimesheetPeriod, DepartmentQuantity,
+    # Снимок закрытого периода: создание и аннулирование меняют цифры месяца.
+    PeriodSnapshot,
 )
 #: Справочные данные: расчёт любого месяца читает их живьём — бьём по всем.
 #: `Employee` — из-за займа (сумма/срок/старт) и дат приёма/увольнения.
@@ -77,6 +81,8 @@ _REFERENCE: tuple[type, ...] = (
     Employee, EmployeePosition, Department, Company, Schedule, ProductionCalendar,
     EmployeeCompanyShare, DepartmentCompanyShare, GuardJobTitle, GuardSettings,
     GuardCrew, GuardCrewShare, GuardSite, GuardSiteShare, GuardPost,
+    # Версии условий позиций и ставки налога вахты (task_stage3_historicity).
+    PositionTerms, GuardTaxRate,
 )
 
 

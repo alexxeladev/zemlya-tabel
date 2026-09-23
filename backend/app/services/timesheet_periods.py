@@ -381,6 +381,13 @@ def close_period(
         if period.status != "pending_review":
             raise ValueError(f"Ожидается статус pending_review, текущий: {period.status}")
 
+    # Снимок расчёта (task_stage3_historicity) — ДО смены статуса и в той же
+    # транзакции: закрытая ведомость дальше читается из него, и статус «закрыт»
+    # без снимка не закоммитится.
+    from app.services.period_snapshots import take_snapshot
+
+    take_snapshot(db, period, actor)
+
     before_status = period.status
     period.status = "closed"
     period.closed_at = datetime.utcnow()
@@ -410,6 +417,11 @@ def reopen_period(
     if actor.role != "admin":
         raise PermissionError("Только admin может переоткрыть закрытый период")
 
+    # Переоткрытие аннулирует снимок: пока период открыт, ведомость снова
+    # считается на лету; повторное закрытие снимет новый.
+    from app.services.period_snapshots import drop_snapshot
+
+    drop_snapshot(db, period)
     period.status = "draft"
     db.flush()
     log_action(
