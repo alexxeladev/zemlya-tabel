@@ -29,7 +29,6 @@ from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
-from app.schemas.quantity import QuantityDistributionRow
 from app.schemas.payroll import (
     CompanyBreakdownRead,
     EmployeePayrollRead,
@@ -41,16 +40,11 @@ from app.schemas.payroll_statement import (
     StatementCompanyRef,
     StatementRow,
 )
+from app.schemas.quantity import QuantityDistributionRow
 from app.services.absences import (
     get_month_absences,
     schedules_by_employee,
     sick_days_used_before_month,
-)
-from app.services.quantity_distribution import (
-    load_quantity_counts,
-    quantity_department_ids,
-    quantity_percents,
-    quantity_weights,
 )
 from app.services.company_order import (
     company_display_name,
@@ -62,7 +56,7 @@ from app.services.company_shares import (
     load_employee_shares,
     load_month_overrides,
 )
-from app.services.distribution import distribute, distribute_largest_remainder
+from app.services.distribution import distribute_largest_remainder
 from app.services.guard_payroll import distribute_guard_amount
 from app.services.guard_staff import guard_position_ids
 from app.services.guard_statement import (
@@ -81,12 +75,25 @@ from app.services.payout import (
     loan_month_state,
 )
 from app.services.payroll import calculate_position_payroll
+from app.services.period_snapshots import (
+    MonthSnapshots,
+    load_month_snapshots,
+    loan_facts,
+    scope_departments,
+)
+from app.services.position_terms import month_bounds, terms_on
 from app.services.positions import (
     NO_DEPARTMENT,
     NO_DEPARTMENT_LABEL,
     DepartmentFilter,
     entries_by_position,
     visible_positions,
+)
+from app.services.quantity_distribution import (
+    load_quantity_counts,
+    quantity_department_ids,
+    quantity_percents,
+    quantity_weights,
 )
 
 _ZERO = Decimal("0")
@@ -143,6 +150,7 @@ def build_payroll_summary(
     month: int,
     actor: Employee | None = None,
     department_id: DepartmentFilter = None,
+    snapshots: MonthSnapshots | None = None,
 ) -> PayrollSummaryRead:
     """Сводный расчёт ЗП — ОДНА СТРОКА НА ПОЗИЦИЮ (task_positions ч.A).
 
@@ -156,6 +164,22 @@ def build_payroll_summary(
     actor/department_id — чтобы менеджер не увидел подработку сотрудника в чужом
     отделе; без actor берутся все активные позиции.
     """
+    # Снимки закрытых периодов месяца (task_stage3_historicity): позиция со
+    # строкой в снимке берётся оттуда, живой расчёт для неё не делается.
+    snaps = (
+        snapshots if snapshots is not None
+        else load_month_snapshots(db, year, month, scope_departments(actor, department_id))
+    )
+    all_rows = _payroll_rows(employees, actor, department_id)
+    snapshot_emp_ids = {emp.id for emp in employees}
+    live_employees = list({
+        emp.id: emp for emp, pos in all_rows
+        if not (pos is not None and snaps.has(pos.id))
+    }.values())
+    # Всё тяжёлое ниже — только для людей с живыми строками: закрытый отдел
+    # читается из снимка и не должен стоить пересчёта.
+    employees = live_employees
+
     cal = db.query(ProductionCalendar).filter_by(year=year).first()
     calendar_data = cal.data if cal else None
 
@@ -184,6 +208,9 @@ def build_payroll_summary(
         db, emp_ids, year, month, primary_position_ids
     )
     loan_overrides = load_loan_overrides(db, emp_ids)
+    # Удержания займа закрытых месяцев — факт из снимков (решение заказчика):
+    # новые условия займа раскладываются только на открытые месяцы.
+    closed_loans = loan_facts(db) if emp_ids else {}
     # Годовой лимит больничного: сколько оплачиваемых дней Б уже израсходовано
     # с 1 января до этого месяца (часть 2).
     sick_used_before = sick_days_used_before_month(
@@ -211,7 +238,12 @@ def build_payroll_summary(
     )
 
     payroll_items: list[EmployeePayrollRead] = []
-    for emp, position in _payroll_rows(employees, actor, department_id):
+    taken_from_snapshot: set[int] = set()
+    for emp, position in all_rows:
+        if position is not None and snaps.has(position.id):
+            payroll_items.append(EmployeePayrollRead.model_validate(snaps.payroll[position.id]))
+            taken_from_snapshot.add(position.id)
+            continue
         guard_row = guard_rows.get(position.id) if position is not None else None
         if guard_row is not None:
             payroll_items.append(
@@ -244,9 +276,11 @@ def build_payroll_summary(
         sums = adjustment_sums.get(emp.id, {}).get(position_id, {})
         loan_state = None
         if _loan_belongs_to(emp, position):
+            overrides = dict(loan_overrides.get(emp.id) or {})
+            overrides.update(closed_loans.get(position.id, {}))
             loan_state = loan_month_state(
                 emp.loan_amount, emp.loan_term_months, emp.loan_start_date,
-                year, month, loan_overrides.get(emp.id),
+                year, month, overrides,
             )
         loan_deduction = loan_state.actual if loan_state else _ZERO
         payout = compute_payout(
@@ -257,6 +291,7 @@ def build_payroll_summary(
             loan_deduction=loan_deduction,
         )
 
+        month_terms = terms_on(position, month_bounds(year, month)[1]) if position else None
         breakdown = [
             CompanyBreakdownRead(
                 company_id=bd.company_id,
@@ -318,12 +353,14 @@ def build_payroll_summary(
             sick_days_used_before=p.sick_days_used_before,
             sick_unpaid_days=p.sick_unpaid_days,
             sick_limit_remaining=p.sick_limit_remaining,
-            weekend_pay_type=position.weekend_pay_type if position else None,
-            weekend_coefficient=position.weekend_coefficient if position else None,
-            weekend_fixed_rate=position.weekend_fixed_rate if position else None,
-            holiday_pay_type=position.holiday_pay_type if position else None,
-            holiday_coefficient=position.holiday_coefficient if position else None,
-            holiday_fixed_rate=position.holiday_fixed_rate if position else None,
+            # Коэффициенты для колонки «Коэф.» — версии условий на конец месяца
+            # (task_stage3_historicity), а не текущие поля карточки.
+            weekend_pay_type=month_terms.weekend_pay_type if position else None,
+            weekend_coefficient=month_terms.weekend_coefficient if position else None,
+            weekend_fixed_rate=month_terms.weekend_fixed_rate if position else None,
+            holiday_pay_type=month_terms.holiday_pay_type if position else None,
+            holiday_coefficient=month_terms.holiday_coefficient if position else None,
+            holiday_fixed_rate=month_terms.holiday_fixed_rate if position else None,
             premium_amount=payout.premium_amount,
             kpi_amount=payout.kpi_amount,
             advance_deduction=payout.advance_deduction,
@@ -342,6 +379,12 @@ def build_payroll_summary(
             # вахтовая: по этому признаку ведомость ищет её расклад по юрлицам.
             is_guard_row=idle_guard,
         ))
+
+    # Строки снимков, которых нет среди текущих позиций (место сняли с учёта
+    # после закрытия): закрытый месяц показывает то, что было закрыто.
+    for pid in snaps.rows_in_scope(scope_departments(actor, department_id), snapshot_emp_ids):
+        if pid not in taken_from_snapshot:
+            payroll_items.append(EmployeePayrollRead.model_validate(snaps.payroll[pid]))
 
     return PayrollSummaryRead(
         year=year,
@@ -761,7 +804,7 @@ def build_quantity_distribution(
     )
     # Карточка позиции перебивает показатель (task_card_priority) — здесь тоже:
     # блок в табеле обязан показывать те же суммы, что /statement.
-    employee_shares = load_employee_shares(db, emp_ids, primary_position_ids)
+    employee_shares = load_employee_shares(db, emp_ids, primary_position_ids, year, month)
 
     rows: list[QuantityDistributionRow] = []
     for p in summary.employees:
@@ -828,9 +871,36 @@ def build_payroll_statement(
     actor: Employee | None = None,
     department_id: DepartmentFilter = None,
 ) -> PayrollStatementRead:
-    summary = build_payroll_summary(
+    return build_payroll_statement_with_summary(
         db, employees, entries, year, month, actor, department_id
+    )[1]
+
+
+def build_payroll_statement_with_summary(
+    db: Session,
+    employees: list[Employee],
+    entries,
+    year: int,
+    month: int,
+    actor: Employee | None = None,
+    department_id: DepartmentFilter = None,
+) -> tuple[PayrollSummaryRead, PayrollStatementRead]:
+    """Ведомость вместе с расчётом, из которого она собрана (снимку закрытого
+    периода нужны оба — `services/period_snapshots`).
+
+    Строки позиций, лежащих в снимке закрытого периода, берутся из снимка
+    целиком, с распределением по юрлицам: изменившиеся проценты, дефолт отдела
+    или показатель закрытый месяц не двигают (task_stage3_historicity)."""
+    snaps = load_month_snapshots(db, year, month, scope_departments(actor, department_id))
+    summary = build_payroll_summary(
+        db, employees, entries, year, month, actor, department_id, snapshots=snaps,
     )
+    # Каскад, показатели, обоснования и вахта грузятся только для людей с живыми
+    # строками: закрытый месяц целиком берётся из снимка без пересчёта.
+    live_emp_ids = {
+        p.employee_id for p in summary.employees if p.position_id not in snaps.statement
+    }
+    employees = [e for e in employees if e.id in live_emp_ids]
     emp_by_id = {e.id: e for e in employees}
     emp_ids = [e.id for e in employees]
     # Позиция строки — из неё берутся отдел, основная компания и её проценты.
@@ -858,7 +928,7 @@ def build_payroll_statement(
     ]
 
     # Каскад приоритетов: месячный % > карточка (позиция) > отдел > авто по часам.
-    employee_shares = load_employee_shares(db, emp_ids, primary_position_ids)
+    employee_shares = load_employee_shares(db, emp_ids, primary_position_ids, year, month)
     override_shares = load_month_overrides(
         db, emp_ids, year, month, primary_position_ids
     )
@@ -897,6 +967,14 @@ def build_payroll_statement(
     distribution_totals: dict[int, Decimal] = {c.id: _ZERO for c in companies}
 
     for p in summary.employees:
+        if p.position_id in snaps.statement:
+            snap_row = StatementRow.model_validate(snaps.statement[p.position_id])
+            rows.append(snap_row)
+            for item in snap_row.distribution:
+                distribution_totals[item.company_id] = (
+                    distribution_totals.get(item.company_id, _ZERO) + item.amount
+                )
+            continue
         emp = emp_by_id.get(p.employee_id)
         # Отдел, основная компания и проценты — у ПОЗИЦИИ строки, а не у человека.
         position = position_by_id.get(p.position_id)
@@ -1043,7 +1121,10 @@ def build_payroll_statement(
         for cid, amt in dist_amounts.items():
             distribution_totals[cid] = distribution_totals.get(cid, _ZERO) + amt
 
-        overtime_coeff = getattr(position, "overtime_coefficient", None) if position else None
+        overtime_coeff = (
+            getattr(terms_on(position, month_bounds(year, month)[1]), "overtime_coefficient", None)
+            if position else None
+        )
         overtime_coeff = Decimal("1.5") if overtime_coeff is None else Decimal(str(overtime_coeff))
 
         reasons = adjustment_reasons.get(p.employee_id, {}).get(p.position_id, {})
@@ -1130,7 +1211,7 @@ def build_payroll_statement(
         ))
 
     organization, subdivision = _statement_heading(db, department_id)
-    return PayrollStatementRead(
+    return summary, PayrollStatementRead(
         year=year,
         month=month,
         organization=organization,

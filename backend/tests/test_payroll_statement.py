@@ -13,6 +13,7 @@ from app.models.employees import Employee
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
+from app.services.position_terms import set_effective_from
 from app.services.company_order import company_display_name
 from app.services.distribution import (
     distribute,
@@ -265,7 +266,7 @@ class TestStatement:
         """Итого начислено 80000, 50/30/20 → 40000 / 24000 / 16000."""
         _full_norm_entries(db_session, worker.id, companies[0].id)
         token = get_token(client, "stmtadmin@example.com", "admin123")
-        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"effective_from": "2026-05-01", "shares": [
             {"company_id": companies[0].id, "percent": "50"},
             {"company_id": companies[1].id, "percent": "30"},
             {"company_id": companies[2].id, "percent": "20"},
@@ -286,7 +287,7 @@ class TestStatement:
         """Переопределение на месяц меняет распределение, не трогая карточку."""
         _full_norm_entries(db_session, worker.id, companies[0].id)
         token = get_token(client, "stmtadmin@example.com", "admin123")
-        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"effective_from": "2026-05-01", "shares": [
             {"company_id": companies[0].id, "percent": "50"},
             {"company_id": companies[1].id, "percent": "50"},
         ]}, headers=_h(client, token))
@@ -365,7 +366,7 @@ class TestAutoDistributionByHours:
         """С ручными % распределение по ним, часы игнорируются (не авто)."""
         self._two_company_entries(db_session, worker.id, companies[0].id, companies[1].id)
         token = get_token(client, "stmtadmin@example.com", "admin123")
-        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"effective_from": "2026-05-01", "shares": [
             {"company_id": companies[0].id, "percent": "50"},
             {"company_id": companies[1].id, "percent": "30"},
             {"company_id": companies[2].id, "percent": "20"},
@@ -429,7 +430,7 @@ class TestAutoDistributionByHours:
                           schedule, calendar, db_session):
         _full_norm_entries(db_session, worker.id, companies[0].id)
         token = get_token(client, "stmtadmin@example.com", "admin123")
-        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"effective_from": "2026-05-01", "shares": [
             {"company_id": companies[0].id, "percent": "100"},
         ]}, headers=_h(client, token))
         r = client.get("/api/timesheet/2026/5/statement/export/excel", headers=_h(client, token))
@@ -584,7 +585,7 @@ class TestDepartmentDefaultShares:
         self._set_dept_shares(client, token, dept.id, [
             {"company_id": companies[1].id, "percent": "100"},
         ])
-        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"effective_from": "2026-05-01", "shares": [
             {"company_id": companies[0].id, "percent": "100"},
         ]}, headers=_h(client, token))
 
@@ -603,7 +604,7 @@ class TestDepartmentDefaultShares:
         self._set_dept_shares(client, token, dept.id, [
             {"company_id": companies[1].id, "percent": "100"},
         ])
-        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"effective_from": "2026-05-01", "shares": [
             {"company_id": companies[0].id, "percent": "100"},
         ]}, headers=_h(client, token))
         client.put("/api/timesheet/distribution", json={
@@ -657,7 +658,7 @@ class TestDepartmentDefaultShares:
         assert len(data["department_shares"]) == 1
 
         # Задали своё → наследование выключается
-        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"effective_from": "2026-05-01", "shares": [
             {"company_id": companies[0].id, "percent": "100"},
         ]}, headers=_h(client, token))
         g2 = client.get(f"/api/employees/{worker.id}/company-shares", headers=_h(client, token))
@@ -699,7 +700,9 @@ class TestScreenMatchesExcel:
 
         from openpyxl import load_workbook
 
-        # Оклад 350000, полная норма → Итого начислено ровно 350000.
+        # Оклад 350000, полная норма → Итого начислено ровно 350000. С мая:
+        # без даты оклад действовал бы со следующего месяца (task_stage3_historicity).
+        set_effective_from(worker.primary_position, date(2026, 5, 1))
         worker.rate = Decimal("350000")
         db_session.commit()
         _full_norm_entries(db_session, worker.id, companies[0].id)
@@ -712,7 +715,7 @@ class TestScreenMatchesExcel:
 
         # «Разнести поровну» между 6 компаниями: 5 × 16.67 + основная 16.65 = 100
         shares = split_equally([c.id for c in six], main_key=worker.default_company_id)
-        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"effective_from": "2026-05-01", "shares": [
             {"company_id": cid, "percent": str(pct)} for cid, pct in shares.items()
         ]}, headers=_h(client, token))
 
@@ -814,7 +817,7 @@ class TestStatementRowCompanyRef:
         _full_norm_entries(db_session, worker.id, companies[0].id)
 
         token = get_token(client, "stmtadmin@example.com", "admin123")
-        client.put(f"/api/employees/{worker.id}/company-shares", json={"shares": [
+        client.put(f"/api/employees/{worker.id}/company-shares", json={"effective_from": "2026-05-01", "shares": [
             {"company_id": companies[1].id, "percent": "50"},
             {"company_id": companies[0].id, "percent": "50"},
         ]}, headers=_h(client, token))

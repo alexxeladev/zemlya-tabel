@@ -54,11 +54,11 @@ from app.schemas.guard import (
 from app.services.company_order import company_order_by
 from app.services.guard_duty import (
     employer_tax_percent,
-    official_by_assignment,
     guard_department_ids,
     list_assignments,
     list_zones,
     marked_days,
+    official_by_assignment,
     shares_map,
 )
 from app.services.guard_payroll import (
@@ -67,6 +67,8 @@ from app.services.guard_payroll import (
     half_bounds,
 )
 from app.services.org_access import can_see_finances
+from app.services.period_snapshots import guard_snapshot_view
+from app.services.position_terms import month_bounds, terms_on
 from app.services.timesheet_periods import month_lock_status
 
 _ZERO = Decimal("0")
@@ -184,7 +186,10 @@ def _row_read(
         rate=Decimal(str(assignment.rate)) if with_money else None,
         # Признак официального трудоустройства — с РАБОЧЕГО МЕСТА, а не со
         # строки: в строке его больше нет (task_guard_form_rate_official).
-        is_official=bool(position.is_official) if position is not None else False,
+        is_official=(
+            bool(terms_on(position, month_bounds(assignment.year, assignment.month)[1]).is_official)
+            if position is not None else False
+        ),
         note=assignment.note,
         days=sorted(marked_days(assignment)),
         shifts=result.shifts,
@@ -240,8 +245,81 @@ def build_guard_month(
     if department_id is not None:
         department_ids = [d for d in department_ids if d == department_id]
 
+    # Закрытый месяц охранного отдела — из снимка периода (task_stage3_historicity):
+    # иначе правка процентов объекта или налога развела бы экран вахты с
+    # закрытой ведомостью незаметно. Снимок хранит экран с деньгами; тому, кто
+    # денег не видит, отдаётся живой расчёт — в нём меняться нечему (смены
+    # закрытого месяца заблокированы), а маскирование остаётся одним местом.
+    if can_see_finances(actor):
+        snapshot_views = {}
+        for dept_id in department_ids:
+            view = guard_snapshot_view(db, dept_id, year, month, half)
+            if view is not None:
+                snapshot_views[dept_id] = view
+        if snapshot_views:
+            live_ids = [d for d in department_ids if d not in snapshot_views]
+            parts = list(snapshot_views.values())
+            if live_ids:
+                parts.append(build_guard_month_live(db, actor, year, month, live_ids, half))
+            merged = _merge_views(db, parts)
+            merged.departments = department_ids
+            locks = {month_lock_status(db, d, year, month) for d in department_ids} - {None}
+            merged.period_lock = "closed" if "closed" in locks else next(iter(locks), None)
+            merged.can_edit = can_edit_vahta(actor) and merged.period_lock is None
+            return merged
+    return build_guard_month_live(db, actor, year, month, department_ids, half)
+
+
+def _merge_views(db: Session, parts: list[GuardMonthRead]) -> GuardMonthRead:
+    """Склеить экраны нескольких охранных отделов (снимок + живой расчёт)."""
+    if len(parts) == 1:
+        return parts[0].model_copy(deep=True)
+    base = parts[0].model_copy(deep=True)
+
+    def _sum(field):
+        values = [getattr(p, field) for p in parts]
+        return None if all(v is None for v in values) else sum((v or _ZERO for v in values), _ZERO)
+
+    base.zones = [z for p in parts for z in p.zones]
+    base.total_shifts = sum(p.total_shifts for p in parts)
+    for field in ("total_accrued", "total_net_payout", "total_tax",
+                  "total_distribution_base", "total_distribution"):
+        setattr(base, field, _sum(field))
+    halves: dict[int, GuardHalfTotal] = {}
+    for p in parts:
+        for h in p.halves:
+            acc = halves.setdefault(h.half, GuardHalfTotal(half=h.half, shifts=0))
+            acc.shifts += h.shifts
+            for f in ("accrued", "net_payout", "tax"):
+                v = getattr(h, f)
+                if v is not None:
+                    setattr(acc, f, (getattr(acc, f) or _ZERO) + v)
+    base.halves = [halves[k] for k in sorted(halves)]
+    totals: dict[int, Decimal] = {}
+    for p in parts:
+        for t in p.company_totals:
+            totals[t.company_id] = totals.get(t.company_id, _ZERO) + t.amount
+    ordered = (
+        db.query(Company.id).filter(Company.id.in_(list(totals) or [0]))
+        .order_by(*company_order_by()).all()
+    )
+    base.company_totals = [
+        GuardCompanyTotal(company_id=cid, amount=totals[cid]) for (cid,) in ordered
+    ]
+    return base
+
+
+def build_guard_month_live(
+    db: Session,
+    actor: Employee,
+    year: int,
+    month: int,
+    department_ids: list[int],
+    half: int | None = None,
+) -> GuardMonthRead:
+    """Экран вахты ЖИВЫМ расчётом по заданным охранным отделам."""
     with_money = can_see_finances(actor)
-    tax_percent = employer_tax_percent(db)
+    tax_percent = employer_tax_percent(db, year, month)
     # Месяц не в черновике (на проверке или закрыт): бэк отклонит любую правку
     # назначения, поэтому экран гасит управление заранее. Охранное подразделение
     # обычно одно; если их несколько и заблокировано хотя бы одно — экран «все

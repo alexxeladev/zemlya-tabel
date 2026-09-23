@@ -118,7 +118,10 @@ def _full_norm_entries(db: Session, emp_id: int, company_id: int) -> None:
 def _set_shares(client: TestClient, hdr: dict, emp_id: int, shares: list[tuple[int, str]]):
     return client.put(
         f"/api/employees/{emp_id}/company-shares",
-        json={"shares": [{"company_id": cid, "percent": p} for cid, p in shares]},
+        # Проценты карточки версионируются с месяца (task_stage3_historicity):
+        # тест считает май 2026.
+        json={"effective_from": "2026-05-01",
+              "shares": [{"company_id": cid, "percent": p} for cid, p in shares]},
         headers=hdr,
     )
 
