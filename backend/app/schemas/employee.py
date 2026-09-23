@@ -6,7 +6,6 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, model_validator
 
-
 from app.core.security import validate_password
 from app.schemas.company import CompanyRead
 from app.schemas.department import DepartmentRead
@@ -137,6 +136,10 @@ class EmployeeUpdate(BaseModel):
     loan_start_date: Optional[datetime.date] = None
     hire_date: Optional[datetime.date] = None
     dismissal_date: Optional[datetime.date] = None
+    # С какой даты действует изменение условий основной позиции (оклад, тип
+    # оплаты, график, коэффициенты) — task_stage3_historicity. Не задано —
+    # 1-е число следующего месяца.
+    terms_effective_from: Optional[datetime.date] = None
     # Служебных полей здесь НЕТ намеренно (task_stage2_access п.2.5):
     #   is_system_admin — неснимаемая учётка (её не уволить, не сбросить пароль,
     #     не сменить роль); правкой карточки её можно было выдать себе или снять

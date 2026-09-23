@@ -16,6 +16,7 @@ from app.core.security import hash_password, revoke_sessions
 from app.database import get_db
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
+from app.models.position_terms import TERM_FIELDS, TERMS_BEGINNING
 from app.models.positions import (
     EMPLOYEE_COMPAT_FIELDS,
     PAY_TYPE_BASE_FIELD,
@@ -34,15 +35,22 @@ from app.schemas.payroll_statement import (
     CompanyShareInput,
     EmployeeSharesRead,
     EmployeeSharesUpdate,
+    EmployeeSharesVersion,
 )
 from app.schemas.position import (
     EmployeePositionCreate,
     EmployeePositionRead,
     EmployeePositionUpdate,
+    PositionTermsHistoryRead,
+    PositionTermsRead,
 )
+from app.services.accounts import account_conflict, normalize_email
+from app.services.closed_periods import ensure_month_open
 from app.services.company_shares import (
     SharesValidationError,
     load_department_shares,
+    load_share_versions,
+    share_set_for_month,
     validate_shares,
 )
 from app.services.employee_import import (
@@ -70,17 +78,19 @@ from app.services.guard_staff import (
     ensure_position_edit_allowed,
     ensure_position_owned_outside_vahta,
     ensure_transfer_into_guard_allowed,
-    pin_loan_before_primary_change,
     is_guard_position,
+    pin_loan_before_primary_change,
 )
-from app.services.accounts import account_conflict, normalize_email
 from app.services.login_guard import locked_until_by_employee, unlock_login
 from app.services.org_access import (
     accessible_department_ids,
     can_access_department,
     can_see_finances,
-    hides_finances,
     is_department_scoped,
+)
+from app.services.position_terms import (
+    default_effective_from,
+    set_effective_from,
 )
 from app.services.positions import (
     PositionError,
@@ -93,6 +103,7 @@ from app.services.positions import (
 )
 from app.services.reference_audit import (
     EMPLOYEE_SHARES_ENTITY,
+    FIELD_LABELS,
     format_share_rows,
     record_change,
 )
@@ -404,6 +415,12 @@ def update_employee(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     data = payload.model_dump(exclude_unset=True)
+    # Дата начала изменения условий — не поле карточки, а параметр правки:
+    # версию заводит слушатель сессии (services/position_terms).
+    if emp.primary_position is not None:
+        set_effective_from(emp.primary_position, data.pop("terms_effective_from", None))
+    else:
+        data.pop("terms_effective_from", None)
     if "tab_number" in data:
         data["tab_number"] = normalize_tab_number(data["tab_number"])
         _ensure_tab_number_free(db, data["tab_number"], exclude_id=emp.id)
@@ -790,6 +807,7 @@ def update_position(
     before_bounds = bounds_snapshot(emp)
     before = _position_dict(position)
     data = payload.model_dump(exclude_unset=True)
+    set_effective_from(position, data.pop("terms_effective_from", None))
     # Охранную позицию правят в вахте. Обычную можно перевести в охрану отсюда —
     # после этого её ведёт вахта (перевод делает тот, кто владеет позицией ДО).
     try:
@@ -815,6 +833,52 @@ def update_position(
     db.commit()
     db.refresh(position)
     return position
+
+
+@router.get(
+    "/{emp_id}/positions/{position_id}/terms",
+    response_model=PositionTermsHistoryRead,
+)
+def position_terms_history(
+    emp_id: int,
+    position_id: int,
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+):
+    """История условий рабочего места: что, когда, с какой даты
+    (task_stage3_historicity). Ставки и оклады — деньги: табельщику 403, как
+    и распределение по юрлицам."""
+    if not can_see_finances(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    emp = _employee_for_read(db, emp_id, current_user)
+    position = _position_or_404(emp, position_id)
+    if is_department_scoped(current_user) and not can_access_department(
+        current_user, position.department_id
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+
+    versions: list[PositionTermsRead] = []
+    previous = None
+    for v in position.terms_versions:
+        changed = [] if previous is None else [
+            FIELD_LABELS.get(f, f) for f in TERM_FIELDS
+            if getattr(v, f) != getattr(previous, f)
+        ]
+        versions.append(PositionTermsRead(
+            id=v.id,
+            effective_from=None if v.effective_from <= TERMS_BEGINNING else v.effective_from,
+            **{f: getattr(v, f) for f in TERM_FIELDS},
+            schedule_name=v.schedule.name if v.schedule is not None else None,
+            changed=changed,
+            created_by_name=v.created_by_name,
+            created_at=v.created_at,
+        ))
+        previous = v
+    return PositionTermsHistoryRead(
+        position_id=position.id,
+        versions=versions,
+        default_effective_from=default_effective_from(),
+    )
 
 
 @router.post(
@@ -890,23 +954,30 @@ def _shares_response(
     """
     position = position or emp.primary_position
     position_id = position.id if position else None
-    rows = [
-        r
-        for r in db.query(EmployeeCompanyShare)
-        .filter(EmployeeCompanyShare.employee_id == emp.id)
-        .all()
-        # Строки без позиции заведены до неё и относятся к основной.
-        if r.position_id == position_id
-        or (r.position_id is None and position is not None and position.is_primary)
-    ]
-    percent_sum = sum((r.percent for r in rows), Decimal("0"))
+    primary_ids = {emp.id: emp.primary_position.id if emp.primary_position else None}
+    versions = load_share_versions(db, [emp.id], primary_ids).get(position_id, [])
+    # Карточка показывает ПОСЛЕДНИЙ заданный набор и с какого месяца он действует
+    # (task_stage3_historicity) — иначе только что сохранённый «с 1-го числа
+    # следующего месяца» набор не был бы виден до этого числа.
+    latest_date, latest = versions[-1] if versions else (None, {})
+    percent_sum = sum(latest.values(), Decimal("0"))
     dept_id = position.department_id if position else None
     dept_map = load_department_shares(db, [dept_id] if dept_id else [])
     dept_shares = dept_map.get(dept_id, {}) if dept_id else {}
+
+    def _date(d):
+        return None if d is None or d <= TERMS_BEGINNING else d
+
+    def _inputs(shares: dict) -> list[CompanyShareInput]:
+        return [
+            CompanyShareInput(company_id=cid, percent=pct)
+            for cid, pct in shares.items() if pct > 0
+        ]
+
     return EmployeeSharesRead(
         employee_id=emp.id,
         position_id=position_id,
-        shares=[CompanyShareInput(company_id=r.company_id, percent=r.percent) for r in rows],
+        shares=_inputs(latest),
         percent_sum=percent_sum,
         department_id=dept_id,
         department_name=position.department.name if position and position.department else None,
@@ -915,6 +986,15 @@ def _shares_response(
             for cid, pct in sorted(dept_shares.items())
         ],
         inherits_department=percent_sum <= 0 and bool(dept_shares),
+        effective_from=_date(latest_date),
+        history=[
+            EmployeeSharesVersion(
+                effective_from=_date(d),
+                shares=_inputs(shares),
+                percent_sum=sum(shares.values(), Decimal("0")),
+            )
+            for d, shares in versions
+        ],
     )
 
 
@@ -1004,10 +1084,15 @@ def _position_shares_filter(emp_id: int, position):
     )
 
 
-def _current_shares(db: Session, emp_id: int, position) -> list:
-    """Текущий набор процентов рабочего места — снимок «до» для журнала."""
-    rows = db.query(EmployeeCompanyShare).filter(*_position_shares_filter(emp_id, position)).all()
-    return [(r.company_id, r.percent) for r in rows]
+def _current_shares(db: Session, emp_id: int, position, day: datetime.date) -> list:
+    """Набор процентов рабочего места, действующий с `day`, — снимок «до» для
+    журнала: то, что этот месяц получил бы без правки."""
+    emp = db.get(Employee, emp_id)
+    primary_ids = {emp_id: emp.primary_position.id if emp and emp.primary_position else None}
+    key = position.id if position is not None else primary_ids[emp_id]
+    versions = load_share_versions(db, [emp_id], primary_ids).get(key, [])
+    shares = share_set_for_month(versions, day.year, day.month) or {}
+    return [(cid, pct) for cid, pct in shares.items() if pct > 0]
 
 
 @router.put("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
@@ -1039,29 +1124,68 @@ def set_company_shares(
     except GuardOwnedError as exc:
         raise _guard_owned(exc) from exc
 
+    # Набор действует с 1-го числа месяца (task_stage3_historicity), по
+    # умолчанию — следующего. Месяц не может быть закрыт или на проверке: это
+    # корректировка закрытого периода, она только через переоткрытие.
+    start = payload.effective_from or default_effective_from()
+    ensure_month_open(
+        db, position.department_id if position else None,
+        start.year, start.month, "распределение рабочего места",
+    )
+
     # Журнал изменений (task_audit_log): набор переписывается целиком Core-DELETE
     # мимо ORM, поэтому события сессии его не видят — пишем ОДНОЙ записью
     # «было → стало». Снимок «до» надо снять ДО удаления строк.
-    shares_before = format_share_rows(db, _current_shares(db, emp_id, position))
+    before_rows = _current_shares(db, emp_id, position, start)
+    shares_before = format_share_rows(db, before_rows)
+    # Тот же набор, что уже действует в этом месяце, — не изменение: ни новой
+    # версии, ни записи в журнал (пересохранение формы не должно плодить историю).
+    same_set = {cid: Decimal(str(pct)) for cid, pct in before_rows} == {
+        s.company_id: Decimal(str(s.percent)) for s in positive
+    }
+    has_version_on_date = db.query(EmployeeCompanyShare).filter(
+        *_position_shares_filter(emp_id, position),
+        EmployeeCompanyShare.effective_from == start,
+    ).first() is not None
+    if same_set and not has_version_on_date:
+        return _shares_response(db, emp, position)
 
+    # Переписывается только набор ЭТОГО месяца — прежние остаются историей.
     db.query(EmployeeCompanyShare).filter(
-        *_position_shares_filter(emp_id, position)
+        *_position_shares_filter(emp_id, position),
+        EmployeeCompanyShare.effective_from == start,
     ).delete(synchronize_session=False)
+    has_earlier = db.query(EmployeeCompanyShare).filter(
+        *_position_shares_filter(emp_id, position),
+        EmployeeCompanyShare.effective_from < start,
+    ).first() is not None
     for s in positive:
         db.add(EmployeeCompanyShare(
             employee_id=emp_id, position_id=position_id,
-            company_id=s.company_id, percent=s.percent,
+            company_id=s.company_id, percent=s.percent, effective_from=start,
         ))
+    if not positive and has_earlier:
+        # «Снять распределение с месяца» при заданном раньше наборе — набор из
+        # нулевых долей: «задано» значит хотя бы одна доля > 0, и расчёт с этого
+        # месяца уйдёт к дефолту отдела, а прежние месяцы сохранят свой набор.
+        for cid, _ in before_rows:
+            db.add(EmployeeCompanyShare(
+                employee_id=emp_id, position_id=position_id,
+                company_id=cid, percent=Decimal("0"), effective_from=start,
+            ))
     log_action(db, actor, "employee_company_shares", emp_id, "set",
                after={"position_id": position_id,
+                      "effective_from": start.isoformat(),
                       "shares": {s.company_id: str(s.percent) for s in positive}})
     record_change(
         db,
         entity_type=EMPLOYEE_SHARES_ENTITY,
         entity_id=position_id or emp.id,
+        # Месяц начала — в подписи записи, а не в значении: формат «было →
+        # стало» у наборов один на карточку и отдел (format_share_rows).
         entity_label=(
             f"{emp.full_name} / {position.display_title}" if position else emp.full_name
-        ),
+        ) + f" (с {start:%m.%Y})",
         field="shares",
         old_value=shares_before,
         new_value=format_share_rows(db, [(s.company_id, s.percent) for s in positive]),

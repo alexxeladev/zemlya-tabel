@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, Numeric, UniqueConstraint, func
+from sqlalchemy import Date, ForeignKey, Integer, Numeric, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.models.position_terms import TERMS_BEGINNING
 
 if TYPE_CHECKING:
     from app.models.companies import Company
@@ -33,6 +35,15 @@ class EmployeeCompanyShare(Base):
     )
     company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
     percent: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+    # С какого месяца действует набор (task_stage3_historicity): всегда 1-е
+    # число — итог месяца один, делить месяц по процентам нечего (решение
+    # заказчика). Набор = все строки позиции с одной датой; действует набор с
+    # наибольшей датой не позже 1-го числа рассчитываемого месяца. Первый набор —
+    # с начала времён (`TERMS_BEGINNING`). «Снять распределение» с месяца —
+    # набор из нулевых долей: «задано» означает хотя бы одну долю > 0.
+    effective_from: Mapped[datetime.date] = mapped_column(
+        Date, nullable=False, default=TERMS_BEGINNING, server_default="1900-01-01"
+    )
 
     created_at: Mapped[str] = mapped_column(server_default=func.now())
     updated_at: Mapped[str] = mapped_column(server_default=func.now(), onupdate=func.now())
@@ -42,7 +53,8 @@ class EmployeeCompanyShare(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "employee_id", "position_id", "company_id", name="uq_emp_company_share"
+            "employee_id", "position_id", "company_id", "effective_from",
+            name="uq_emp_company_share",
         ),
     )
 

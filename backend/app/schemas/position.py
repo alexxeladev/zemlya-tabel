@@ -80,6 +80,10 @@ class EmployeePositionUpdate(BaseModel):
     dismissal_date: Optional[datetime.date] = None
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
+    # С какой даты действует изменение условий (ставка, тип оплаты, график,
+    # коэффициенты) — task_stage3_historicity. Не задано — 1-е число
+    # следующего месяца. На поля, которые не версионируются, не влияет.
+    terms_effective_from: Optional[datetime.date] = None
 
 
 class EmployeePositionRead(EmployeePositionBase):
@@ -94,3 +98,38 @@ class EmployeePositionRead(EmployeePositionBase):
     department: Optional[DepartmentRead] = None
     schedule: Optional[ScheduleRead] = None
     company: Optional[CompanyRead] = None
+
+
+class PositionTermsRead(BaseModel):
+    """Версия условий рабочего места для истории в карточке
+    (task_stage3_historicity): что действовало и с какой даты."""
+
+    id: int
+    #: None — с начала (первая версия, перенесённая миграцией).
+    effective_from: Optional[datetime.date] = None
+    pay_type: str
+    rate: Optional[Decimal] = None
+    shift_rate: Optional[Decimal] = None
+    hour_rate: Optional[Decimal] = None
+    schedule_id: Optional[int] = None
+    schedule_name: Optional[str] = None
+    weekend_pay_type: str
+    weekend_coefficient: Optional[Decimal] = None
+    weekend_fixed_rate: Optional[Decimal] = None
+    holiday_pay_type: str
+    holiday_coefficient: Optional[Decimal] = None
+    holiday_fixed_rate: Optional[Decimal] = None
+    overtime_coefficient: Optional[Decimal] = None
+    is_official: bool = False
+    official_salary: Optional[Decimal] = None
+    #: Подписи полей, изменившихся относительно предыдущей версии.
+    changed: list[str] = []
+    created_by_name: Optional[str] = None
+    created_at: Optional[datetime.datetime] = None
+
+
+class PositionTermsHistoryRead(BaseModel):
+    position_id: int
+    versions: list[PositionTermsRead]
+    #: Дата, которую форма подставит по умолчанию (1-е число следующего месяца).
+    default_effective_from: datetime.date

@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -31,26 +32,68 @@ def load_employee_shares(
     db: Session,
     emp_ids: list[int],
     primary_position_ids: dict[int, int | None] | None = None,
+    year: int | None = None,
+    month: int | None = None,
 ) -> dict[int | None, dict[int, Decimal]]:
-    """{position_id: {company_id: percent}} — проценты, заданные для рабочего места.
+    """{position_id: {company_id: percent}} — проценты, заданные для рабочего места
+    и действующие в месяце.
 
     Ключ — ПОЗИЦИЯ (task_positions ч.A): у совместителя каждое рабочее место
     разносится по юрлицам по-своему. Строки с `position_id IS NULL` заведены до
     появления позиций и относятся к основной.
+
+    Наборы версионируются с 1-го числа месяца (task_stage3_historicity): берётся
+    набор с наибольшей датой не позже 1-го числа `year/month`. Без месяца —
+    ПОСЛЕДНИЙ заданный набор (то, что видит карточка).
     """
     result: dict[int | None, dict[int, Decimal]] = {}
+    for key, versions in load_share_versions(db, emp_ids, primary_position_ids).items():
+        shares = share_set_for_month(versions, year, month)
+        if shares is not None:
+            result[key] = shares
+    return result
+
+
+def load_share_versions(
+    db: Session,
+    emp_ids: list[int],
+    primary_position_ids: dict[int, int | None] | None = None,
+) -> dict[int | None, list[tuple[date, dict[int, Decimal]]]]:
+    """{position_id: [(с какого числа, {company_id: percent}), …]} по возрастанию даты."""
     if not emp_ids:
-        return result
+        return {}
     primary_position_ids = primary_position_ids or {}
     rows = (
         db.query(EmployeeCompanyShare)
         .filter(EmployeeCompanyShare.employee_id.in_(emp_ids))
         .all()
     )
+    grouped: dict[int | None, dict[date, dict[int, Decimal]]] = {}
     for r in rows:
-        key = r.position_id if r.position_id is not None else primary_position_ids.get(r.employee_id)
-        result.setdefault(key, {})[r.company_id] = _as_decimal(r.percent)
-    return result
+        key = (
+            r.position_id if r.position_id is not None
+            else primary_position_ids.get(r.employee_id)
+        )
+        grouped.setdefault(key, {}).setdefault(r.effective_from, {})[r.company_id] = (
+            _as_decimal(r.percent)
+        )
+    return {key: sorted(by_date.items()) for key, by_date in grouped.items()}
+
+
+def share_set_for_month(
+    versions: list[tuple[date, dict[int, Decimal]]], year: int | None, month: int | None,
+) -> dict[int, Decimal] | None:
+    """Набор, действующий в месяце; без месяца — последний. None — не задан."""
+    if not versions:
+        return None
+    if year is None or month is None:
+        return versions[-1][1]
+    start = date(year, month, 1)
+    chosen = None
+    for effective_from, shares in versions:
+        if effective_from <= start:
+            chosen = shares
+    return chosen
 
 
 def load_department_shares(db: Session, dept_ids: list[int]) -> dict[int, dict[int, Decimal]]:

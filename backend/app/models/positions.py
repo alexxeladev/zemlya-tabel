@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from app.models.companies import Company
     from app.models.departments import Department
     from app.models.employees import Employee
+    from app.models.position_terms import PositionTerms
     from app.models.schedules import Schedule
 
 
@@ -244,6 +245,17 @@ class EmployeePosition(Base):
     )
     company: Mapped[Optional[Company]] = relationship(
         "Company", back_populates="positions"
+    )
+    # История условий труда (task_stage3_historicity). Поля условий на самой
+    # позиции — зеркало ПОСЛЕДНЕЙ версии; расчёт берёт версию на день
+    # (`services.position_terms.terms_on`). selectin: расчёт месяца читает
+    # версии каждой позиции, ленивая загрузка дала бы запрос на строку.
+    terms_versions: Mapped[list["PositionTerms"]] = relationship(
+        "PositionTerms",
+        order_by="PositionTerms.effective_from",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="selectin",
     )
 
     __table_args__ = (

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class CompanyShareInput(BaseModel):
@@ -26,6 +27,18 @@ class EmployeeSharesRead(BaseModel):
     department_shares: list[CompanyShareInput] = []
     # Своё распределение не задано, а у отдела есть → сотрудник наследует отдел
     inherits_department: bool = False
+    # С какого месяца действует показанный (последний заданный) набор
+    # (task_stage3_historicity); None — с начала.
+    effective_from: date | None = None
+    # История наборов: с какого месяца какой действовал, по возрастанию.
+    history: list["EmployeeSharesVersion"] = []
+
+
+class EmployeeSharesVersion(BaseModel):
+    """Набор процентов рабочего места, действующий с 1-го числа месяца."""
+    effective_from: date | None = None  # None — с начала
+    shares: list[CompanyShareInput]
+    percent_sum: Decimal
 
 
 class EmployeeSharesUpdate(BaseModel):
@@ -33,6 +46,17 @@ class EmployeeSharesUpdate(BaseModel):
     # не указано — основному.
     position_id: int | None = None
     shares: list[CompanyShareInput]
+    # С какого месяца действует набор — ТОЛЬКО 1-е число (решение заказчика:
+    # итог месяца один, делить его по процентам нечего). Не задано — 1-е число
+    # следующего месяца.
+    effective_from: date | None = None
+
+    @field_validator("effective_from")
+    @classmethod
+    def _first_of_month(cls, v: date | None) -> date | None:
+        if v is not None and v.day != 1:
+            raise ValueError("Распределение меняется только с 1-го числа месяца")
+        return v
 
 
 class DistributionOverrideInput(BaseModel):
@@ -230,3 +254,6 @@ class PayrollStatementRead(BaseModel):
     total_unallocated_remainder: Decimal = Decimal("0")
     # Итог распределения по каждой компании: {company_id: amount}
     distribution_totals: dict[int, Decimal]
+
+
+EmployeeSharesRead.model_rebuild()
