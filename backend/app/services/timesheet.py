@@ -19,7 +19,13 @@ from app.services.employment_period import (
     is_within_employment,
 )
 from app.services.org_access import accessible_department_ids, is_department_scoped
-from app.services.positions import in_department, in_departments, visible_positions
+from app.services.positions import (
+    NO_DEPARTMENT,
+    DepartmentFilter,
+    in_department,
+    in_departments,
+    visible_positions,
+)
 
 
 def _position_label(employee: Employee, position) -> str:
@@ -33,10 +39,12 @@ def _position_label(employee: Employee, position) -> str:
 def visible_employees_for_actor(
     db: Session,
     actor: Employee,
-    department_id: int | None = None,
+    department_id: DepartmentFilter = None,
     year: int | None = None,
     month: int | None = None,
 ) -> list[Employee]:
+    """Сотрудники выборки. `department_id`: id отдела, `NO_DEPARTMENT` — группа
+    «Без отдела», `None` — фильтр не задан (все доступные actor-у)."""
     q = db.query(Employee).filter(Employee.is_system_admin == False)  # noqa: E712
 
     if year is not None and month is not None:
@@ -57,13 +65,19 @@ def visible_employees_for_actor(
         # Отделы, которыми менеджер руководит (или которые ведёт табельщик,
         # task_timekeeper_role) — их может быть несколько, и это НЕ его
         # собственный department_id.
+        # Группа «Без отдела» отделов не имеет, а доступ у этих ролей — по
+        # отделам: показывать нечего (роутер отвечает на неё 403 ещё раньше).
+        if department_id is NO_DEPARTMENT:
+            return []
         dept_ids = accessible_department_ids(actor, department_id)
         if not dept_ids:
             return []
         return q.filter(in_departments(dept_ids)).all()
 
     # admin / accountant
-    if department_id is not None:
+    if department_id is NO_DEPARTMENT:
+        q = q.filter(in_department(None))
+    elif department_id is not None:
         q = q.filter(in_department(department_id))
     return q.all()
 
@@ -545,7 +559,7 @@ def build_autofill_preview(
     actor: Employee,
     year: int,
     month: int,
-    department_id: int | None = None,
+    department_id: DepartmentFilter = None,
 ):
     """
     Compute what would be filled by schedule for visible employees.

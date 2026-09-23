@@ -17,7 +17,12 @@ from app.models.production_calendars import ProductionCalendar
 from app.services.absences import absence_code, get_month_absences
 from app.services.calendar import get_month_data, parse_days_string
 from app.services.company_order import company_order_by, sort_company_ids
-from app.services.positions import visible_positions
+from app.services.positions import (
+    NO_DEPARTMENT,
+    NO_DEPARTMENT_LABEL,
+    DepartmentFilter,
+    visible_positions,
+)
 from app.services.timesheet import get_month_entries, visible_employees_for_actor
 from app.services.work_schedule import (
     DAY_HOLIDAY,
@@ -198,7 +203,7 @@ def generate_t13_excel(
     actor: Employee,
     year: int,
     month: int,
-    department_id: int | None = None,
+    department_id: DepartmentFilter = None,
 ) -> bytes:
     """
     Генерирует Excel-файл с табелем Т-13 за указанный период.
@@ -321,7 +326,19 @@ def generate_t13_excel(
         ws.column_dimensions[get_column_letter(col_fn(total_days))].width = width
 
     # ── Шапка документа ─────────────────────────────────────────────────────
-    cur_row = _write_document_header(ws, year, month, department_id, db, total_days)
+    # Отделы, реально попавшие в файл: фильтр может быть пуст (роль, у которой
+    # выбора отдела нет — руководитель или табельщик ОДНОГО отдела), а лист при
+    # этом содержит один отдел, и подпись «Все отделы» врала бы. Номер отдела
+    # спрашивать у фронта нельзя: там профиль кэширован и после перевода
+    # человека устаревает — пришёл бы чужой отдел и 403.
+    dept_ids_in_file = {
+        pos.department_id
+        for positions in positions_by_emp.values()
+        for pos in positions
+    }
+    cur_row = _write_document_header(
+        ws, year, month, department_id, db, total_days, dept_ids_in_file
+    )
 
     # ── Шапка таблицы ───────────────────────────────────────────────────────
     cur_row = _write_table_header(ws, cur_row, year, month, total_days,
@@ -359,17 +376,33 @@ def generate_t13_excel(
 # ── Document header ───────────────────────────────────────────────────────────
 
 def _write_document_header(
-    ws, year: int, month: int, department_id: int | None, db: Session, total_days: int,
+    ws, year: int, month: int, department_id: DepartmentFilter, db: Session,
+    total_days: int, dept_ids_in_file: set[int | None] | None = None,
 ) -> int:
-    """Пишет шапку документа, возвращает следующую строку."""
+    """Пишет шапку документа, возвращает следующую строку.
+
+    `dept_ids_in_file` — отделы строк, попавших в выгрузку. Нужны, когда фильтр
+    не задан: подпись обязана описывать содержимое листа, иначе выгрузка роли с
+    одним отделом подписывается «Все отделы».
+    """
+    from app.models.departments import Department
 
     # Определяем подразделение
     dept_name = "Все отделы"
-    if department_id is not None:
-        from app.models.departments import Department
+    if department_id is NO_DEPARTMENT:
+        dept_name = NO_DEPARTMENT_LABEL
+    elif department_id is not None:
         dept = db.get(Department, department_id)
         if dept:
             dept_name = dept.name
+    elif dept_ids_in_file is not None and len(dept_ids_in_file) == 1:
+        only = next(iter(dept_ids_in_file))
+        if only is None:
+            dept_name = NO_DEPARTMENT_LABEL
+        else:
+            dept = db.get(Department, only)
+            if dept:
+                dept_name = dept.name
 
     last_day = _cal.monthrange(year, month)[1]
     period_start = f"01.{month:02d}.{year}"

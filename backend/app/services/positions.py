@@ -23,6 +23,74 @@ from app.models.positions import PAY_TYPE_BASE_FIELD, EmployeePosition
 from app.services.org_access import accessible_department_ids, is_department_scoped
 
 
+# ── Фильтр «какой отдел показывать» ──────────────────────────────────────────
+# Три состояния, и все три нужны: конкретный отдел (id), группа «Без отдела»
+# (позиции с `department_id IS NULL`) и «фильтр не задан» (None).
+#
+# До task_timesheet_dept_only группа «Без отдела» запрашивалась неявно — через
+# режим «все отделы», который отдавал вообще всех. Режим сняли (табель грузится
+# только по одному отделу), и группе понадобилось СВОЁ значение: иначе
+# сотрудники без отдела и их периоды стали бы недостижимы с экрана.
+class _NoDepartment:
+    """Единственное значение-метка «группа Без отдела» (см. NO_DEPARTMENT)."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover — только для отладки
+        return "NO_DEPARTMENT"
+
+
+#: Запрошена группа «Без отдела». Сравнивать только через `is`.
+NO_DEPARTMENT = _NoDepartment()
+
+#: Отдел выборки: id · NO_DEPARTMENT («Без отдела») · None (фильтр не задан).
+DepartmentFilter = int | _NoDepartment | None
+
+#: Как группа «Без отдела» называется в запросе (`?department_id=none`).
+NO_DEPARTMENT_PARAM = "none"
+
+#: Подпись группы для того, что рисует БЭК: шапка Т-13 и подразделение
+#: ведомости. Фронт её не получает — у него своя («Без отдела» на экране
+#: выбора, в выпадашке и в счётчике). Расхождение здесь безобидно: это подпись,
+#: а не правило, и на отбор данных она не влияет.
+NO_DEPARTMENT_LABEL = "Без отдела"
+
+
+def normalize_department_filter(value: int | str | None) -> DepartmentFilter:
+    """Значение из запроса -> фильтр отдела. Единственный разбор на весь проект.
+
+    Принимает `none` (группа «Без отдела»), число и его строковую запись;
+    пустая строка и `None` — фильтр не задан. Всё прочее — ValueError, чтобы
+    опечатка не превратилась молча в «показать всех».
+
+    `none` — РОВНО в нижнем регистре: в теле автозаполнения то же значение
+    описано `Literal["none"]`, и pydantic отвергает «NONE» до нас. Приняв здесь
+    любой регистр, мы получили бы два разных контракта на одно значение.
+
+    `bool` отвергается явно: в Python он подкласс `int`, и `True` молча стал бы
+    отделом №1.
+    """
+    if value is None:
+        return None
+    if isinstance(value, _NoDepartment):
+        return value
+    if isinstance(value, bool):
+        raise ValueError("department_id: ожидается число или «none», получено булево")
+    if isinstance(value, int):
+        return value
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw == NO_DEPARTMENT_PARAM:
+        return NO_DEPARTMENT
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(
+            f"department_id: ожидается число или «{NO_DEPARTMENT_PARAM}», получено «{value}»"
+        ) from None
+
+
 def in_departments(dept_ids: list[int]) -> ColumnElement[bool]:
     """Сотрудник относится к одному из отделов — есть позиция в этом отделе."""
     return Employee.positions.any(EmployeePosition.department_id.in_(dept_ids))
@@ -99,25 +167,33 @@ def department_ids_of(employee: Employee) -> list[int | None]:
 
 
 def visible_positions(
-    employee: Employee, actor: Employee, department_id: int | None = None
+    employee: Employee, actor: Employee, department_id: DepartmentFilter = None
 ) -> list[EmployeePosition]:
     """Позиции сотрудника, которые вправе видеть actor.
 
     Менеджеру (и табельщику) видны только рабочие места в его отделах: числиться
     у него в отделе основной позицией и подрабатывать в чужом отделе — разные
     вещи, и чужую подработку он видеть не должен. Admin/accountant видят все.
+
+    `NO_DEPARTMENT` — группа «Без отдела»: только места без отдела. Менеджеру и
+    табельщику она недоступна никогда (отделов у неё нет, а доступ у них — по
+    отделам), поэтому у них выдача пуста; роутер к этому моменту уже ответил 403.
     """
     positions = employee.active_positions
     if is_department_scoped(actor):
+        if department_id is NO_DEPARTMENT:
+            return []
         allowed = set(accessible_department_ids(actor, department_id))
         positions = [p for p in positions if p.department_id in allowed]
+    elif department_id is NO_DEPARTMENT:
+        positions = [p for p in positions if p.department_id is None]
     elif department_id is not None:
         positions = [p for p in positions if p.department_id == department_id]
     return positions
 
 
 def positions_for_payroll(
-    employees: list[Employee], actor: Employee, department_id: int | None = None
+    employees: list[Employee], actor: Employee, department_id: DepartmentFilter = None
 ) -> list[tuple[Employee, EmployeePosition]]:
     """Пары (сотрудник, позиция) для расчёта ЗП — по одной строке на рабочее место.
 

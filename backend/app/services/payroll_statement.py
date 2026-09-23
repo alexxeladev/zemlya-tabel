@@ -81,7 +81,13 @@ from app.services.payout import (
     loan_month_state,
 )
 from app.services.payroll import calculate_position_payroll
-from app.services.positions import entries_by_position, visible_positions
+from app.services.positions import (
+    NO_DEPARTMENT,
+    NO_DEPARTMENT_LABEL,
+    DepartmentFilter,
+    entries_by_position,
+    visible_positions,
+)
 
 _ZERO = Decimal("0")
 _HUNDRED = Decimal("100")
@@ -92,7 +98,7 @@ _HUNDRED = Decimal("100")
 def _payroll_rows(
     employees: list[Employee],
     actor: Employee | None,
-    department_id: int | None,
+    department_id: DepartmentFilter,
 ) -> list[tuple[Employee, EmployeePosition | None]]:
     """Строки расчёта: по одной на видимую позицию сотрудника.
 
@@ -136,7 +142,7 @@ def build_payroll_summary(
     year: int,
     month: int,
     actor: Employee | None = None,
-    department_id: int | None = None,
+    department_id: DepartmentFilter = None,
 ) -> PayrollSummaryRead:
     """Сводный расчёт ЗП — ОДНА СТРОКА НА ПОЗИЦИЮ (task_positions ч.A).
 
@@ -792,7 +798,7 @@ ORGANIZATION_FALLBACK = "ДЕВЕЛОПМЕНТ ГРУППА «ЗЕМЛЯ МО»
 SUBDIVISION_ALL = "Все подразделения"
 
 
-def _statement_heading(db: Session, department_id: int | None) -> tuple[str, str]:
+def _statement_heading(db: Session, department_id: DepartmentFilter) -> tuple[str, str]:
     """Организация и подразделение для шапки выгрузки (task_vedomost_format ч.3).
 
     Выгрузка по одному отделу подписывается его ГОЛОВНОЙ компанией — тем самым
@@ -801,6 +807,8 @@ def _statement_heading(db: Session, department_id: int | None) -> tuple[str, str
     Выгрузка по всем отделам (или отдел без головной компании) подписывается
     группой — однозначного юрлица у неё нет.
     """
+    if department_id is NO_DEPARTMENT:
+        return ORGANIZATION_FALLBACK, NO_DEPARTMENT_LABEL
     if department_id is None:
         return ORGANIZATION_FALLBACK, SUBDIVISION_ALL
     dept = db.get(Department, department_id)
@@ -818,7 +826,7 @@ def build_payroll_statement(
     year: int,
     month: int,
     actor: Employee | None = None,
-    department_id: int | None = None,
+    department_id: DepartmentFilter = None,
 ) -> PayrollStatementRead:
     summary = build_payroll_summary(
         db, employees, entries, year, month, actor, department_id

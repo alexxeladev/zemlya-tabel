@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from app.schemas.absence import AbsenceRead
 from app.schemas.quantity import (
@@ -142,4 +143,11 @@ class AutofillPreview(BaseModel):
 class AutofillRequest(BaseModel):
     year: int = Field(ge=2000, le=2100)
     month: int = Field(ge=1, le=12)
-    department_id: int | None = None
+    # id отдела, "none" — группа «Без отдела», null — все доступные роли отделы.
+    # Строковое значение то же, что в `?department_id=` у GET-эндпойнтов табеля:
+    # разбирает его один `normalize_department_filter`.
+    #
+    # StrictInt обязателен: обычный `int` в pydantic принимает булево, и
+    # `{"department_id": true}` приезжало отделом №1 — автозаполнение уходило
+    # не туда вместо отказа.
+    department_id: StrictInt | Literal["none"] | None = None

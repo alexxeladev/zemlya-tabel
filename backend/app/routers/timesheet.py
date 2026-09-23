@@ -96,7 +96,14 @@ from app.services.payroll_statement import (
     build_payroll_summary,
     build_quantity_distribution,
 )
-from app.services.positions import department_ids_of, visible_positions
+from app.services.positions import (
+    NO_DEPARTMENT,
+    NO_DEPARTMENT_PARAM,
+    DepartmentFilter,
+    department_ids_of,
+    normalize_department_filter,
+    visible_positions,
+)
 from app.services.quantity_distribution import (
     department_quantities_state,
     set_department_quantities,
@@ -130,10 +137,47 @@ router = APIRouter()
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _require_dept_access(actor: Employee, department_id: int | None) -> None:
+def department_filter_param(
+    department_id: str | None = Query(
+        default=None,
+        description=(
+            "id отдела или «none» — группа «Без отдела». "
+            "Не задан — все отделы, доступные роли."
+        ),
+    ),
+) -> DepartmentFilter:
+    """Разбор `?department_id=` для эндпойнтов табеля.
+
+    Группе «Без отдела» нужно СВОЁ значение: с task_timesheet_dept_only табель
+    открывается только по одному отделу, и раньше эта группа приходила лишь
+    заодно с режимом «все отделы», которого больше нет. Сам разбор — один на
+    проект, в `services/positions`.
+    """
+    try:
+        return normalize_department_filter(department_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from None
+
+
+def _department_log_value(department: DepartmentFilter) -> int | str | None:
+    """Фильтр отдела для audit log: метка группы не сериализуется сама."""
+    return NO_DEPARTMENT_PARAM if department is NO_DEPARTMENT else department
+
+
+def _require_dept_access(actor: Employee, department_id: DepartmentFilter) -> None:
     """Менеджер и табельщик получают данные только своих отделов
     (task_org_structure ч.2, task_timekeeper_role).
-    `department_id is None` — фильтр не задан, отдавать все его отделы."""
+    `department_id is None` — фильтр не задан, отдавать все его отделы.
+
+    Группа «Без отдела» (`NO_DEPARTMENT`) — только admin/accountant. Менеджеру и
+    табельщику доступ выдан ПО ОТДЕЛАМ, а у группы отдела нет; сотруднику она
+    тоже ни к чему — он видит себя. Отказ явный: у сотрудника этот фильтр иначе
+    оставлял бы его же строку без единой позиции (`visible_positions` отсекает
+    места с отделом), то есть пустой табель вместо внятного «нельзя»."""
+    if department_id is NO_DEPARTMENT and actor.role not in ("admin", "accountant"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
     if not is_department_scoped(actor) or department_id is None:
         return
     if not can_access_department(actor, department_id):
@@ -148,12 +192,17 @@ def _check_year_month(year: int, month: int) -> None:
 
 
 def _quantity_department_scope(
-    actor: Employee, department_id: int | None
+    actor: Employee, department_id: DepartmentFilter
 ) -> list[int] | None:
     """Отделы, чей количественный показатель отдавать: выбранный, все свои у
     менеджера, None («все с флагом») у admin/accountant. Отделы БЕЗ флага
     отсеет сам сервис.
+
+    Группа «Без отдела» — пустой список: показателя у неё быть не может, он
+    настройка ОТДЕЛА.
     """
+    if department_id is NO_DEPARTMENT:
+        return []
     if department_id is not None:
         return [department_id]
     if is_department_scoped(actor):
@@ -350,7 +399,7 @@ def _build_payroll_summary(
     year: int,
     month: int,
     actor: Employee,
-    department_id: int | None = None,
+    department_id: DepartmentFilter = None,
 ) -> PayrollSummaryRead:
     return build_payroll_summary(
         db, employees, entries, year, month, actor, department_id
@@ -377,7 +426,7 @@ def get_review_tasks(
 def get_payroll(
     year: int,
     month: int,
-    department_id: Optional[int] = Query(default=None),
+    department: DepartmentFilter = Depends(department_filter_param),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
@@ -387,10 +436,10 @@ def get_payroll(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
     # Manager видит только свои отделы — запрос финансов чужого отдела запрещён
-    _require_dept_access(actor, department_id)
-    employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
+    _require_dept_access(actor, department)
+    employees = visible_employees_for_actor(db, actor, department, year=year, month=month)
     entries = get_month_entries(db, employees, year, month)
-    return _build_payroll_summary(db, employees, entries, year, month, actor, department_id)
+    return _build_payroll_summary(db, employees, entries, year, month, actor, department)
 
 
 # ── Payroll statement: сводная ведомость + распределение по % (задача 3.11b) ───
@@ -533,7 +582,7 @@ def delete_distribution_override(
 def get_quantities(
     year: int,
     month: int,
-    department_id: Optional[int] = Query(default=None),
+    department: DepartmentFilter = Depends(department_filter_param),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
@@ -541,9 +590,9 @@ def get_quantities(
     отделам с флагом. Отделов без флага в выдаче нет."""
     _require_finance_role(actor)
     _check_year_month(year, month)
-    _require_dept_access(actor, department_id)
+    _require_dept_access(actor, department)
     return department_quantities_state(
-        db, _quantity_department_scope(actor, department_id), year, month
+        db, _quantity_department_scope(actor, department), year, month
     )
 
 
@@ -642,7 +691,7 @@ def export_statement_excel(
 def get_month(
     year: int,
     month: int,
-    department_id: Optional[int] = Query(default=None),
+    department: DepartmentFilter = Depends(department_filter_param),
     include_payroll: bool = Query(default=False),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
@@ -652,9 +701,9 @@ def get_month(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
     # Отдел, которым менеджер не руководит, — явный 403, а не молча пустая выдача
-    _require_dept_access(actor, department_id)
+    _require_dept_access(actor, department)
 
-    employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
+    employees = visible_employees_for_actor(db, actor, department, year=year, month=month)
     companies = (
         db.query(Company).filter(Company.is_active == True)  # noqa: E712
         .order_by(*company_order_by()).all()
@@ -689,7 +738,7 @@ def get_month(
     # строку на позицию; в табеле отдела видна только позиция ЭТОГО отдела
     # (task_positions ч.B), у менеджера — только его отделы.
     positions_by_employee = {
-        emp.id: visible_positions(emp, actor, department_id) for emp in employees
+        emp.id: visible_positions(emp, actor, department) for emp in employees
     }
 
     # Ночные смены: отметки + состояние фонда отделов, попавших в выдачу.
@@ -738,7 +787,7 @@ def get_month(
     # отделы берутся из тех, что реально попали в выдачу.
     quantities = (
         department_quantities_state(
-            db, _quantity_department_scope(actor, department_id), year, month
+            db, _quantity_department_scope(actor, department), year, month
         )
         if can_see_finances(actor)
         else []
@@ -747,7 +796,7 @@ def get_month(
         adjustments = _load_adjustments(db, employees, year, month, actor)
         if include_payroll:
             payroll = _build_payroll_summary(
-                db, employees, entries, year, month, actor, department_id
+                db, employees, entries, year, month, actor, department
             )
     elif include_payroll and hides_finances(actor):
         # Табельщику расчёт нужен ради ЧАСОВ: норма, переработка, часы вне
@@ -756,7 +805,7 @@ def get_month(
         # расчёта вычищаются ниже (mask_payroll_summary). Премии/KPI/удержания
         # (adjustments) ему не отдаются вообще — это чистые деньги.
         payroll = _build_payroll_summary(
-            db, employees, entries, year, month, actor, department_id
+            db, employees, entries, year, month, actor, department
         )
     # Суммы распределения по показателю — для блока «Распределение» в табеле.
     # Только когда расчёт вообще считался: делить нечего, пока нет начисленного.
@@ -1149,9 +1198,10 @@ def autofill_preview(
     actor: Employee = Depends(get_current_user),
 ):
     _require_timesheet_role(actor)
-    _require_dept_access(actor, payload.department_id)
+    department = normalize_department_filter(payload.department_id)
+    _require_dept_access(actor, department)
     try:
-        return build_autofill_preview(db, actor, payload.year, payload.month, payload.department_id)
+        return build_autofill_preview(db, actor, payload.year, payload.month, department)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -1163,9 +1213,10 @@ def autofill_apply(
     actor: Employee = Depends(get_current_user),
 ):
     _require_timesheet_role(actor)
-    _require_dept_access(actor, payload.department_id)
+    department = normalize_department_filter(payload.department_id)
+    _require_dept_access(actor, department)
     try:
-        preview = build_autofill_preview(db, actor, payload.year, payload.month, payload.department_id)
+        preview = build_autofill_preview(db, actor, payload.year, payload.month, department)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 
@@ -1242,7 +1293,7 @@ def get_period_history(
 def export_excel(
     year: int,
     month: int,
-    department_id: Optional[int] = Query(default=None),
+    department: DepartmentFilter = Depends(department_filter_param),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
@@ -1253,14 +1304,14 @@ def export_excel(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
-    _require_dept_access(actor, department_id)
+    _require_dept_access(actor, department)
 
     from app.services.timesheet_export import generate_t13_excel
-    excel_bytes = generate_t13_excel(db, actor, year, month, department_id)
+    excel_bytes = generate_t13_excel(db, actor, year, month, department)
 
     log_action(
         db, actor, "timesheet", None, "timesheet_exported_excel",
-        after={"year": year, "month": month, "department_id": department_id},
+        after={"year": year, "month": month, "department_id": _department_log_value(department)},
     )
     db.commit()
 
@@ -1278,7 +1329,7 @@ def export_excel(
 def list_adjustments(
     year: int,
     month: int,
-    department_id: Optional[int] = Query(default=None),
+    department: DepartmentFilter = Depends(department_filter_param),
     db: Session = Depends(get_db),
     actor: Employee = Depends(get_current_user),
 ):
@@ -1287,8 +1338,8 @@ def list_adjustments(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month"
         )
-    _require_dept_access(actor, department_id)
-    employees = visible_employees_for_actor(db, actor, department_id, year=year, month=month)
+    _require_dept_access(actor, department)
+    employees = visible_employees_for_actor(db, actor, department, year=year, month=month)
     return _load_adjustments(db, employees, year, month, actor)
 
 
