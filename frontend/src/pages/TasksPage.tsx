@@ -47,7 +47,11 @@ export function TasksPage() {
 
   const openTimesheet = (t: PeriodTask) => {
     const params = new URLSearchParams({ year: String(t.year), month: String(t.month) })
-    if (t.department_id !== null) params.set('department_id', String(t.department_id))
+    // Отдел передаём ВСЕГДА: табель грузится только по одному отделу
+    // (task_timesheet_dept_only), а без параметра человек попал бы на экран
+    // выбора и не добрался бы до периода, ради которого перешёл. У группы
+    // «Без отдела» отдела нет — она называется `none`.
+    params.set('department_id', t.department_id !== null ? String(t.department_id) : 'none')
     navigate(`/timesheet?${params.toString()}`)
   }
 

@@ -1,6 +1,15 @@
 import type { Absence, AbsenceKind, Adjustment, AuditLogEntry, AutofillPreview, CompanyShare, DepartmentQuantities, NightShift, PayrollStatement, PayrollSummary, TasksResponse, TimesheetCellInput, TimesheetEntry, TimesheetMonthResponse, TimesheetPeriod } from '../types/api'
 import { apiClient } from './client'
 
+/**
+ * Отдел выборки в запросах табеля: id, `'none'` — группа «Без отдела»,
+ * `undefined` — фильтра нет (все доступные роли отделы).
+ *
+ * Строка `'none'` — контракт бэка (`services/positions.normalize_department_filter`):
+ * режима «все отделы» в табеле больше нет, и группе понадобилось своё значение.
+ */
+export type DepartmentParam = number | 'none'
+
 export const timesheetApi = {
   async getTasks(): Promise<TasksResponse> {
     const { data } = await apiClient.get<TasksResponse>('/api/timesheet/tasks')
@@ -10,7 +19,7 @@ export const timesheetApi = {
   async getMonth(
     year: number,
     month: number,
-    options?: { department_id?: number; include_payroll?: boolean },
+    options?: { department_id?: DepartmentParam; include_payroll?: boolean },
   ): Promise<TimesheetMonthResponse> {
     const params: Record<string, unknown> = {}
     if (options?.department_id !== undefined) params.department_id = options.department_id
@@ -19,7 +28,7 @@ export const timesheetApi = {
     return data
   },
 
-  async getPayroll(year: number, month: number, departmentId?: number): Promise<PayrollSummary> {
+  async getPayroll(year: number, month: number, departmentId?: DepartmentParam): Promise<PayrollSummary> {
     const params: Record<string, unknown> = {}
     if (departmentId !== undefined) params.department_id = departmentId
     const { data } = await apiClient.get<PayrollSummary>(`/api/timesheet/${year}/${month}/payroll`, { params })
@@ -104,21 +113,21 @@ export const timesheetApi = {
     return data
   },
 
-  async autofillPreview(year: number, month: number, departmentId?: number): Promise<AutofillPreview> {
+  async autofillPreview(year: number, month: number, departmentId?: DepartmentParam): Promise<AutofillPreview> {
     const { data } = await apiClient.post<AutofillPreview>('/api/timesheet/autofill/preview', {
       year, month, department_id: departmentId ?? null,
     })
     return data
   },
 
-  async autofillApply(year: number, month: number, departmentId?: number): Promise<{ entries_created: number; employees_count: number }> {
+  async autofillApply(year: number, month: number, departmentId?: DepartmentParam): Promise<{ entries_created: number; employees_count: number }> {
     const { data } = await apiClient.post<{ entries_created: number; employees_count: number }>('/api/timesheet/autofill/apply', {
       year, month, department_id: departmentId ?? null,
     })
     return data
   },
 
-  async exportExcel(year: number, month: number, departmentId?: number): Promise<Blob> {
+  async exportExcel(year: number, month: number, departmentId?: DepartmentParam): Promise<Blob> {
     const params: Record<string, unknown> = {}
     if (departmentId !== undefined) params.department_id = departmentId
     const { data } = await apiClient.get<Blob>(`/api/timesheet/${year}/${month}/export/excel`, {
@@ -132,7 +141,7 @@ export const timesheetApi = {
   // Премии/KPI/аванс за месяц. Нужен отдельно от месяца: после начисления
   // премии перечитывать весь табель (400+ КБ) незачем — меняются только
   // adjustments и суммы расчёта.
-  async getAdjustments(year: number, month: number, departmentId?: number): Promise<Adjustment[]> {
+  async getAdjustments(year: number, month: number, departmentId?: DepartmentParam): Promise<Adjustment[]> {
     const params: Record<string, unknown> = {}
     if (departmentId !== undefined) params.department_id = departmentId
     const { data } = await apiClient.get<Adjustment[]>(

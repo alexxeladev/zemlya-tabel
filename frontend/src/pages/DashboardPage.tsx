@@ -245,7 +245,10 @@ export function DashboardPage() {
   }, [year, month, toYear, toMonth, tooLong, reloadKey])
 
   const gotoTimesheet = (deptId: number | null, y = year, m = month) => {
-    const dept = deptId !== null ? `&department_id=${deptId}` : ''
+    // `null` здесь — столбец/строка группы «Без отдела», а не «все отделы»:
+    // режима «все отделы» в табеле нет (task_timesheet_dept_only), и без
+    // параметра клик уводил бы на экран выбора отдела.
+    const dept = `&department_id=${deptId !== null ? deptId : 'none'}`
     navigate(`/timesheet?year=${y}&month=${m}${dept}`)
   }
 

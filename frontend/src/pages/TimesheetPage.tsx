@@ -21,7 +21,9 @@ import { useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { toast } from '../store/toasts';
 import { timesheetApi } from '../api/timesheet';
+import type { DepartmentParam } from '../api/timesheet';
 import { apiClient } from '../api/client';
+import { listCompanies } from '../api/companies';
 import { listDepartments } from '../api/departments';
 import {
   departmentsForCompany,
@@ -477,16 +479,35 @@ const PAYROLL_REFRESH_DELAY_MS = 1200;
 // ──────────────────────────────────────────────────────────────
 // DepartmentGate — выбор отдела перед загрузкой табеля
 // ──────────────────────────────────────────────────────────────
-// Табель отдела — это десятки строк и расчёт по ним; табель всех отделов при 200
-// сотрудниках — сотни строк и полный расчёт ЗП. Поэтому отдел выбирается явно,
-// а «все отделы» остаются отдельным пунктом для сводных итогов.
+// Табель открывается ТОЛЬКО по одному отделу (task_timesheet_dept_only).
+// Режим «все отделы» снят: он строил сотни строк и гонял расчёт ЗП по всей
+// компании, а искали в нём человека — для этого есть справочник сотрудников.
+//
+// «Без отдела» — отдельный пункт, а не остаток прежнего режима: сотрудники без
+// отдела и их периоды иначе стали бы недостижимы. Менеджеру и табельщику он не
+// показывается — доступ у них по отделам, а у этой группы отдела нет (бэк
+// отвечает на неё 403).
 function DepartmentGate({
   departments,
-  allLabel,
+  withoutDepartment,
+  companyFiltered,
+  companyName,
+  deptsState,
+  onRetryDepartments,
+  onClearCompany,
   onPick,
 }: {
   departments: { id: number; name: string }[];
-  allLabel: string;
+  withoutDepartment: boolean;
+  /** Включён ли фильтр юрлица (он и сузил список отделов). */
+  companyFiltered: boolean;
+  /** Его название; null — ещё не загрузилось. */
+  companyName: string | null;
+  /** Загрузка справочника отделов: пустой список «не загрузился» и «их нет» —
+   *  разные вещи, и на этом экране они требуют разных слов и разных действий. */
+  deptsState: 'loading' | 'ok' | 'error';
+  onRetryDepartments: () => void;
+  onClearCompany: () => void;
   onPick: (choice: DeptChoice) => void;
 }) {
   return (
@@ -494,8 +515,28 @@ function DepartmentGate({
       <h2 className="text-lg font-semibold text-gray-800">Выберите отдел</h2>
       <p className="mt-1 text-sm text-gray-500">
         Табель открывается по одному отделу — так он грузится быстро и в нём
-        удобнее вводить часы.
+        удобнее вводить часы. Найти человека по фамилии можно в разделе
+        «Сотрудники».
       </p>
+
+      {/* Фильтр юрлица сохраняется между заходами и сужает этот список. Снять
+          его на экране выбора больше нечем: шапки таблицы здесь нет, а прежним
+          выходом была кнопка «Все отделы». Без этой строки юрлицо без отделов
+          давало тупик — пустой экран и никакого способа его покинуть. */}
+      {companyFiltered && (
+        <p className="mt-3 text-sm text-gray-600">
+          {companyName !== null
+            ? <>Показаны отделы юрлица <b>{companyName}</b>.{' '}</>
+            : <>Список сужен фильтром юрлица.{' '}</>}
+          <button
+            type="button"
+            onClick={onClearCompany}
+            className="text-blue-600 underline decoration-dotted hover:text-blue-700"
+          >
+            Показать все юрлица
+          </button>
+        </p>
+      )}
 
       <div className="mt-4 flex flex-wrap gap-2">
         {departments.map((d) => (
@@ -508,22 +549,42 @@ function DepartmentGate({
             {d.name}
           </button>
         ))}
+        {withoutDepartment && (
+          <button
+            type="button"
+            onClick={() => onPick('none')}
+            className="rounded-lg border border-dashed border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-600 hover:border-blue-500 hover:bg-blue-50"
+            title="Сотрудники, за которыми не закреплён отдел"
+          >
+            Без отдела
+          </button>
+        )}
       </div>
 
-      {departments.length === 0 && (
-        <p className="mt-4 text-sm text-gray-500">
-          Отделы не заведены — откройте табель целиком.
+      {departments.length === 0 && deptsState === 'loading' && (
+        <p className="mt-4 text-sm text-gray-500">Загружаем список отделов…</p>
+      )}
+
+      {deptsState === 'error' && (
+        <p className="mt-4 text-sm text-gray-600">
+          Не удалось загрузить список отделов.{' '}
+          <button
+            type="button"
+            onClick={onRetryDepartments}
+            className="text-blue-600 underline decoration-dotted hover:text-blue-700"
+          >
+            Повторить
+          </button>
         </p>
       )}
 
-      <button
-        type="button"
-        onClick={() => onPick('all')}
-        className="mt-6 block text-sm text-gray-500 underline decoration-dotted hover:text-blue-600"
-        title="Все сотрудники сразу: строк больше, загрузка дольше. Нужно для сводных итогов."
-      >
-        {allLabel} — со сводными итогами
-      </button>
+      {departments.length === 0 && deptsState === 'ok' && (
+        <p className="mt-4 text-sm text-gray-500">
+          {companyFiltered
+            ? 'У этого юрлица нет отделов — снимите фильтр юрлица выше.'
+            : 'Отделы не заведены — обратитесь к администратору.'}
+        </p>
+      )}
     </div>
   );
 }
@@ -644,8 +705,13 @@ export function TimesheetPage() {
       const period = usePeriodStore.getState();
       period.setPeriod(validY ?? period.year, validM ?? period.month);
     }
-    const dept = parseInt(searchParams.get('department_id') ?? '', 10);
-    if (Number.isFinite(dept)) useTimesheetViewStore.getState().setDeptChoice(dept);
+    // `none` — группа «Без отдела» (так на неё ссылаются «Задачи» и дашборд).
+    // Несуществующий отдел не проверяем здесь: его отсеет эффект ниже по
+    // загруженному справочнику и вернёт на экран выбора.
+    const raw = searchParams.get('department_id');
+    const dept = parseInt(raw ?? '', 10);
+    if (raw === 'none') useTimesheetViewStore.getState().setDeptChoice('none');
+    else if (Number.isFinite(dept)) useTimesheetViewStore.getState().setDeptChoice(dept);
     return null;
   });
 
@@ -654,18 +720,35 @@ export function TimesheetPage() {
   const month = usePeriodStore((s) => s.month);
   const setYear = usePeriodStore((s) => s.setYear);
   const setMonth = usePeriodStore((s) => s.setMonth);
-  // ── Выбор отдела: при 200 сотрудниках «все отделы» по умолчанию не грузим ──
-  // deptChoice: id | 'all' | null(не выбрано). Тем, у кого выбора нет (employee,
-  // руководитель/табельщик одного отдела), сразу ставим 'all' — бэк и так отдаёт
-  // только их людей, спрашивать нечего.
+  // ── Выбор отдела: табель грузится ТОЛЬКО по одному отделу ──────────────────
+  // deptChoice: id | 'none' («Без отдела») | null (не выбрано). Режима «все
+  // отделы» нет (task_timesheet_dept_only). Тем, у кого выбора нет (employee,
+  // руководитель/табельщик ОДНОГО отдела), фильтр не нужен вовсе: бэк и так
+  // отдаёт только их людей, спрашивать нечего.
   const deptChoice = useTimesheetViewStore((s) => s.deptChoice);
   const setDeptChoice = useTimesheetViewStore((s) => s.setDeptChoice);
 
-  // Параметр для бэка: 'all' и «не выбрано» — это отсутствие фильтра.
-  const departmentFilter = typeof deptChoice === 'number' ? deptChoice : null;
+  // Группа «Без отдела» доступна только admin/accountant (у менеджера и
+  // табельщика доступ выдан ПО ОТДЕЛАМ). Сохранённое или пришедшее по ссылке
+  // 'none' у них читается как «не выбрано» ПРЯМО ЗДЕСЬ, а не эффектом ниже:
+  // из эффекта первый запрос успевал уйти и вернуть 403 с тостом «ошибка
+  // загрузки», хотя ошибки нет — просто выбор не их.
+  const groupDenied = deptChoice === 'none' && isDeptScoped;
+  const effectiveChoice: DeptChoice = groupDenied ? null : deptChoice;
+
+  // Параметр для бэка: id, 'none' или «фильтра нет».
+  //
+  // У роли БЕЗ выбора отдела фильтр пуст намеренно: набор её отделов знает
+  // сервер, а профиль во фронте кэширован и после перевода человека в другой
+  // отдел устаревает — подставив номер отсюда, мы получили бы 403 и пустой
+  // экран до перезагрузки страницы. Подпись выгрузки Т-13 («Все отделы» при
+  // одном отделе в файле) чинится на бэке, где набор отделов достоверен.
+  const departmentFilter: DepartmentParam | null = canSelectDept
+    ? (effectiveChoice as DepartmentParam | null)
+    : null;
   // Спрашиваем отдел только у того, у кого есть из чего выбирать: employee видит
   // себя, руководитель/табельщик одного отдела — свой отдел, спрашивать нечего.
-  const needsDeptChoice = canSelectDept && deptChoice === null;
+  const needsDeptChoice = canSelectDept && effectiveChoice === null;
   const deptChosen = !needsDeptChoice;
   // Над таблицей остаётся ТОЛЬКО фильтр компании (task_pilot_ux ч.2в) — он и
   // сохраняется между заходами. Поиск по ФИО/таб.№ и отбор по должности,
@@ -1174,41 +1257,10 @@ export function TimesheetPage() {
     [shownRows]
   );
 
-  // ── Группировка по отделам (Bug 5): только при «Все отделы» для admin/accountant ──
-  // Отдел — свойство ПОЗИЦИИ, поэтому группируем строки, а не сотрудников:
-  // подработка в другом отделе попадает в свою группу (и под свой период).
-  const grouped = canSelectDept && departmentFilter === null;
-  const groups = useMemo(() => {
-    const byDept = new Map<number | null, PositionRow[]>();
-    for (const row of shownRows) {
-      const k = row.position.department_id ?? null;
-      if (!byDept.has(k)) byDept.set(k, []);
-      byDept.get(k)!.push(row);
-    }
-    const entries = Array.from(byDept.entries());
-    entries.sort((a, b) => {
-      if (a[0] === null) return 1; // «Без отдела» — в самый низ
-      if (b[0] === null) return -1;
-      const na = a[1][0]?.position.department?.name ?? '';
-      const nb = b[1][0]?.position.department?.name ?? '';
-      return na.localeCompare(nb, 'ru');
-    });
-    return entries.map(([deptId, rows]) => ({
-      deptId,
-      name: deptId === null
-        ? 'Без отдела'
-        : rows[0]?.position.department?.name ?? `Отдел ${deptId}`,
-      // Своё число сотрудников у каждого отдела — людей, не строк: та же
-      // причина, что и в шапке (совместитель даёт несколько строк).
-      employeeCount: new Set(rows.map((r) => r.emp.id)).size,
-      rowCount: rows.length,
-      // rowspan считаем внутри группы: позиции одного человека в разных
-      // отделах попадают в разные группы, объединить их одной ячейкой нельзя.
-      rows: withSpans(rows),
-      period: data?.periods.find((p) => p.department_id === deptId) ?? null,
-    }));
-  }, [shownRows, data]);
-
+  // Группировки по отделам здесь больше нет: она существовала ТОЛЬКО ради
+  // режима «все отделы» (task_timesheet_dept_only снял его вместе с ней).
+  // В выдаче теперь один отдел — заголовки-разделители делить нечего, статус
+  // периода показывается в шапке.
   const flatRows = useMemo(() => withSpans(shownRows), [shownRows]);
 
   // ── Видны ли все периоды в draft? Для autofill / submit ──
@@ -1221,16 +1273,39 @@ export function TimesheetPage() {
   const [departments, setDepartments] = useState<
     { id: number; name: string; head_company_id?: number | null }[]
   >([]);
+  // Состояние загрузки справочника: пустой список «потому что не загрузился» и
+  // «потому что отделов нет» — разные вещи. На экране выбора первое давало
+  // тупик с неверным текстом «отделы не заведены» и без способа повторить.
+  const [deptsState, setDeptsState] = useState<'loading' | 'ok' | 'error'>('loading');
+  const [deptsReloadKey, setDeptsReloadKey] = useState(0);
   useEffect(() => {
     if (!canSelectDept) return;
+    setDeptsState('loading');
     listDepartments()
-      .then((list) =>
+      .then((list) => {
         setDepartments(list.filter((d) => d.is_active).map(
           (d) => ({ id: d.id, name: d.name, head_company_id: d.head_company_id })
-        ))
-      )
-      .catch(() => setDepartments([]));
-  }, [canSelectDept]);
+        ));
+        setDeptsState('ok');
+      })
+      .catch(() => { setDepartments([]); setDeptsState('error'); });
+  }, [canSelectDept, deptsReloadKey]);
+
+  // Название выбранного юрлица для ЭКРАНА ВЫБОРА: месяц там не загружен, и
+  // `data.companies` ещё нет, а показывать вместо имени сырой id нельзя.
+  // Запрос уходит только в этом состоянии — на обычном пути его нет.
+  const [gateCompanyName, setGateCompanyName] = useState<string | null>(null);
+  useEffect(() => {
+    if (!needsDeptChoice || companyFilter === null) return;
+    let cancelled = false;
+    listCompanies()
+      .then((list) => {
+        const c = list.find((x) => x.id === companyFilter);
+        if (!cancelled) setGateCompanyName(c ? companyLabel(c) : null);
+      })
+      .catch(() => { if (!cancelled) setGateCompanyName(null); });
+    return () => { cancelled = true; };
+  }, [needsDeptChoice, companyFilter]);
 
   // Отделы, предлагаемые к выбору: при выбранном юрлице — только его отделы.
   // Иначе список звал бы в отделы, которых при этом фильтре в таблице нет.
@@ -1244,6 +1319,9 @@ export function TimesheetPage() {
    *  сотрудников». У роли без выбора отдела (employee, единственный отдел)
    *  берём имя отдела из самих строк. */
   const selectionLabel = useMemo(() => {
+    // Группа «Без отдела» — ПЕРВОЙ веткой: у неё departmentFilter не пуст
+    // ('none'), и поиск по справочнику отделов дал бы безликое «Отдел».
+    if (departmentFilter === 'none') return 'Без отдела';
     if (departmentFilter !== null) {
       return (
         departments.find((d) => d.id === departmentFilter)?.name
@@ -1252,19 +1330,21 @@ export function TimesheetPage() {
         ?? 'Отдел'
       );
     }
-    if (canSelectDept) return isDeptScoped ? 'Все мои отделы' : 'Все отделы';
+    // Роль без выбора отдела (employee, руководитель/табельщик одного отдела):
+    // имя берём из самих строк.
     const names = new Set(
       shownRows.map((r) => r.position.department?.name ?? 'Без отдела')
     );
-    return names.size === 1 ? [...names][0] : 'Все отделы';
-  }, [departmentFilter, departments, shownRows, canSelectDept, isDeptScoped]);
+    return names.size === 1 ? [...names][0] : 'Мои отделы';
+  }, [departmentFilter, departments, shownRows]);
 
-  // Выбранный отдел не принадлежит выбранному юрлицу — возвращаемся ко «всем»:
-  // сочетание «Парковый + отдел Земли МО» дало бы заведомо пустой экран.
+  // Выбранный отдел не принадлежит выбранному юрлицу — возвращаемся к ВЫБОРУ
+  // отдела: сочетание «Парковый + отдел Земли МО» дало бы заведомо пустой экран,
+  // а «всех отделов», куда раньше откатывались, больше нет.
   // Пустой справочник сбросом не считается (см. `departmentChoiceIsStale`):
   // на первом рендере он ещё не загружен, а выбор уже восстановлен из хранилища.
   useEffect(() => {
-    if (departmentChoiceIsStale(departments, companyFilter, deptChoice)) setDeptChoice('all');
+    if (departmentChoiceIsStale(departments, companyFilter, deptChoice)) setDeptChoice(null);
   }, [departments, companyFilter, deptChoice, setDeptChoice]);
 
   // Выбор отдела живёт в сторе и localStorage: переживает смену месяца, смену
@@ -1273,11 +1353,21 @@ export function TimesheetPage() {
   // список отделов не трогаем: это может быть неудавшаяся загрузка справочника,
   // а не отсутствие доступа.
   useEffect(() => {
-    if (!canSelectDept || departments.length === 0) return;
+    if (!canSelectDept) return;
+    // Группа «Без отдела» — только admin/accountant: у менеджера и табельщика
+    // доступ выдан по отделам, и бэк ответил бы 403. Сюда попадают по ссылке
+    // `?department_id=none` или со старым значением в хранилище.
+    // Экран уже читает такой выбор как «не выбрано» (`groupDenied`); здесь
+    // чистим само хранилище, чтобы он не всплыл после смены роли.
+    if (groupDenied) {
+      setDeptChoice(null);
+      return;
+    }
+    if (departments.length === 0) return;
     if (typeof deptChoice === 'number' && !departments.some((d) => d.id === deptChoice)) {
       setDeptChoice(null);
     }
-  }, [departments, canSelectDept, deptChoice, setDeptChoice]);
+  }, [departments, canSelectDept, groupDenied, deptChoice, setDeptChoice]);
 
   // ── Локальные патчи состояния после мутации ──
   // Ответ бэка вписывается прямо в `data`; месяц целиком не перечитывается.
@@ -1718,12 +1808,17 @@ export function TimesheetPage() {
   const numDays = daysInMonth(year, month);
 
   // Отдел ещё не выбран — не грузим табель и говорим об этом прямо, иначе пустой
-  // экран читается как «сломалось». «Все отделы» рядом, отдельной кнопкой.
+  // экран читается как «сломалось».
   if (needsDeptChoice) {
     return (
       <DepartmentGate
         departments={selectableDepartments}
-        allLabel={isDeptScoped ? 'Все мои отделы' : 'Все отделы'}
+        withoutDepartment={!isDeptScoped}
+        companyFiltered={companyFilter !== null}
+        companyName={gateCompanyName}
+        deptsState={deptsState}
+        onRetryDepartments={() => setDeptsReloadKey((k) => k + 1)}
+        onClearCompany={() => setCompanyFilter(null)}
         onPick={setDeptChoice}
       />
     );
@@ -1734,6 +1829,13 @@ export function TimesheetPage() {
   if (!data) {
     return <div className="p-8 text-gray-500">Нет данных</div>;
   }
+
+  /** Период относится к выбранной выдаче. `'none'` — группа «Без отдела», у её
+   *  периода `department_id === null`; фильтра нет — подходит любой период. */
+  const periodInSelection = (p: Period) =>
+    departmentFilter === null
+      ? true
+      : p.department_id === (departmentFilter === 'none' ? null : departmentFilter);
 
   const periodForDept = (deptId: number | null) =>
     data.periods.find((p) => p.department_id === deptId);
@@ -2258,44 +2360,6 @@ export function TimesheetPage() {
     );
   };
 
-  const renderGroupDivider = (
-    deptId: number | null,
-    name: string,
-    period: Period | null,
-    employeeCount: number,
-    rowCount: number,
-  ) => (
-    <tr key={`group-${deptId ?? 'null'}`}>
-      <td colSpan={totalCols} className="bg-slate-100 border border-gray-300 p-0">
-        <div className="sticky left-0 flex items-center gap-3 px-3 py-2 w-fit">
-          <span className="text-sm font-bold uppercase tracking-wide text-gray-700">
-            {name}
-          </span>
-          {/* Своё число сотрудников у каждого отдела — чтобы при «Все отделы»
-              было видно, что никого не забыли. Людей, а не строк. */}
-          <span
-            className="text-xs font-normal normal-case text-gray-500"
-            title="Сотрудников в отделе (людей; у совместителя строк несколько)"
-          >
-            {employeeCount} {pluralEmployees(employeeCount)}
-            {rowCount > employeeCount && (
-              <span className="text-gray-400"> · {rowCount} позиций</span>
-            )}
-          </span>
-          {period && (
-            <PeriodBadge
-              period={period}
-              onSubmit={() => submitPeriod(period.id)}
-              onClose={() => closePeriod(period.id)}
-              onReturn={(reason) => returnPeriod(period.id, reason)}
-              onReopen={(reason) => reopenPeriod(period.id, reason)}
-            />
-          )}
-        </div>
-      </td>
-    </tr>
-  );
-
   return (
     <div className="h-full flex flex-col overflow-hidden min-w-0">
       {/* ───── Header: переключатель месяца, фильтры, действия ───── */}
@@ -2346,21 +2410,22 @@ export function TimesheetPage() {
           {canSelectDept && departments.length > 0 && (
             <select
               className="border border-gray-300 rounded px-2 py-1 text-sm"
-              value={deptChoice === 'all' ? 'all' : String(deptChoice ?? '')}
+              value={effectiveChoice === 'none' ? 'none' : String(effectiveChoice ?? '')}
               onChange={(e) =>
                 setDeptChoice(
-                  e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10)
+                  e.target.value === 'none' ? 'none' : parseInt(e.target.value, 10)
                 )
               }
             >
-              {/* «Все отделы» — осознанный выбор, а не дефолт: на всех отделах это
-                  сотни строк и полный расчёт ЗП по всем. */}
-              <option value="all">{isDeptScoped ? 'Все мои отделы' : 'Все отделы'}</option>
+              {/* Пункта «Все отделы» больше нет (task_timesheet_dept_only):
+                  табель открывается по одному отделу. «Без отдела» — своя
+                  группа, менеджеру и табельщику она недоступна. */}
               {selectableDepartments.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name}
                 </option>
               ))}
+              {!isDeptScoped && <option value="none">Без отдела</option>}
             </select>
           )}
 
@@ -2419,10 +2484,11 @@ export function TimesheetPage() {
             </button>
           )}
 
-          {/* Статусы периодов в шапке — только когда НЕ группируем (один отдел в выдаче) */}
-          {!grouped &&
-            data.periods.map((p) => {
-              if (departmentFilter !== null && p.department_id !== departmentFilter) return null;
+          {/* Статус периода выбранной выдачи. Отдел в табеле один, поэтому
+              бейдж здесь один; у роли без выбора отдела их может быть
+              несколько (табельщик одного отдела — свой, employee — свои). */}
+          {data.periods.map((p) => {
+              if (!periodInSelection(p)) return null;
               return (
                 <PeriodBadge
                   key={p.id}
@@ -2800,20 +2866,10 @@ export function TimesheetPage() {
             {/* rowspan ФИО считаем внутри отрисовываемого списка: у строки
                 «Ночные» своя высота, и в разных группах у человека разный набор
                 рабочих мест. */}
-            {grouped
-              ? groups.map((g) => {
-                  const spans = employeeRowSpans(g.rows);
-                  return (
-                    <Fragment key={`grp-${g.deptId ?? 'null'}`}>
-                      {renderGroupDivider(g.deptId, g.name, g.period, g.employeeCount, g.rowCount)}
-                      {g.rows.map((row) => renderPositionRow(row, spans))}
-                    </Fragment>
-                  );
-                })
-              : (() => {
-                  const spans = employeeRowSpans(flatRows);
-                  return flatRows.map((row) => renderPositionRow(row, spans));
-                })()}
+            {(() => {
+              const spans = employeeRowSpans(flatRows);
+              return flatRows.map((row) => renderPositionRow(row, spans));
+            })()}
 
             {/* ===== ИТОГО строка ===== */}
             {visibleEmployees.length > 0 && (

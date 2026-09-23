@@ -25,9 +25,10 @@ export function departmentsForCompany<T extends { head_company_id?: number | nul
 }
 
 /**
- * Выбранный отдел больше не принадлежит выбранному юрлицу → выбор надо сбросить
- * на «Все отделы»: сочетание «Секьюрити + отдел Земли МО» даёт заведомо пустой
- * экран без объяснения.
+ * Выбранный отдел больше не принадлежит выбранному юрлицу → выбор надо сбросить:
+ * сочетание «Секьюрити + отдел Земли МО» даёт заведомо пустой экран без
+ * объяснения. В табеле сброс возвращает на ЭКРАН ВЫБОРА отдела (режима «все
+ * отделы» там больше нет), в ведомости — к «Все отделы».
  *
  * ПУСТОЙ справочник отделов сбросом НЕ считается: список грузится отдельным
  * запросом и на первом рендере пуст, а выбор отдела восстанавливается из
@@ -37,8 +38,11 @@ export function departmentsForCompany<T extends { head_company_id?: number | nul
 export function departmentChoiceIsStale<T extends { id: number; head_company_id?: number | null }>(
   departments: T[],
   companyId: number | null | undefined,
-  /** id отдела; 'all' («Все отделы») и null — выбора нет, сбрасывать нечего */
-  choice: number | 'all' | null | undefined,
+  /**
+   * id отдела; всё остальное — выбора отдела нет, сбрасывать нечего:
+   * `'none'` (группа «Без отдела»), `'all'` (ведомость), `null`.
+   */
+  choice: number | 'none' | 'all' | null | undefined,
 ): boolean {
   if (companyId == null || typeof choice !== 'number' || departments.length === 0) return false
   return !departmentsForCompany(departments, companyId).some((d) => d.id === choice)
@@ -125,5 +129,30 @@ export function statementRowInCompany(
       company_id: row.main_company_id,
     },
     companyId,
+  )
+}
+
+
+// ── Сохранённый выбор отдела в табеле ────────────────────────────────────────
+
+/**
+ * Выбор отдела в табеле: id отдела, `'none'` — группа «Без отдела», `null` —
+ * не выбран (показываем экран выбора).
+ */
+export type TimesheetDeptChoice = number | 'none' | null
+
+/**
+ * Годится ли сохранённое значение выбора отдела.
+ *
+ * Отдельная функция ради одного случая: в браузерах людей остался `'all'` от
+ * режима «все отделы», снятого в task_timesheet_dept_only. Валидатор его НЕ
+ * принимает, `loadValidated` отдаёт `null`, и человек попадает на экран выбора
+ * отдела — вместо режима, которого больше нет.
+ */
+export function isTimesheetDeptChoice(value: unknown): value is TimesheetDeptChoice {
+  return (
+    value === 'none'
+    || value === null
+    || (typeof value === 'number' && Number.isFinite(value))
   )
 }
