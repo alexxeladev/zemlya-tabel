@@ -1,6 +1,6 @@
 import type {
   CompanyShare, Employee, EmployeeImportResult, EmployeePosition, EmployeePositionInput,
-  EmployeeShares, PayType, UserRole, WeekendPayType,
+  EmployeeShares, PayType, PositionTermsHistory, UserRole, WeekendPayType,
 } from '../types/api'
 import { apiClient } from './client'
 
@@ -157,9 +157,20 @@ export const getCompanyShares = (id: number, positionId?: number | null) =>
     })
     .then((r) => r.data)
 
-export const setCompanyShares = (id: number, shares: CompanyShare[], positionId?: number | null) =>
+/** Набор действует с 1-го числа месяца `effectiveFrom` (task_stage3_historicity);
+ *  не задан — с 1-го числа следующего месяца. */
+export const setCompanyShares = (
+  id: number, shares: CompanyShare[], positionId?: number | null,
+  effectiveFrom?: string | null,
+) =>
   apiClient
     .put<EmployeeShares>(`/api/employees/${id}/company-shares`, {
-      shares, position_id: positionId ?? null,
+      shares, position_id: positionId ?? null, effective_from: effectiveFrom ?? null,
     })
+    .then((r) => r.data)
+
+/** История условий рабочего места: что, когда, с какой даты. */
+export const getPositionTerms = (employeeId: number, positionId: number) =>
+  apiClient
+    .get<PositionTermsHistory>(`/api/employees/${employeeId}/positions/${positionId}/terms`)
     .then((r) => r.data)

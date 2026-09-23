@@ -131,6 +131,16 @@ export interface EmployeeShares {
   department_name: string | null
   department_shares: CompanyShare[]
   inherits_department: boolean
+  /** с какого месяца действует показанный (последний) набор; null — с начала */
+  effective_from: string | null
+  /** история наборов по месяцам (task_stage3_historicity) */
+  history: EmployeeSharesVersion[]
+}
+
+export interface EmployeeSharesVersion {
+  effective_from: string | null
+  shares: CompanyShare[]
+  percent_sum: string
 }
 
 export interface DepartmentShares {
@@ -749,7 +759,44 @@ export type EmployeePositionInput = Partial<
     | 'hire_date' | 'dismissal_date'
     | 'is_active' | 'sort_order'
   >
-> & { is_primary?: boolean }
+> & {
+  is_primary?: boolean
+  /** с какой даты действует изменение условий (task_stage3_historicity);
+   *  не задано — 1-е число следующего месяца */
+  terms_effective_from?: string | null
+}
+
+/** Версия условий рабочего места — история в карточке (task_stage3_historicity). */
+export interface PositionTerms {
+  id: number
+  /** null — с начала (первая версия, перенесённая миграцией) */
+  effective_from: string | null
+  pay_type: PayType
+  rate: string | null
+  shift_rate: string | null
+  hour_rate: string | null
+  schedule_id: number | null
+  schedule_name: string | null
+  weekend_pay_type: WeekendPayType
+  weekend_coefficient: string | null
+  weekend_fixed_rate: string | null
+  holiday_pay_type: WeekendPayType
+  holiday_coefficient: string | null
+  holiday_fixed_rate: string | null
+  overtime_coefficient: string | null
+  is_official: boolean
+  official_salary: string | null
+  /** подписи полей, изменившихся относительно предыдущей версии */
+  changed: string[]
+  created_by_name: string | null
+  created_at: string | null
+}
+
+export interface PositionTermsHistory {
+  position_id: number
+  versions: PositionTerms[]
+  default_effective_from: string
+}
 
 export type ScheduleType = 'weekday' | 'cyclic'
 
@@ -962,6 +1009,8 @@ export interface VahtaStaffInput {
   dismissal_date?: string | null
   is_official?: boolean
   official_salary?: string | null
+  /** с какой даты действует смена официальной зарплаты (task_stage3_historicity) */
+  terms_effective_from?: string | null
 }
 
 export interface VahtaDepartment {
@@ -1136,7 +1185,19 @@ export interface VahtaZoneCard {
 
 /** Настройки вахты. Ставка налога — в ПРОЦЕНТАХ (40 = 40 %). */
 export interface VahtaSettings {
+  /** ставка, действующая в текущем месяце */
   employer_tax_percent: string
+  /** история ставок по месяцам (task_stage3_historicity) */
+  history: VahtaTaxRate[]
+  /** с какого месяца форма предлагает новую ставку */
+  default_effective_from: string | null
+}
+
+export interface VahtaTaxRate {
+  /** null — с начала */
+  effective_from: string | null
+  employer_tax_percent: string
+  created_by_name: string | null
 }
 
 /** Режим отображения вахты: месяц целиком или расчётная половина. */

@@ -44,7 +44,10 @@ export const getVahtaMonth = (
 export const getVahtaSettings = () =>
   apiClient.get<VahtaSettings>('/api/vahta/settings').then((r) => r.data)
 
-export const updateVahtaSettings = (data: { employer_tax_percent: string }) =>
+/** Ставка действует с 1-го числа месяца `effective_from` (по умолчанию — следующего). */
+export const updateVahtaSettings = (
+  data: { employer_tax_percent: string; effective_from?: string | null },
+) =>
   apiClient.patch<VahtaSettings>('/api/vahta/settings', data).then((r) => r.data)
 
 // ── Справочник должностей охраны ──

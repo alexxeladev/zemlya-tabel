@@ -60,6 +60,7 @@ import {
   plural,
   type MonthFact,
 } from './staffFormat'
+import { defaultEffectiveFrom } from '../../utils/terms'
 
 type Draft = {
   full_name: string
@@ -72,6 +73,9 @@ type Draft = {
   dismissal_date: string
   is_official: boolean
   official_salary: string
+  /** С какой даты действует смена официальной зарплаты или признака
+   *  (task_stage3_historicity); по умолчанию — 1-е число следующего месяца. */
+  terms_effective_from: string
 }
 
 const emptyDraft = (deptId: number | undefined): Draft => ({
@@ -84,6 +88,7 @@ const emptyDraft = (deptId: number | undefined): Draft => ({
   dismissal_date: '',
   is_official: false,
   official_salary: '',
+  terms_effective_from: defaultEffectiveFrom(),
 })
 
 const toDraft = (s: VahtaStaff): Draft => ({
@@ -96,6 +101,7 @@ const toDraft = (s: VahtaStaff): Draft => ({
   dismissal_date: s.dismissal_date ?? '',
   is_official: s.is_official,
   official_salary: s.official_salary != null ? String(parseFloat(s.official_salary)) : '',
+  terms_effective_from: defaultEffectiveFrom(),
 })
 
 const orNull = (v: string) => (v.trim() === '' ? null : v.trim())
@@ -109,6 +115,7 @@ const FIELD_LABELS: Partial<Record<keyof Draft, string>> = {
   dismissal_date: 'дата увольнения',
   is_official: 'официальное трудоустройство',
   official_salary: 'официальная зарплата',
+  terms_effective_from: 'дата начала изменения',
 }
 
 export function StaffTab({
@@ -427,6 +434,9 @@ function StaffPanel({
   const [similar, setSimilar] = useState<VahtaSimilarEmployee[]>([])
   const [saving, setSaving] = useState(false)
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }))
+  const officialChanged =
+    initial.is_official !== draft.is_official ||
+    (draft.is_official && Number(initial.official_salary || 0) !== Number(draft.official_salary || 0))
 
   // Против дублей при оформлении — как в быстром найме.
   const searchName = row ? '' : draft.full_name.trim()
@@ -465,6 +475,11 @@ function StaffPanel({
           : {
               is_official: draft.is_official,
               official_salary: draft.is_official ? orNull(draft.official_salary) : null,
+              // Официальная зарплата версионируется: у существующего места
+              // изменение действует с выбранной даты, прошлые месяцы — при своей.
+              ...(row && officialChanged
+                ? { terms_effective_from: orNull(draft.terms_effective_from) }
+                : {}),
             }),
       }
       if (row) {
@@ -677,6 +692,19 @@ function StaffPanel({
               </FieldRow>
             )}
           </>
+        )}
+        {row && !transferOut && officialChanged && (
+          <FieldRow
+            label="Изменение действует с"
+            htmlFor="staff-terms-from"
+            hint="Выплата и налог месяцев до этой даты считаются по прежним условиям. Закрытый месяц или месяц на проверке выбрать нельзя."
+          >
+            <DateField
+              id="staff-terms-from"
+              value={draft.terms_effective_from}
+              onChange={(v) => set('terms_effective_from', v)}
+            />
+          </FieldRow>
         )}
         {transferOut && (
           <FieldRow

@@ -24,6 +24,7 @@ import { Table, Th, Td } from '../../components/Table'
 import { Badge } from '../../components/Badge'
 import { Modal } from '../../components/Modal'
 import { Confirm } from '../../components/Confirm'
+import { defaultEffectiveFrom, effectiveMonthLabel, monthInputToIso } from '../../utils/terms'
 import { Button } from '../../components/Button'
 import { EmployeeHistoryModal } from './EmployeeHistoryModal'
 import { Select } from '../../components/Select'
@@ -1102,6 +1103,9 @@ function CompanySharesEditor({
   const [saving, setSaving] = useState(false)
   const [loadedAt, setLoadedAt] = useState(0)
   const [inherited, setInherited] = useState<EmployeeShares | null>(null)
+  // С какого месяца действует набор (task_stage3_historicity): только 1-е
+  // число, по умолчанию — следующий месяц. Поле `<input type="month">`.
+  const [fromMonth, setFromMonth] = useState(defaultEffectiveFrom().slice(0, 7))
 
   const mainCompanyId =
     activePositions.find((p) => p.id === positionId)?.company_id ?? null
@@ -1128,7 +1132,9 @@ function CompanySharesEditor({
       .map(([cid, v]) => ({ company_id: Number(cid), percent: String(Number(v)) }))
     try {
       setSaving(true)
-      const saved = await setCompanyShares(employeeId, list, positionId)
+      const saved = await setCompanyShares(
+        employeeId, list, positionId, monthInputToIso(fromMonth),
+      )
       setInherited(saved)
       toast.success(
         list.length === 0 && saved.inherits_department
@@ -1195,11 +1201,45 @@ function CompanySharesEditor({
           mainCompanyId={mainCompanyId}
           resetKey={`${employeeId}-${positionId ?? 0}-${loadedAt}`}
         />
-        <div>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-gray-700">Действует с месяца</span>
+            <input
+              type="month"
+              value={fromMonth}
+              onChange={(e) => setFromMonth(e.target.value)}
+              className="rounded-lg border border-gray-300 px-2 py-1.5 text-sm"
+              title="Распределение меняется только с 1-го числа месяца"
+            />
+          </label>
           <Button type="button" variant="secondary" size="sm" onClick={save} disabled={saving}>
             Сохранить распределение
           </Button>
         </div>
+        <p className="text-[11px] leading-tight text-gray-500">
+          Набор действует с 1-го числа выбранного месяца; прошлые месяцы остаются при
+          своём распределении. Закрытый месяц или месяц на проверке выбрать нельзя.
+          {inherited?.effective_from && (
+            <> Показан последний заданный набор — {effectiveMonthLabel(inherited.effective_from)}.</>
+          )}
+        </p>
+        {inherited && inherited.history.length > 1 && (
+          <details className="text-[11px] text-gray-600">
+            <summary className="cursor-pointer text-gray-500">
+              История распределения ({inherited.history.length})
+            </summary>
+            <ul className="mt-1 flex flex-col gap-0.5">
+              {[...inherited.history].reverse().map((v) => (
+                <li key={v.effective_from ?? 'start'}>
+                  <span className="font-medium">{effectiveMonthLabel(v.effective_from)}:</span>{' '}
+                  {v.shares.length
+                    ? v.shares.map((x) => `${companyName(x.company_id)} ${Number(x.percent)}%`).join(' · ')
+                    : 'не задано (дефолт отдела)'}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </div>
     </div>
   )

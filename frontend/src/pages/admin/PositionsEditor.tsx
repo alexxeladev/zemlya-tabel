@@ -13,7 +13,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  createPosition, deletePosition, listPositions, makePositionPrimary, updatePosition,
+  createPosition, deletePosition, getPositionTerms, listPositions, makePositionPrimary,
+  updatePosition,
 } from '../../api/employees'
 import { ApiError } from '../../api/client'
 import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
@@ -27,8 +28,10 @@ import {
 import { useAuthStore } from '../../store/auth'
 import { toast } from '../../store/toasts'
 import type {
-  Company, Department, EmployeePosition, EmployeePositionInput, PayType, Schedule, WeekendPayType,
+  Company, Department, EmployeePosition, EmployeePositionInput, PayType, PositionTerms,
+  Schedule, WeekendPayType,
 } from '../../types/api'
+import { defaultEffectiveFrom, effectiveLabel, termsChanged } from '../../utils/terms'
 import { Button } from '../../components/Button'
 import { Confirm } from '../../components/Confirm'
 
@@ -71,6 +74,8 @@ type Draft = {
   // Период работы на этой должности (task_employment_period)
   hire_date: string
   dismissal_date: string
+  // С какой даты действует изменение условий (task_stage3_historicity)
+  terms_effective_from: string
 }
 
 const EMPTY_DRAFT: Draft = {
@@ -79,7 +84,7 @@ const EMPTY_DRAFT: Draft = {
   weekend_pay_type: 'coefficient', weekend_coefficient: '1.5', weekend_fixed_rate: '',
   holiday_pay_type: 'coefficient', holiday_coefficient: '1.5', holiday_fixed_rate: '',
   overtime_coefficient: '1.5', has_night_shifts: false,
-  hire_date: '', dismissal_date: '',
+  hire_date: '', dismissal_date: '', terms_effective_from: '',
 }
 
 function toDraft(p: EmployeePosition): Draft {
@@ -102,6 +107,7 @@ function toDraft(p: EmployeePosition): Draft {
     has_night_shifts: p.has_night_shifts,
     hire_date: p.hire_date ?? '',
     dismissal_date: p.dismissal_date ?? '',
+    terms_effective_from: defaultEffectiveFrom(),
   }
 }
 
@@ -131,6 +137,9 @@ function toPayload(d: Draft): EmployeePositionInput {
     // бэк читает payload с exclude_unset, и пропуск означал бы «не менять».
     hire_date: strOrNull(d.hire_date),
     dismissal_date: strOrNull(d.dismissal_date),
+    // Дата начала нужна только ПРАВКЕ условий: новая позиция заводит первую
+    // версию «с начала» сама.
+    ...(d.terms_effective_from ? { terms_effective_from: d.terms_effective_from } : {}),
   }
 }
 
@@ -171,6 +180,13 @@ export function PositionsEditor({
   const [editing, setEditing] = useState<number | 'new' | null>(null)
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT)
   const [deleteTarget, setDeleteTarget] = useState<EmployeePosition | null>(null)
+  // Позиция, у которой раскрыта история условий, и сама история
+  const [historyOf, setHistoryOf] = useState<number | null>(null)
+  const [history, setHistory] = useState<PositionTerms[] | null>(null)
+  // Исходное состояние формы — чтобы спрашивать дату, только если условия меняются
+  const [original, setOriginal] = useState<Draft | null>(null)
+  // История условий — деньги: табельщику и сотруднику её не показываем
+  const canSeeTerms = role === 'admin' || role === 'accountant' || role === 'manager'
 
   const load = useCallback(() => {
     setLoading(true)
@@ -195,15 +211,32 @@ export function PositionsEditor({
   }
 
   const startEdit = (p: EmployeePosition) => {
-    setDraft(toDraft(p))
+    const d = toDraft(p)
+    setDraft(d)
+    setOriginal(d)
     setEditing(p.id)
+  }
+
+  const toggleHistory = (p: EmployeePosition) => {
+    if (historyOf === p.id) {
+      setHistoryOf(null)
+      return
+    }
+    setHistoryOf(p.id)
+    setHistory(null)
+    getPositionTerms(employeeId, p.id)
+      .then((h) => setHistory(h.versions))
+      .catch((e) => {
+        toast.error(e instanceof ApiError ? e.message : 'Не удалось загрузить историю')
+        setHistoryOf(null)
+      })
   }
 
   const save = async () => {
     setBusy(true)
     try {
       if (editing === 'new') {
-        await createPosition(employeeId, toPayload(draft))
+        await createPosition(employeeId, toPayload({ ...draft, terms_effective_from: '' }))
         toast.success('Должность добавлена')
       } else if (typeof editing === 'number') {
         // Сдвиг дат периода работы может выкинуть уже проставленные часы за
@@ -211,8 +244,12 @@ export function PositionsEditor({
         // сохранение откатывает. Спрашиваем и повторяем с подтверждением.
         // «Нет» — отмена, а не ошибка: форма должности остаётся открытой.
         const positionId = editing
+        const changed = original != null && termsChanged(original, draft)
+        const payload = toPayload({
+          ...draft, terms_effective_from: changed ? draft.terms_effective_from : '',
+        })
         const saved = await withClearingConfirm((confirm) =>
-          updatePosition(employeeId, positionId, toPayload(draft), confirm), confirmInBrowser)
+          updatePosition(employeeId, positionId, payload, confirm), confirmInBrowser)
         if (saved === CLEARING_CANCELLED) {
           toast.info('Сохранение отменено — ничего не изменилось')
           return
@@ -220,6 +257,7 @@ export function PositionsEditor({
         toast.success('Должность сохранена')
       }
       setEditing(null)
+      if (historyOf != null) setHistoryOf(null)
       refresh()
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : 'Ошибка сохранения')
@@ -339,6 +377,17 @@ export function PositionsEditor({
                       Сделать основной
                     </button>
                   )}
+                  {canSeeTerms && (
+                    <button
+                      type="button"
+                      onClick={() => toggleHistory(p)}
+                      aria-expanded={historyOf === p.id}
+                      className="rounded border border-gray-300 px-2 py-0.5 text-[11px] text-gray-600 hover:bg-gray-50"
+                      title="Какие условия действовали и с какой даты"
+                    >
+                      История условий
+                    </button>
+                  )}
                   {!isGuardPosition(p) && (
                     <button
                       type="button"
@@ -369,10 +418,15 @@ export function PositionsEditor({
               {p.has_night_shifts && <span title="Ставка ночной смены вычисляется из фонда отдела">Ночные смены: да</span>}
             </div>
 
+            {historyOf === p.id && (
+              <TermsHistory versions={history} schedules={schedules} />
+            )}
+
             {editing === p.id && (
               <PositionForm
                 draft={draft}
                 setDraft={setDraft}
+                termsDirty={original != null && termsChanged(original, draft)}
                 departments={departments}
                 companies={companies}
                 schedules={schedules}
@@ -435,10 +489,12 @@ export function PositionsEditor({
 // ── Форма одной позиции ───────────────────────────────────────────────────────
 
 function PositionForm({
-  draft, setDraft, departments, companies, schedules, busy, onSave, onCancel,
+  draft, setDraft, departments, companies, schedules, busy, onSave, onCancel, termsDirty,
 }: {
   draft: Draft
   setDraft: (d: Draft) => void
+  /** Правка существующей позиции меняет условия — спросить дату начала. */
+  termsDirty?: boolean
   departments: Department[]
   companies: Company[]
   schedules: Schedule[]
@@ -635,11 +691,101 @@ function PositionForm({
         </p>
       </div>
 
+      {/* Условия версионируются (task_stage3_historicity): изменение оклада,
+          ставки, типа оплаты, графика или коэффициентов действует с выбранной
+          даты. По умолчанию — 1-е число следующего месяца (решение заказчика). */}
+      {termsDirty && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold text-gray-700">
+              С какой даты действуют новые условия
+            </span>
+            <input
+              type="date"
+              value={draft.terms_effective_from}
+              onChange={(e) => set('terms_effective_from', e.target.value)}
+              className={`${inputCls} w-44`}
+            />
+          </label>
+          <p className="mt-2 text-[11px] leading-tight text-gray-600">
+            Оклад, ставка, тип оплаты, график и коэффициенты действуют с этой даты:
+            дни до неё считаются по прежним условиям. Повышение с середины месяца
+            оплачивается с даты повышения, а не за весь месяц. Должность, отдел,
+            компания и даты работы меняются сразу. Дату в закрытом месяце или
+            месяце на проверке выбрать нельзя.
+          </p>
+        </div>
+      )}
+
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" onClick={onCancel}>Отмена</Button>
         <Button type="button" size="sm" onClick={onSave} disabled={busy}>Сохранить</Button>
       </div>
     </div>
+  )
+}
+
+// ── История условий ───────────────────────────────────────────────────────────
+
+const PAY_TYPE_SHORT: Record<PayType, string> = {
+  salary: 'оклад', per_shift: 'посменно', hourly: 'почасово',
+}
+
+function money(v: string | null): string {
+  return v == null ? '—' : new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(v))
+}
+
+function termsBase(v: PositionTerms): string {
+  if (v.pay_type === 'per_shift') return `${money(v.shift_rate)} ₽/смена`
+  if (v.pay_type === 'hourly') return `${money(v.hour_rate)} ₽/час`
+  return `${money(v.rate)} ₽/мес`
+}
+
+function termsCoeff(type: WeekendPayType, coeff: string | null, fixed: string | null): string {
+  if (type === 'fixed_rate') return fixed ? `${money(fixed)} ₽/ч` : '—'
+  return `×${coeff != null ? Number(coeff) : 1.5}`
+}
+
+function TermsHistory({
+  versions, schedules,
+}: { versions: PositionTerms[] | null; schedules: Schedule[] }) {
+  if (versions == null) {
+    return <p className="mt-2 text-[11px] text-gray-400">Загрузка истории…</p>
+  }
+  const scheduleName = (v: PositionTerms) =>
+    v.schedule_name ?? schedules.find((s) => s.id === v.schedule_id)?.name ?? 'не указан'
+  // Карточка узкая: широкая таблица в ней обрезалась бы — по строке на версию.
+  return (
+    <ol className="mt-2 flex flex-col gap-1.5 rounded-lg border border-gray-200 bg-gray-50/50 p-2">
+      {[...versions].reverse().map((v, i) => (
+        <li
+          key={v.id}
+          className={`rounded-md px-2 py-1.5 text-[11px] leading-snug ${
+            i === 0 ? 'border border-blue-200 bg-white' : 'bg-white/60'
+          }`}
+        >
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <span className="font-semibold text-gray-800">{effectiveLabel(v.effective_from)}</span>
+            <span className="text-gray-600">
+              {v.changed.length ? `изменено: ${v.changed.join(', ')}` : 'первая версия'}
+            </span>
+            {i === 0 && <span className="text-blue-700">последняя версия</span>}
+          </div>
+          <div className="mt-0.5 flex flex-wrap gap-x-3 text-gray-600">
+            <span>
+              {PAY_TYPE_SHORT[v.pay_type]}: <span className="font-mono">{termsBase(v)}</span>
+            </span>
+            <span>график: {scheduleName(v)}</span>
+            <span>
+              выходные {termsCoeff(v.weekend_pay_type, v.weekend_coefficient, v.weekend_fixed_rate)},
+              {' '}праздничные {termsCoeff(v.holiday_pay_type, v.holiday_coefficient, v.holiday_fixed_rate)},
+              {' '}переработка ×{v.overtime_coefficient != null ? Number(v.overtime_coefficient) : 1.5}
+            </span>
+            {v.created_by_name && <span className="text-gray-400">завёл: {v.created_by_name}</span>}
+          </div>
+        </li>
+      ))}
+    </ol>
   )
 }
 

@@ -3,11 +3,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { getVahtaMonth, getVahtaSettings, updateVahtaSettings } from '../../api/vahta'
 import { usePeriodStore } from '../../store/period'
 import { toast } from '../../store/toasts'
-import type { VahtaMonth } from '../../types/api'
+import type { VahtaMonth, VahtaTaxRate } from '../../types/api'
 import { formatMoney } from '../../utils/money'
 import { MONTHS_RU_GEN, MONTHS_RU_PREP } from '../../utils/ruDate'
+import { defaultEffectiveFrom, effectiveMonthLabel, monthInputToIso } from '../../utils/terms'
 import { halfTaxKopecks, parseTaxPercent, taxForHalves } from '../../utils/vahtaTax'
 import { DsButton } from '../ds/Button'
+import { MonthPicker } from '../ds/MonthPicker'
 import { ConfirmDialog } from '../ds/ConfirmDialog'
 import { TextField } from '../ds/fields'
 
@@ -31,6 +33,10 @@ export function TaxTab({ editable }: { editable: boolean }) {
   const [monthData, setMonthData] = useState<VahtaMonth | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [saving, setSaving] = useState(false)
+  // Ставка версионируется с месяца (task_stage3_historicity): по умолчанию —
+  // со следующего; прошлые месяцы остаются при своей ставке.
+  const [fromMonth, setFromMonth] = useState(defaultEffectiveFrom().slice(0, 7))
+  const [history, setHistory] = useState<VahtaTaxRate[]>([])
 
   useEffect(() => {
     getVahtaSettings()
@@ -38,6 +44,7 @@ export function TaxTab({ editable }: { editable: boolean }) {
         const value = parseFloat(data.employer_tax_percent)
         setSaved(value)
         setDraft(String(value))
+        setHistory(data.history ?? [])
       })
       .catch((e) => toast.error(e instanceof Error ? e.message : 'Не удалось загрузить ставку налога'))
   }, [])
@@ -69,12 +76,15 @@ export function TaxTab({ editable }: { editable: boolean }) {
     if (rate === null) return
     setSaving(true)
     try {
-      const data = await updateVahtaSettings({ employer_tax_percent: String(rate) })
+      const data = await updateVahtaSettings({
+        employer_tax_percent: String(rate), effective_from: monthInputToIso(fromMonth),
+      })
       const value = parseFloat(data.employer_tax_percent)
       setSaved(value)
       setDraft(String(value))
+      setHistory(data.history ?? [])
       setConfirming(false)
-      toast.success(`Ставка налога сохранена: ${value} %`)
+      toast.success(`Ставка ${rate} % сохранена ${effectiveMonthLabel(monthInputToIso(fromMonth))}`)
       getVahtaMonth(year, month).then(setMonthData).catch(() => undefined)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не удалось сохранить ставку')
@@ -181,11 +191,35 @@ export function TaxTab({ editable }: { editable: boolean }) {
         )}
       </div>
 
+      {history.length > 0 && (
+        <div className="mt-4 text-[12.5px] text-ds-ink-2">
+          <p className="m-0 mb-1 text-[12px] text-ds-muted">История ставки</p>
+          <ul className="m-0 list-none p-0">
+            {[...history].reverse().map((h) => (
+              <li key={h.effective_from ?? 'start'} className="tabular-nums">
+                {effectiveMonthLabel(h.effective_from)} — {parseFloat(h.employer_tax_percent)} %
+                {h.created_by_name && <span className="text-ds-muted"> · {h.created_by_name}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {editable && (
         <>
+          <div className="mt-3 flex items-center gap-3">
+            <span className="w-[140px] text-[12.5px] text-ds-muted">Действует с месяца</span>
+            <MonthPicker
+              label="Действует с месяца"
+              year={Number(fromMonth.slice(0, 4))}
+              month={Number(fromMonth.slice(5, 7))}
+              onChange={(y, m) => setFromMonth(`${y}-${String(m).padStart(2, '0')}`)}
+            />
+          </div>
           <p className="mt-3 rounded-ds-md border border-ds-warn-line bg-ds-warn-soft px-3 py-2.5 text-[12.5px] text-ds-warn">
-            Ставка одна на все месяцы: сохранение пересчитает разнесение и прошлых месяцев,
-            включая закрытые.
+            Ставка действует с 1-го числа выбранного месяца: разнесение этого и следующих
+            месяцев пересчитается, прошлые месяцы останутся при прежней ставке. Закрытый
+            месяц или месяц на проверке выбрать нельзя.
           </p>
           <div className="mt-3.5 flex gap-2">
             <DsButton variant="primary" disabled={!dirty} onClick={() => setConfirming(true)}>
@@ -209,8 +243,9 @@ export function TaxTab({ editable }: { editable: boolean }) {
           onConfirm={() => void save()}
           onCancel={() => setConfirming(false)}
         >
-          Ставка изменится с {saved} % на {rate} %. Разнесение по юрлицам пересчитается во
-          всех месяцах, включая прошлые и закрытые.
+          Ставка {rate} % начнёт действовать {effectiveMonthLabel(monthInputToIso(fromMonth))}.
+          Разнесение по юрлицам пересчитается с этого месяца; прошлые месяцы и закрытые
+          периоды не изменятся.
         </ConfirmDialog>
       )}
     </div>
