@@ -23,9 +23,9 @@ def _require_password_policy(password: str) -> None:
 
 def create_admin(email: str, password: str, full_name: str) -> None:
     from app.core.security import hash_password
-    from app.services.accounts import EMAIL_RE, account_conflict, normalize_email
     from app.database import SessionLocal
     from app.models.employees import Employee
+    from app.services.accounts import EMAIL_RE, account_conflict, normalize_email
 
     _require_password_policy(password)
     db = SessionLocal()
@@ -69,7 +69,6 @@ def create_admin(email: str, password: str, full_name: str) -> None:
 def reset_password(email: str, new_password: str) -> None:
     from app.core.security import hash_password, revoke_sessions
     from app.database import SessionLocal
-    from app.models.employees import Employee
     from app.services.accounts import find_account
     from app.services.login_guard import unlock_login
 
@@ -111,6 +110,7 @@ def reset_data(assume_yes: bool = False) -> None:
         DepartmentCompanyShare,
         EmployeeCompanyShare,
     )
+    from app.models.dashboard_cache import DashboardMonthCache, DataVersion
     from app.models.departments import Department
     from app.models.employee_absences import EmployeeAbsence
     from app.models.employee_adjustments import EmployeeAdjustment
@@ -118,7 +118,6 @@ def reset_data(assume_yes: bool = False) -> None:
     from app.models.loan_deductions import LoanDeduction
     from app.models.positions import EmployeePosition
     from app.models.production_calendars import ProductionCalendar
-    from app.models.dashboard_cache import DashboardMonthCache, DataVersion
     from app.models.reference_changes import ReferenceChange
     from app.models.schedules import Schedule
     from app.models.timesheet_entries import TimesheetEntry
@@ -506,7 +505,57 @@ def seed_demo_data(employees: int, date_from: str | None, date_to: str | None) -
     print(f"Пароль всех QA-учёток: {QA_PASSWORD}")
 
 
+def backfill_snapshots(apply: bool, out: str | None) -> None:
+    """Снимки для периодов, закрытых до этапа 3 (task_stage3_historicity, ч.3).
+
+    Без --apply — только отчёт: по каждому закрытому периоду сумма, которую
+    снимок зафиксирует. С --apply — запись (после подтверждения заказчиком).
+    """
+    import csv
+    from decimal import Decimal
+
+    from app.database import SessionLocal
+    from app.services.period_snapshots import backfill_snapshots as run
+
+    db = SessionLocal()
+    try:
+        report = run(db, apply=apply)
+    finally:
+        db.close()
+    header = ("Период", "Отдел", "Мест", "Людей", "Начислено", "К выплате",
+              "Разнесено", "Остаток", "Налог вахты", "Не посчитано", "Выплата < 0")
+    print(" | ".join(header))
+    total = {k: Decimal("0") for k in ("accrued", "net_payout", "distributed")}
+    for r in report:
+        print(" | ".join(str(x) for x in (
+            f"{r['month']:02d}.{r['year']}", r["department"], r["rows"], r["people"],
+            r["accrued"], r["net_payout"], r["distributed"], r["unallocated"],
+            r["guard_tax"], r["not_calculable"], r["negative_payout"],
+        )))
+        for k in total:
+            total[k] += r[k]
+    print(f"Итого периодов: {len(report)}; начислено {total['accrued']}, "
+          f"к выплате {total['net_payout']}, разнесено {total['distributed']}")
+    if out:
+        with open(out, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f, delimiter=";")
+            writer.writerow(header)
+            for r in report:
+                writer.writerow((
+                    f"{r['month']:02d}.{r['year']}", r["department"], r["rows"], r["people"],
+                    r["accrued"], r["net_payout"], r["distributed"], r["unallocated"],
+                    r["guard_tax"], r["not_calculable"], r["negative_payout"],
+                ))
+        print(f"Отчёт записан: {out}")
+    print("ПРИМЕНЕНО: снимки записаны." if apply
+          else "Только отчёт, в базе ничего не изменилось. Запись — с флагом --apply.")
+
+
 def main() -> None:
+    # Слушатели сессии этапа 3: версии условий позиций и запрет записи в
+    # закрытый месяц действуют и для команд, а не только для веб-приложения.
+    from app.services import closed_periods, position_terms  # noqa: F401
+
     parser = argparse.ArgumentParser(description="zemlya-tabel CLI")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -514,6 +563,14 @@ def main() -> None:
     cmd.add_argument("--email", required=True)
     cmd.add_argument("--password", required=True)
     cmd.add_argument("--full-name", required=True, dest="full_name")
+
+    cmd_snap = subparsers.add_parser(
+        "backfill-snapshots",
+        help="Снимки расчёта для периодов, закрытых до этапа 3 (без --apply — отчёт)",
+    )
+    cmd_snap.add_argument("--apply", action="store_true",
+                          help="Записать снимки (необратимо; сначала — отчёт)")
+    cmd_snap.add_argument("--out", default=None, help="Сохранить отчёт в CSV")
 
     cmd2 = subparsers.add_parser("reset-password", help="Reset password for an employee")
     cmd2.add_argument("--email", required=True)
@@ -547,6 +604,8 @@ def main() -> None:
         seed_test_data()
     elif args.command == "seed-demo-data":
         seed_demo_data(args.employees, args.date_from, args.date_to)
+    elif args.command == "backfill-snapshots":
+        backfill_snapshots(args.apply, args.out)
     else:
         parser.print_help()
         sys.exit(1)
