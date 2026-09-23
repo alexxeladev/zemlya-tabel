@@ -541,17 +541,32 @@ def test_card_shares_of_second_job_keep_legacy_primary_rows(
 def test_card_shares_of_primary_replace_legacy_rows(
     client, setup, db_session, company_id, admin_user,
 ):
-    """Обратный случай: правка ОСНОВНОЙ заменяет и её строки без позиции."""
+    """Обратный случай: правка ОСНОВНОЙ не смешивается с её строками без позиции.
+
+    С версиями распределения (task_stage3_historicity) старые строки без позиции
+    остаются ИСТОРИЕЙ «с начала», а новый набор действует со своего месяца:
+    в месяце нового набора — только он, раньше — прежний.
+    """
+    from app.services.company_shares import load_employee_shares
+
     w = setup["worker"]
     db_session.add(EmployeeCompanyShare(employee_id=w.id, position_id=None,
                                         company_id=company_id, percent=Decimal("100")))
     db_session.commit()
     resp = client.put(f"/api/employees/{w.id}/company-shares", headers=_admin(client), json={
         "shares": [{"company_id": company_id, "percent": "100"}],
+        "effective_from": "2026-06-01",
     })
     assert resp.status_code == 200
     db_session.expire_all()
-    assert db_session.query(EmployeeCompanyShare).filter_by(position_id=None).count() == 0
+    primary = w.primary_position.id
+    june = load_employee_shares(db_session, [w.id], {w.id: primary}, 2026, 6)
+    may = load_employee_shares(db_session, [w.id], {w.id: primary}, 2026, 5)
+    assert june[primary] == {company_id: Decimal("100")}  # не 200 — не смешались
+    assert may[primary] == {company_id: Decimal("100")}
+    # Тот же набор, что уже действует, — не изменение: новой версии нет, строки
+    # без позиции остаются единственным набором (и не дублируются).
+    assert [v["effective_from"] for v in resp.json()["history"]] == [None]
 
 
 def test_primary_override_replaces_legacy_rows(client, setup, db_session, company_id):

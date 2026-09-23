@@ -22,6 +22,7 @@ from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
+from app.services.closed_periods import allow_closed_writes
 from app.services.payroll_statement import build_payroll_statement
 from tests.conftest import get_token
 
@@ -279,12 +280,15 @@ class TestClosedPeriodsUnchanged:
         """
         _fill_may(db_session, org, staff)
         w = staff["worker"]
-        db_session.add(EmployeeAdjustment(
-            employee_id=w.id, position_id=w.primary_position.id,
-            year=2026, month=5, kind="premium", amount=Decimal("20000"),
-            reason="целевая", funding_company_id=org["other"].id,
-        ))
-        db_session.commit()
+        # Данные закрытого месяца, лежавшие в нём ДО запрета правок
+        # (task_stage3_historicity) — служебной записью, как заморозка.
+        with allow_closed_writes(db_session):
+            db_session.add(EmployeeAdjustment(
+                employee_id=w.id, position_id=w.primary_position.id,
+                year=2026, month=5, kind="premium", amount=Decimal("20000"),
+                reason="целевая", funding_company_id=org["other"].id,
+            ))
+            db_session.commit()
 
         before = _statement(db_session, [w.id], 2026, 5)
         assert before
@@ -315,11 +319,14 @@ class TestClosedPeriodsUnchanged:
         """Ручной расклад бухгалтера уже на вершине каскада — не трогаем его."""
         _fill_may(db_session, org, staff)
         w = staff["worker"]
-        db_session.add(CompanyShareOverride(
-            employee_id=w.id, position_id=w.primary_position.id,
-            company_id=org["other"].id, year=2026, month=5, percent=Decimal("100"),
-        ))
-        db_session.commit()
+        # Данные закрытого месяца, лежавшие в нём ДО запрета правок
+        # (task_stage3_historicity) — служебной записью, как заморозка.
+        with allow_closed_writes(db_session):
+            db_session.add(CompanyShareOverride(
+                employee_id=w.id, position_id=w.primary_position.id,
+                company_id=org["other"].id, year=2026, month=5, percent=Decimal("100"),
+            ))
+            db_session.commit()
         before = _statement(db_session, [w.id], 2026, 5)
 
         token = get_token(client, "mvadmin@example.com", "admin123")
@@ -338,11 +345,14 @@ class TestClosedPeriodsUnchanged:
         допишет второй набор на ту же позицию, и в каскаде они сольются."""
         _fill_may(db_session, org, staff)
         w = staff["worker"]
-        db_session.add(CompanyShareOverride(
-            employee_id=w.id, position_id=None, company_id=org["other"].id,
-            year=2026, month=5, percent=Decimal("100"),
-        ))
-        db_session.commit()
+        # Данные закрытого месяца, лежавшие в нём ДО запрета правок
+        # (task_stage3_historicity) — служебной записью, как заморозка.
+        with allow_closed_writes(db_session):
+            db_session.add(CompanyShareOverride(
+                employee_id=w.id, position_id=None, company_id=org["other"].id,
+                year=2026, month=5, percent=Decimal("100"),
+            ))
+            db_session.commit()
         before = _statement(db_session, [w.id], 2026, 5)
 
         token = get_token(client, "mvadmin@example.com", "admin123")

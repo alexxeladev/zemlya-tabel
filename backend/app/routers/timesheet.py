@@ -62,21 +62,22 @@ from app.services.absences import (
     schedules_by_employee,
     set_absence,
 )
+from app.services.closed_periods import ensure_month_open
 from app.services.company_order import (
     company_display_name,
     company_order_by,
     order_index,
 )
 from app.services.employment_period import OutsideEmploymentPeriod
-from app.services.guard_staff import (
-    GuardAccrualError,
-    ensure_no_guard_accrual,
-    loan_position,
-)
 from app.services.finance_masking import (
     employees_for,
     mask_payroll_summary,
     positions_by_employee_for,
+)
+from app.services.guard_staff import (
+    GuardAccrualError,
+    ensure_no_guard_accrual,
+    loan_position,
 )
 from app.services.night_shifts import (
     NightLimitExceeded,
@@ -110,12 +111,12 @@ from app.services.quantity_distribution import (
 )
 from app.services.row_checks import checked_position_ids, set_row_check
 from app.services.timesheet import (
+    CellConflict,
+    CellNotFound,
     apply_autofill,
     build_autofill_preview,
     compute_extra_companies_by_employee,
     get_month_entries,
-    CellConflict,
-    CellNotFound,
     move_cell_company,
     upsert_cell,
     upsert_cells_batch,
@@ -486,6 +487,12 @@ def set_distribution_override(
     # у совместителя каждое разносится по юрлицам отдельно.
     position = target.position_by_id(payload.position_id)
     position_id = position.id if position else None
+    # Набор переписывается Core-DELETE мимо сессии — запрет правок закрытого
+    # периода (services/closed_periods) проверяем явно, до удаления.
+    ensure_month_open(
+        db, position.department_id if position else None,
+        payload.year, payload.month, "проценты распределения",
+    )
     db.query(CompanyShareOverride).filter(
         CompanyShareOverride.employee_id == payload.employee_id,
         CompanyShareOverride.year == payload.year,
@@ -562,6 +569,14 @@ def delete_distribution_override(
         # подработки сбрасывал бы распределение основной позиции в чужом отделе.
         for (row_position_id,) in q.with_entities(CompanyShareOverride.position_id).distinct():
             _check_position_access(actor, db, employee_id, row_position_id)
+    # Core-DELETE мимо сессии: закрытый период проверяем явно по отделу
+    # каждого рабочего места, чьи правки снимаются.
+    for (row_position_id,) in q.with_entities(CompanyShareOverride.position_id).distinct():
+        row_position = target.position_by_id(row_position_id)
+        ensure_month_open(
+            db, row_position.department_id if row_position else None,
+            year, month, "проценты распределения",
+        )
     deleted = q.delete(synchronize_session=False)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Переопределение не найдено")

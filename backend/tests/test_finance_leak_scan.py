@@ -173,6 +173,8 @@ def _urls(world: dict) -> list[str]:
         "dept_id": world["dept_id"], "emp_id": world["emp_id"],
         "company_id": world["company_id"], "schedule_id": world["schedule_id"],
         "period_id": world["period_id"],
+        # История условий позиции (task_stage3_historicity) — там ставки.
+        "position_id": world["second_position_id"],
     }
     urls = []
     for path in _get_paths():

@@ -26,9 +26,16 @@ from app.routers.timesheet import router as timesheet_router
 # `reference_audit` и `dashboard_cache` импортируются РАДИ ПОБОЧНОГО ЭФФЕКТА: они регистрируют
 # слушатели сессии, которые ведут журнал изменений справочников. Без этого
 # импорта журнал молча пуст.
-from app.services import reference_audit  # noqa: F401
+# Этап 3 (историчность): слушатели, ведущие версии условий позиций и
+# отклоняющие запись денежных данных в закрытый месяц.
+from app.services import (  # noqa: F401
+    closed_periods,
+    position_terms,
+    reference_audit,  # noqa: F401
+)
 from app.services.calendar import CalendarFetchError, ensure_calendar
 from app.services.dashboard_cache import drop_cache
+from app.services.position_terms import ClosedPeriodError
 from app.services.readiness import is_ready, readiness_report
 
 logger = logging.getLogger(__name__)
@@ -101,6 +108,16 @@ async def stale_data_conflict(request: Request, exc: StaleDataError) -> JSONResp
             "обновите страницу и повторите действие"
         )},
     )
+
+
+@app.exception_handler(ClosedPeriodError)
+async def closed_period_conflict(request: Request, exc: ClosedPeriodError) -> JSONResponse:
+    """Правка задевает закрытый месяц или месяц на проверке → 409
+    (task_stage3_historicity). Бросает её слушатель сессии
+    (`services/closed_periods`, `services/position_terms`), поэтому ни один
+    эндпойнт, пишущий те же данные, мимо запрета не пройдёт. Транзакция
+    откатывается при закрытии сессии в `get_db`."""
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
 
 
 app.include_router(auth_router, prefix="/api", tags=["auth"])

@@ -194,7 +194,13 @@ def set_department_quantities(
     Нули не хранятся: «компания без показателя» и «строка с 0» — одно и то же
     состояние, и хранить его двумя способами значит рано или поздно разойтись.
     Коммит — на вызывающем (вместе с audit log, как везде в проекте).
+
+    Месяц, закрытый или на проверке, не правится (task_stage3_historicity):
+    набор переписывается Core-DELETE мимо сессии, поэтому проверка явная.
     """
+    from app.services.closed_periods import ensure_month_open
+
+    ensure_month_open(db, department_id, year, month, "количественный показатель")
     db.query(DepartmentQuantity).filter(
         DepartmentQuantity.department_id == department_id,
         DepartmentQuantity.year == year,

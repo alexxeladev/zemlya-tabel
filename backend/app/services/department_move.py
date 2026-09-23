@@ -48,6 +48,7 @@ from app.models.positions import EmployeePosition
 from app.models.reference_changes import SOURCE_BULK
 from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
+from app.services.closed_periods import allow_closed_writes
 from app.services.distribution import distribute
 from app.services.payroll_statement import build_payroll_statement
 from app.services.reference_audit import audit_operation
@@ -460,8 +461,13 @@ def _move_department(
     months = closed_months(db, dept.id)
     written = 0
     if employees and moved_ids:
-        for year, month in months:
-            written += _freeze_month(db, employees, moved_ids, year, month, actor)
+        # Заморозка — служебная запись в ЗАКРЫТЫЕ месяцы, которую этап 3 не
+        # трогает; запрет правок закрытого периода её пропускает. flush внутри:
+        # проверка идёт при сбросе в базу.
+        with allow_closed_writes(db):
+            for year, month in months:
+                written += _freeze_month(db, employees, moved_ids, year, month, actor)
+            db.flush()
 
     # Часы НЕзакрытых месяцев переезжают вместе с отделом: компания лежит в самой
     # ячейке, и без этого заполненный текущий месяц остался бы на прежнем юрлице.
