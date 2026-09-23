@@ -29,6 +29,7 @@ from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.payroll import calculate_employee_payroll, calculate_position_payroll
 from app.services.payroll_statement import build_payroll_statement, build_payroll_summary
+from app.services.position_terms import set_effective_from
 from tests.conftest import get_token
 
 # Май 2026: нерабочие 1,2,3,9,10,16,17,23,24,30,31 → 20 рабочих дней,
@@ -319,6 +320,9 @@ class TestTwoPositions:
         db_session.add(part_time)
         db_session.commit()
         electrician = moonlighter.active_positions[1]
+        # График меняется у существующей позиции: без даты он действовал бы с
+        # 1-го числа следующего месяца (task_stage3_historicity), а тест про май.
+        set_effective_from(electrician, date(2026, 5, 1))
         electrician.schedule_id = part_time.id
         db_session.commit()
         db_session.refresh(moonlighter)

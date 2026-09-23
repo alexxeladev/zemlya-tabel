@@ -40,7 +40,6 @@ from app.models.guard_assignments import GuardAssignment
 from app.models.guard_posts import GuardCrew, GuardPost, GuardSite
 from app.models.positions import PAY_TYPE_PER_SHIFT, EmployeePosition
 from app.schemas.payroll import EmployeePayrollRead
-from app.services.payroll import EmployeePayroll
 from app.services.guard_duty import (
     employer_tax_percent,
     official_by_assignment,
@@ -54,6 +53,7 @@ from app.services.guard_payroll import (
     norm_days_for_month,
     norm_hours_for_month,
 )
+from app.services.payroll import EmployeePayroll
 
 _ZERO = Decimal("0")
 
@@ -118,7 +118,7 @@ def load_guard_rows(
         .all()
     )
 
-    tax_percent = employer_tax_percent(db) if assignments else None
+    tax_percent = employer_tax_percent(db, year, month) if assignments else None
     # Официальная выплата — из оф. зарплаты рабочего места, одна на место за
     # месяц (task_guard_form_rate_official). Считаем по всему набору строк: при
     # замене внутри месяца выплата делится между строками, а не удваивается.

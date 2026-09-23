@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
@@ -24,6 +25,7 @@ from app.models.guard_posts import (
     GuardZone,
 )
 from app.models.positions import EmployeePosition
+from app.services.position_terms import set_effective_from
 from app.services.guard_duty import (
     create_assignment,
     next_tab_number,
@@ -487,6 +489,7 @@ class TestStatementIntegration:
         assignment.premium_h1 = Decimal("230")
         # Оф. выплата вычисляется из зарплаты места: 50 461 / 2 = 25 230,50
         # в каждую половину (task_guard_form_rate_official).
+        set_effective_from(rodionov.primary_position, TERMS_BEGINNING)  # «с начала»
         rodionov.primary_position.is_official = True
         rodionov.primary_position.official_salary = Decimal("50461")
         db_session.commit()

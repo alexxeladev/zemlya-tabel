@@ -19,6 +19,7 @@ from app.services.employment_period import (
     is_within_employment,
 )
 from app.services.org_access import accessible_department_ids, is_department_scoped
+from app.services.position_terms import month_segments
 from app.services.positions import (
     NO_DEPARTMENT,
     DepartmentFilter,
@@ -640,22 +641,25 @@ def build_autofill_preview(
                 ))
                 continue
 
-            schedule = position.schedule
-            if schedule is None:
+            # График — на КАЖДЫЙ отрезок месяца свой (task_stage3_historicity):
+            # сменили график с 15-го — дни до 15-го заполняются по старому.
+            usable: list[tuple[object, date, date]] = []
+            skip_reason: str | None = None
+            for seg_start, seg_end, terms in month_segments(position, year, month):
+                seg_schedule = getattr(terms, "schedule", None)
+                reason = (
+                    "Не назначен график работы" if seg_schedule is None
+                    else schedule_issue(seg_schedule)
+                )
+                if reason is not None:
+                    skip_reason = skip_reason or reason
+                    continue
+                usable.append((seg_schedule, seg_start, seg_end))
+            if not usable:
                 employees_skipped.append(AutofillSkippedEmployee(
                     employee_id=emp.id,
                     employee_name=_position_label(emp, position),
-                    reason="Не назначен график работы",
-                ))
-                continue
-
-            # Сменный график без анкера/паттерна цикла посчитать нельзя.
-            issue = schedule_issue(schedule)
-            if issue is not None:
-                employees_skipped.append(AutofillSkippedEmployee(
-                    employee_id=emp.id,
-                    employee_name=_position_label(emp, position),
-                    reason=issue,
+                    reason=skip_reason or "Не назначен график работы",
                 ))
                 continue
 
@@ -685,7 +689,13 @@ def build_autofill_preview(
             # Плановые дни графика (task_shift_schedules): weekday — рабочие дни
             # недели графика по производственному календарю, cyclic — смены по
             # циклу от стартовой даты (календарь на цикл не влияет).
-            for work_date in planned_work_dates(schedule, year, month, calendar_data):
+            planned = [
+                (work_date, seg_schedule)
+                for seg_schedule, seg_start, seg_end in usable
+                for work_date in planned_work_dates(seg_schedule, year, month, calendar_data)
+                if seg_start <= work_date <= seg_end
+            ]
+            for work_date, schedule in planned:
                 # Вне периода работы рабочего места не заполняем: уволенному
                 # пятнадцатого смены до конца месяца не ставим, принятому
                 # пятнадцатого — дни до выхода (task_employment_period).

@@ -13,9 +13,11 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
 from app.models.schedules import Schedule
+from app.services.position_terms import set_effective_from
 from app.services.dashboard import build_dashboard
 from app.services.guard_duty import (
     create_assignment,
@@ -46,9 +48,15 @@ from tests.test_vahta import (  # noqa: F401 — фикстуры модуля �
 
 _ZERO = Decimal("0")
 SALARY = Decimal("25230")
+# Снятие признака действует с даты (task_stage3_historicity): с 1-го числа
+# месяца теста, иначе оно началось бы со следующего месяца и август не задело.
+FROM_MONTH = f"{YEAR}-{MONTH:02d}-01"
 
 
 def _official(position: EmployeePosition, salary=SALARY) -> None:
+    # Официальная зарплата версионируется (task_stage3_historicity): у
+    # существующего места без даты она действовала бы со следующего месяца.
+    set_effective_from(position, TERMS_BEGINNING)
     position.is_official = True
     position.official_salary = salary
 
@@ -253,7 +261,7 @@ class TestRemovalConfirmation:
     def test_warns_with_months_and_sums(self, client, db_session, users, staff):
         resp = client.patch(
             f"/api/vahta/staff/{staff.id}",
-            json={"is_official": False}, headers=_auth(client, "admin"),
+            json={"is_official": False, "terms_effective_from": FROM_MONTH}, headers=_auth(client, "admin"),
         )
         assert resp.status_code == 409, resp.text
         detail = resp.json()["detail"]
@@ -269,7 +277,7 @@ class TestRemovalConfirmation:
     ):
         resp = client.patch(
             f"/api/vahta/staff/{staff.id}", params={"confirm": True},
-            json={"is_official": False}, headers=_auth(client, "admin"),
+            json={"is_official": False, "terms_effective_from": FROM_MONTH}, headers=_auth(client, "admin"),
         )
         assert resp.status_code == 200, resp.text
         db_session.expire_all()
@@ -292,7 +300,8 @@ class TestRemovalConfirmation:
         """
         url = f"/api/vahta/staff/{staff.id}"
         resp = client.patch(
-            url, json={"department_id": other_dept.id, "is_official": False},
+            url, json={"department_id": other_dept.id, "is_official": False,
+                  "terms_effective_from": FROM_MONTH},
             headers=_auth(client, "admin"),
         )
         assert resp.status_code == 409, resp.text

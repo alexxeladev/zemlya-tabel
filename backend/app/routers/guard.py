@@ -32,6 +32,7 @@ from app.models.guard_posts import (
     GuardSite,
     GuardZone,
 )
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.positions import EmployeePosition
 from app.schemas.guard import (
     GuardAssignmentCreate,
@@ -42,6 +43,9 @@ from app.schemas.guard import (
     GuardCrewUpdate,
     GuardDayInput,
     GuardDaysInput,
+    GuardJobTitleCreate,
+    GuardJobTitleRead,
+    GuardJobTitleUpdate,
     GuardMonthRead,
     GuardPostCreate,
     GuardPostRead,
@@ -50,17 +54,15 @@ from app.schemas.guard import (
     GuardReplaceInput,
     GuardSettingsRead,
     GuardSettingsUpdate,
-    GuardJobTitleCreate,
-    GuardJobTitleRead,
-    GuardJobTitleUpdate,
     GuardShareRead,
-    GuardStaffCreate,
-    GuardStaffRead,
-    GuardStaffUpdate,
     GuardSimilarEmployee,
     GuardSiteCreate,
     GuardSiteRead,
     GuardSiteUpdate,
+    GuardStaffCreate,
+    GuardStaffRead,
+    GuardStaffUpdate,
+    GuardTaxRateRead,
     GuardZoneCreate,
     GuardZoneRead,
     GuardZoneUpdate,
@@ -96,6 +98,7 @@ from app.services.guard_duty import (
     set_days,
     set_employer_tax_percent,
     set_site_shares,
+    tax_rate_versions,
     toggle_day,
     update_crew,
     update_post,
@@ -108,11 +111,12 @@ from app.services.guard_job_titles import (
     delete_job_title,
     get_job_title,
     job_title_of_position,
-    title_index,
-    usage_counts,
     list_job_titles,
     save_job_title,
+    title_index,
+    usage_counts,
 )
+from app.services.guard_month import build_guard_month, can_edit_vahta
 from app.services.guard_staff import (
     OfficialRemovalWarning,
     amount_of,
@@ -121,8 +125,8 @@ from app.services.guard_staff import (
     list_staff_positions,
     update_staff,
 )
-from app.services.guard_month import build_guard_month, can_edit_vahta
 from app.services.org_access import can_see_finances
+from app.services.position_terms import default_effective_from, set_effective_from
 from app.services.timesheet_periods import month_lock_status
 
 router = APIRouter()
@@ -204,6 +208,23 @@ def _access(db: Session, actor: Employee, department_id: int) -> None:
 
 # ── Настройки вахты ───────────────────────────────────────────────────────────
 
+def _settings_read(db: Session) -> GuardSettingsRead:
+    return GuardSettingsRead(
+        employer_tax_percent=employer_tax_percent(db),
+        history=[
+            GuardTaxRateRead(
+                effective_from=(
+                    None if v.effective_from <= TERMS_BEGINNING else v.effective_from
+                ),
+                employer_tax_percent=v.employer_tax_percent,
+                created_by_name=v.created_by_name,
+            )
+            for v in tax_rate_versions(db)
+        ],
+        default_effective_from=default_effective_from(),
+    )
+
+
 @router.get("/settings", response_model=GuardSettingsRead)
 def get_settings(
     db: Session = Depends(get_db), actor: Employee = Depends(get_current_user)
@@ -211,7 +232,7 @@ def get_settings(
     """Ставка налога на официальную часть выплаты — деньги, табельщику 403."""
     _require_vahta(actor)
     _require_money(actor)
-    return GuardSettingsRead(employer_tax_percent=employer_tax_percent(db))
+    return _settings_read(db)
 
 
 @router.patch("/settings", response_model=GuardSettingsRead)
@@ -222,22 +243,28 @@ def patch_settings(
 ):
     """Сменить ставку налога (admin и менеджер охраны, как прочие настройки).
 
-    Ставка одна на все месяцы: правка пересчитывает разнесение и прошлых.
+    Ставка действует с 1-го числа выбранного месяца (task_stage3_historicity):
+    прошлые месяцы считаются по ставке, действовавшей тогда. Месяц, закрытый
+    или на проверке, не выбрать — 409.
     """
     _require_settings(actor)
-    before = employer_tax_percent(db)
+    start = payload.effective_from or default_effective_from()
+    before = employer_tax_percent(db, start.year, start.month)
     try:
-        settings = set_employer_tax_percent(db, payload.employer_tax_percent)
+        version = set_employer_tax_percent(
+            db, payload.employer_tax_percent, start, actor_name=actor.full_name,
+        )
     except GuardError as exc:
         raise _guard_error(exc)
     if before != payload.employer_tax_percent:
         log_action(
-            db, actor, "guard_settings", settings.id, "update",
+            db, actor, "guard_settings", version.id, "update",
             before={"employer_tax_percent": str(before)},
-            after={"employer_tax_percent": str(payload.employer_tax_percent)},
+            after={"employer_tax_percent": str(payload.employer_tax_percent),
+                   "effective_from": start.isoformat()},
         )
     db.commit()
-    return GuardSettingsRead(employer_tax_percent=employer_tax_percent(db))
+    return _settings_read(db)
 
 
 # ── Отделы охраны ─────────────────────────────────────────────────────────────
@@ -1410,6 +1437,9 @@ def patch_staff(
     _require_settings(actor)
     position = _staff_position_or_404(db, actor, position_id)
     data = payload.model_dump(exclude_unset=True)
+    # С какой даты действует смена официальной зарплаты/признака — версию
+    # заводит слушатель сессии (services/position_terms).
+    set_effective_from(position, data.pop("terms_effective_from", None))
     before = {
         "department_id": position.department_id,
         "title": position.title,

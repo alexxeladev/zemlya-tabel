@@ -28,6 +28,7 @@ from app.models.employees import Employee
 from app.models.night_shifts import NightShift
 from app.models.timesheet_entries import TimesheetEntry
 from app.services.calendar import is_holiday
+from app.services.position_terms import DatedSchedule
 from app.services.work_schedule import is_planned_work_day
 
 __all__ = [
@@ -113,6 +114,10 @@ def is_payable_absence_day(
     График не задан → падаем на старое правило «рабочий день производственного
     календаря»: противопоставить нечему, а такая позиция и так не считается.
     """
+    if isinstance(schedule, DatedSchedule):
+        # График основной позиции на ЭТОТ день (task_stage3_historicity): лимит
+        # больничного считается по датам всего года, а график мог смениться.
+        schedule = schedule.on(work_date)
     if schedule is not None:
         return is_planned_work_day(schedule, work_date, calendar_data)
     if calendar_data is None:
@@ -187,7 +192,9 @@ def schedules_by_employee(employees: Iterable[Employee]) -> dict[int, object]:
     result: dict[int, object] = {}
     for emp in employees:
         position = emp.primary_position
-        result[emp.id] = position.schedule if position is not None else None
+        # График берётся на дату каждого дня Б, а не текущий: условия позиции
+        # версионируются (task_stage3_historicity).
+        result[emp.id] = DatedSchedule(position) if position is not None else None
     return result
 
 

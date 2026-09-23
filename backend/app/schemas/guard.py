@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ── Справочник: посты ─────────────────────────────────────────────────────────
 
@@ -328,14 +328,38 @@ class GuardMonthRead(BaseModel):
 
 # ── Настройки вахты ───────────────────────────────────────────────────────────
 
+class GuardTaxRateRead(BaseModel):
+    """Версия ставки налога: с какого месяца какая ставка (task_stage3_historicity)."""
+
+    #: None — с начала (перенесена миграцией).
+    effective_from: datetime.date | None = None
+    employer_tax_percent: Decimal
+    created_by_name: str | None = None
+
+
 class GuardSettingsRead(BaseModel):
     """Настройки вахты. Ставка — в ПРОЦЕНТАХ (40 = 40 %)."""
 
+    #: Ставка, действующая в текущем месяце.
     employer_tax_percent: Decimal
+    #: История ставок по месяцам.
+    history: list[GuardTaxRateRead] = []
+    #: С какого месяца форма предложит новую ставку (1-е число следующего).
+    default_effective_from: datetime.date | None = None
 
 
 class GuardSettingsUpdate(BaseModel):
     employer_tax_percent: Decimal = Field(ge=0, le=100)
+    #: С какого месяца действует ставка — только 1-е число; не задано —
+    #: следующий месяц. Ставка версионируется с месяца (решение заказчика).
+    effective_from: datetime.date | None = None
+
+    @field_validator("effective_from")
+    @classmethod
+    def _first_of_month(cls, v: datetime.date | None) -> datetime.date | None:
+        if v is not None and v.day != 1:
+            raise ValueError("Ставка налога меняется только с 1-го числа месяца")
+        return v
 
 
 # ── Справочник должностей охраны ──────────────────────────────────────────────
@@ -542,3 +566,6 @@ class GuardStaffUpdate(BaseModel):
     dismissal_date: datetime.date | None = None
     is_official: bool | None = None
     official_salary: Decimal | None = Field(default=None, ge=0)
+    #: С какой даты действует изменение официальной зарплаты / признака
+    #: (task_stage3_historicity). Не задано — 1-е число следующего месяца.
+    terms_effective_from: datetime.date | None = None

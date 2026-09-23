@@ -16,12 +16,14 @@ from io import BytesIO
 import pytest
 from openpyxl import load_workbook
 
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
 from app.models.guard_settings import GuardSettings
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
+from app.services.position_terms import set_effective_from
 from app.services.guard_duty import (
     create_assignment,
     employer_tax_percent,
@@ -64,6 +66,7 @@ def _karaulov(db, place, person, *, official_salary="25230",
     заказчика, и тот же налог 10 092.
     """
     position = person.primary_position
+    set_effective_from(position, TERMS_BEGINNING)  # версии условий: «с начала»
     position.is_official = bool(official_salary and Decimal(official_salary) > 0)
     position.official_salary = (
         Decimal(official_salary) if position.is_official else None
@@ -185,7 +188,7 @@ class TestTaxRateSetting:
         assert employer_tax_percent(db_session) == Decimal("40")
 
     def test_rate_is_stored_and_used(self, db_session):
-        set_employer_tax_percent(db_session, Decimal("30"))
+        set_employer_tax_percent(db_session, Decimal("30"), date(YEAR, MONTH, 1))
         db_session.commit()
         assert employer_tax_percent(db_session) == Decimal("30")
 
@@ -196,7 +199,7 @@ class TestTaxRateSetting:
         assert Decimal(resp.json()["employer_tax_percent"]) == Decimal("40")
 
         resp = client.patch(
-            "/api/vahta/settings", json={"employer_tax_percent": "30"}, headers=headers
+            "/api/vahta/settings", json={"effective_from": f"{YEAR}-{MONTH:02d}-01", "employer_tax_percent": "30"}, headers=headers
         )
         assert resp.status_code == 200
         assert Decimal(resp.json()["employer_tax_percent"]) == Decimal("30")
@@ -206,7 +209,7 @@ class TestTaxRateSetting:
 
     def test_api_manager_can_change_rate(self, client, users):
         resp = client.patch(
-            "/api/vahta/settings", json={"employer_tax_percent": "35"},
+            "/api/vahta/settings", json={"effective_from": f"{YEAR}-{MONTH:02d}-01", "employer_tax_percent": "35"},
             headers=_auth(client, "manager"),
         )
         assert resp.status_code == 200
@@ -215,13 +218,13 @@ class TestTaxRateSetting:
         headers = _auth(client, "admin")
         for bad in ("-1", "101"):
             resp = client.patch(
-                "/api/vahta/settings", json={"employer_tax_percent": bad}, headers=headers
+                "/api/vahta/settings", json={"effective_from": f"{YEAR}-{MONTH:02d}-01", "employer_tax_percent": bad}, headers=headers
             )
             assert resp.status_code == 422
 
     def test_api_accountant_cannot_change_rate(self, client, users):
         resp = client.patch(
-            "/api/vahta/settings", json={"employer_tax_percent": "30"},
+            "/api/vahta/settings", json={"effective_from": f"{YEAR}-{MONTH:02d}-01", "employer_tax_percent": "30"},
             headers=_auth(client, "accountant"),
         )
         assert resp.status_code == 403
@@ -230,12 +233,12 @@ class TestTaxRateSetting:
         headers = _auth(client, "timekeeper")
         assert client.get("/api/vahta/settings", headers=headers).status_code == 403
         assert client.patch(
-            "/api/vahta/settings", json={"employer_tax_percent": "30"}, headers=headers
+            "/api/vahta/settings", json={"effective_from": f"{YEAR}-{MONTH:02d}-01", "employer_tax_percent": "30"}, headers=headers
         ).status_code == 403
 
     def test_changed_rate_changes_distribution(self, db_session, gbr_place, rodionov):
         _karaulov(db_session, gbr_place, rodionov)
-        set_employer_tax_percent(db_session, Decimal("30"))
+        set_employer_tax_percent(db_session, Decimal("30"), date(YEAR, MONTH, 1))
         db_session.commit()
         row = build_guard_month(db_session, _admin(db_session), YEAR, MONTH) \
             .zones[0].cards[0].rows[0]
@@ -493,7 +496,7 @@ class TestOtherDepartmentsUntouched:
         _karaulov(db_session, gbr_place, rodionov)
         results = []
         for rate in ("0", "40", "100"):
-            set_employer_tax_percent(db_session, Decimal(rate))
+            set_employer_tax_percent(db_session, Decimal(rate), date(YEAR, MONTH, 1))
             db_session.commit()
             row, _ = self._ordinary_row(db_session, ordinary, rodionov)
             assert row.accrued_total == Decimal("152381")  # не пустой расчёт

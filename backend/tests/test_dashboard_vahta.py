@@ -11,10 +11,12 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.employees import Employee
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
+from app.services.position_terms import set_effective_from
 from app.services.guard_duty import create_assignment
 from tests.test_vahta import (  # noqa: F401 — фикстуры модуля вахты
     FIRST_HALF,
@@ -49,6 +51,7 @@ def office_worker(db_session, other_dept, companies) -> Employee:
     db_session.add(emp)
     db_session.commit()
     position = emp.ensure_primary_position()
+    set_effective_from(position, TERMS_BEGINNING)  # версии условий: «с начала»
     position.department_id = other_dept.id
     position.pay_type = "salary"
     position.rate = Decimal("63000")

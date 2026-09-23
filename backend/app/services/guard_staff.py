@@ -41,13 +41,13 @@ from app.models.employees import Employee
 from app.models.guard_job_titles import GuardJobTitle
 from app.models.positions import (
     PAY_TYPE_BASE_FIELD,
-    PAY_TYPE_SALARY,
     EmployeePosition,
 )
 from app.services.employees import normalize_tab_number, tab_number_conflict
 from app.services.guard_duty import GuardError, next_tab_number
 from app.services.org_access import can_access_department
 from app.services.payroll import position_setup_issues
+from app.services.position_terms import pending_effective_from
 
 #: Где охранное рабочее место реально правится (task_vahta_settings_staff):
 #: отказ называет место, а не только модуль, — пользователь должен найти его
@@ -511,9 +511,13 @@ class OfficialRemovalWarning:
 
 
 def official_open_months(
-    db: Session, position: EmployeePosition
+    db: Session, position: EmployeePosition, since: datetime.date | None = None,
 ) -> list[tuple[int, int, Decimal]]:
-    """Незакрытые месяцы, где этому месту уже начислена официальная выплата."""
+    """Незакрытые месяцы, где этому месту уже начислена официальная выплата.
+
+    `since` — с какой даты снимается признак (task_stage3_historicity):
+    месяцы раньше неё остаются при своей выплате и в предупреждение не входят.
+    """
     from app.models.guard_assignments import GuardAssignment
     from app.services.guard_duty import official_month_payouts
     from app.services.timesheet_periods import month_lock_status
@@ -528,6 +532,8 @@ def official_open_months(
     }
     out: list[tuple[int, int, Decimal]] = []
     for year, month in sorted(months):
+        if since is not None and (year, month) < (since.year, since.month):
+            continue
         if month_lock_status(db, position.department_id, year, month) == "closed":
             continue
         total = sum(
@@ -611,11 +617,13 @@ def update_staff(
     # в предупреждение о переводе (`official_months`).
     losing_official = position.is_official and not is_official
     if losing_official and warning is None and not confirm:
-        months = official_open_months(db, position)
+        months = official_open_months(db, position, pending_effective_from(position))
         if months:
             return OfficialRemovalWarning(months=months)
     if losing_official and warning is not None:
-        warning.official_months = official_open_months(db, position)
+        warning.official_months = official_open_months(
+            db, position, pending_effective_from(position)
+        )
 
     # Должность меняется только явно. Сумма пишется ТОЛЬКО при переводе в
     # обычное подразделение (`warning is not None`): там без неё расчёт не

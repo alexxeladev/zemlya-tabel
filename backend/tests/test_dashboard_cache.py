@@ -14,6 +14,7 @@ from app.models.employees import Employee
 from app.models.night_shifts import NightShift
 from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
+from app.services.position_terms import set_effective_from
 from app.services.dashboard_cache import REFERENCE_KEY, current_versions, month_key
 from tests.conftest import get_token
 from tests.test_dashboard import (  # noqa: F401 — фикстуры дашборда
@@ -141,6 +142,9 @@ class TestInvalidation:
     ):
         before = Decimal(_dash(client, admin_token)["payroll"]["total"])
         _, rv = current_versions(db_session, 2026, 5)
+        # Условия версионируются (task_stage3_historicity): без даты оклад
+        # действовал бы с 1-го числа следующего месяца, а дашборд — за май.
+        set_effective_from(worker1.primary_position, date(2026, 5, 1))
         worker1.rate = Decimal("160000")  # compat-аксессор → позиция
         db_session.commit()
         assert current_versions(db_session, 2026, 5)[1] == rv + 1

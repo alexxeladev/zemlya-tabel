@@ -19,6 +19,7 @@ from app.services.absences import (
     split_sick_dates_by_limit,
 )
 from app.services.calendar import workdays_in_month
+from app.services.position_terms import month_segments, view_on
 from app.services.work_schedule import (
     DAY_HOLIDAY,
     DAY_OFF_SCHEDULE,
@@ -476,6 +477,165 @@ def calculate_position_payroll(
     night_rate: Decimal | None = None,
 ) -> EmployeePayroll:
     """
+    Чистая функция: зарплата ОДНОЙ ПОЗИЦИИ за месяц по УСЛОВИЯМ, ДЕЙСТВОВАВШИМ
+    В КАЖДЫЙ ДЕНЬ (task_stage3_historicity).
+
+    Условия позиции хранятся версиями с датой начала действия
+    (`services.position_terms`). Месяц режется на отрезки с неизменными
+    условиями, каждый отрезок считается ПРЕЖНЕЙ формулой (`_calculate_segment`:
+    его часы, его отсутствия, месячная норма его графика), суммы складываются.
+    Отсюда: повышение оклада с 15-го оплачивает 1–14 по старому окладу, с 15-го
+    по новому, а не весь месяц по новому.
+
+    Месяц с одной версией — один отрезок, и результат совпадает с расчётом до
+    этапа 3 до копейки: после миграции у каждой позиции ровно одна версия «с
+    начала времён».
+    """
+    segments = month_segments(position, year, month)
+    if len(segments) <= 1:
+        terms = segments[0][2] if segments else position
+        return _calculate_segment(
+            employee, view_on(position, terms), entries, calendar_data, year, month,
+            companies_by_id, absences, sick_days_used_before, sick_limit,
+            night_shifts, night_rate,
+        )
+
+    parts: list[EmployeePayroll] = []
+    used_before = sick_days_used_before
+    last = len(segments) - 1
+    for i, (start, end, terms) in enumerate(segments):
+        part = _calculate_segment(
+            employee,
+            view_on(position, terms),
+            [e for e in entries if start <= e.work_date <= end],
+            calendar_data, year, month, companies_by_id,
+            [a for a in (absences or []) if start <= a.work_date <= end],
+            used_before, sick_limit,
+            # Ночные к условиям не привязаны (ставка — из фонда отдела):
+            # начисляются один раз, с последним отрезком.
+            night_shifts if i == last else 0,
+            night_rate if i == last else None,
+        )
+        # Годовой лимит больничного расходуется хронологически и сквозь отрезки.
+        used_before += part.sick_paid_days
+        parts.append(part)
+    return _merge_segments(parts, companies_by_id or {})
+
+
+def _merge_segments(
+    parts: list[EmployeePayroll], companies_by_id: dict[int, tuple[str, str]]
+) -> EmployeePayroll:
+    """Сложить отрезки месяца в одну строку расчёта.
+
+    Деньги, часы, дни и смены складываются; ставка, график, тип оплаты и норма —
+    последнего отрезка (то, что действует на конец месяца). Строка расчётная,
+    только если расчётны все отрезки.
+    """
+    first, last = parts[0], parts[-1]
+
+    def total(field: str):
+        return sum((getattr(p, field) for p in parts), type(getattr(first, field))(0))
+
+    total_hours = total("total_hours")
+    norm_hours = last.norm_hours
+    failing = next((p for p in parts if not p.is_calculable), None)
+
+    by_company: dict[int, dict[str, Decimal]] = {}
+    fields = ("hours", "overtime_hours", "off_schedule_hours", "holiday_hours",
+              "base_amount", "overtime_amount", "off_schedule_amount",
+              "holiday_amount", "total")
+    names: dict[int, tuple[str, str]] = {}
+    for p in parts:
+        for bd in p.breakdown_by_company:
+            acc = by_company.setdefault(bd.company_id, {f: _ZERO for f in fields})
+            for f in fields:
+                acc[f] += getattr(bd, f)
+            names[bd.company_id] = (bd.company_code, bd.company_name)
+    order = {cid: i for i, cid in enumerate(companies_by_id)}
+    breakdown = [
+        CompanyBreakdown(
+            company_id=cid,
+            company_code=names[cid][0],
+            company_name=names[cid][1],
+            percent=(
+                (acc["hours"] / total_hours * _HUNDRED).quantize(
+                    _PERCENT_Q, rounding=ROUND_HALF_EVEN
+                )
+                if total_hours > _ZERO else _ZERO
+            ),
+            **acc,
+        )
+        for cid, acc in sorted(
+            by_company.items(), key=lambda kv: (order.get(kv[0], len(order)), kv[0])
+        )
+    ]
+
+    amounts = {
+        f: total(f) for f in (
+            "base_amount", "overtime_amount", "off_schedule_amount", "holiday_amount",
+            "vacation_amount", "sick_amount", "night_amount",
+        )
+    }
+    return EmployeePayroll(
+        employee_id=last.employee_id,
+        employee_name=last.employee_name,
+        position_id=last.position_id,
+        position_title=last.position_title,
+        is_primary_position=last.is_primary_position,
+        rate=last.rate,
+        schedule_name=last.schedule_name,
+        pay_type=last.pay_type,
+        shift_rate=last.shift_rate,
+        hour_rate=last.hour_rate,
+        worked_shifts=total("worked_shifts"),
+        norm_shifts=last.norm_shifts,
+        base_shifts=total("base_shifts"),
+        total_hours=total_hours,
+        norm_hours=norm_hours,
+        delta_hours=(total_hours - norm_hours) if norm_hours is not None else None,
+        overtime_hours=total("overtime_hours"),
+        off_schedule_hours=total("off_schedule_hours"),
+        holiday_hours=total("holiday_hours"),
+        norm_days=last.norm_days,
+        fact_days=total("fact_days"),
+        hourly_rate=last.hourly_rate,
+        total_amount=sum(amounts.values(), _ZERO),
+        night_shifts=total("night_shifts"),
+        night_rate=next((p.night_rate for p in parts if p.night_shifts), last.night_rate),
+        vacation_days=total("vacation_days"),
+        unpaid_days=total("unpaid_days"),
+        sick_days=total("sick_days"),
+        absent_days=total("absent_days"),
+        vacation_paid_days=total("vacation_paid_days"),
+        sick_paid_days=total("sick_paid_days"),
+        sick_limit_days=first.sick_limit_days,
+        sick_days_used_before=first.sick_days_used_before,
+        sick_unpaid_days=total("sick_unpaid_days"),
+        sick_limit_remaining=last.sick_limit_remaining,
+        breakdown_by_company=breakdown,
+        is_calculable=failing is None,
+        reason_if_not_calculable=failing.reason_if_not_calculable if failing else None,
+        **amounts,
+    )
+
+
+def _calculate_segment(
+    employee: Employee,
+    position: EmployeePosition | None,
+    entries: list[TimesheetEntry],
+    calendar_data: dict | None,
+    year: int,
+    month: int,
+    companies_by_id: dict[int, tuple[str, str]] | None = None,
+    absences: list | None = None,
+    sick_days_used_before: int = 0,
+    sick_limit: int | None = None,
+    night_shifts: int = 0,
+    night_rate: Decimal | None = None,
+) -> EmployeePayroll:
+    """
+    Расчёт ОДНОГО отрезка месяца с неизменными условиями (формулы до этапа 3).
+
     Чистая функция: считает зарплату ОДНОЙ ПОЗИЦИИ сотрудника за период.
     Не лезет в БД, принимает все данные на вход.
 

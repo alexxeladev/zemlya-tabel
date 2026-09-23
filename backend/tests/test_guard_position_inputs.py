@@ -19,6 +19,7 @@ from app.models.loan_deductions import LoanDeduction
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
+from app.services.position_terms import set_effective_from
 from app.services.positions import create_position
 from tests.test_vahta import (  # noqa: F401 — фикстуры модуля вахты
     MONTH,
@@ -135,6 +136,9 @@ class TestHours:
         db_session.add(schedule)
         db_session.commit()
         for position in moonlighter.positions:
+            # Условия версионируются (task_stage3_historicity): без даты график
+            # действовал бы с 1-го числа следующего месяца, а тест про август.
+            set_effective_from(position, date(YEAR, MONTH, 1))
             position.schedule_id = schedule.id
             position.company_id = companies["ZMO"].id
         db_session.commit()

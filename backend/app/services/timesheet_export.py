@@ -17,6 +17,7 @@ from app.models.production_calendars import ProductionCalendar
 from app.services.absences import absence_code, get_month_absences
 from app.services.calendar import get_month_data, parse_days_string
 from app.services.company_order import company_order_by, sort_company_ids
+from app.services.position_terms import schedule_on
 from app.services.positions import (
     NO_DEPARTMENT,
     NO_DEPARTMENT_LABEL,
@@ -691,11 +692,20 @@ def _write_position_rows(
     # ── Категории дней — по графику ЭТОЙ позиции ──────────────────────────────
     # Тот же day_category, что и в payroll: цифры в файле и на экране обязаны
     # совпадать. Праздник в рабочий день графика остаётся рабочим днём.
-    schedule = position.schedule if position is not None else None
+    # График — действовавший в КАЖДЫЙ день (task_stage3_historicity): сменили
+    # график с 15-го — дни до 15-го размечаются по старому, как и в расчёте.
+    # Норма в колонке — графика на конец месяца, как в строке расчёта.
+    def _schedule_of(d: int):
+        if position is None or year is None or month is None:
+            return None
+        return schedule_on(position, date(year, month, d))
+
+    day_schedules = {d: _schedule_of(d) for d in range(1, total_days + 1)}
+    schedule = day_schedules.get(total_days)
     schedule_ok = schedule is not None and schedule_issue(schedule) is None
     day_cats = (
         {
-            d: day_category(schedule, date(year, month, d), calendar_data)
+            d: day_category(day_schedules[d], date(year, month, d), calendar_data)
             for d in range(1, total_days + 1)
         }
         if year is not None and month is not None
@@ -801,8 +811,11 @@ def _write_position_rows(
         for d in range(1, total_days + 1):
             if d in off_schedule_days or d in holiday_days:
                 continue
+            day_schedule = day_schedules[d]
+            if day_schedule is None or schedule_issue(day_schedule) is not None:
+                continue
             day_norm = float(
-                shift_hours_for_date(schedule, date(year, month, d), calendar_data)
+                shift_hours_for_date(day_schedule, date(year, month, d), calendar_data)
             )
             day_hours = _day_hours(d)
             if day_norm > 0 and day_hours > day_norm:

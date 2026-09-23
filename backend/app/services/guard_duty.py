@@ -47,10 +47,12 @@ from app.models.guard_posts import (
     GuardZone,
 )
 from app.models.guard_settings import DEFAULT_EMPLOYER_TAX_PERCENT, GuardSettings
+from app.models.period_snapshots import GuardTaxRate
 from app.models.positions import EmployeePosition
 from app.services.distribution import distribute
 from app.services.guard_payroll import KOPECK, half_bounds, official_half_payout
 from app.services.org_access import can_access_department, is_department_scoped
+from app.services.position_terms import month_segments
 
 _ZERO = Decimal("0")
 
@@ -68,30 +70,78 @@ class GuardError(Exception):
 
 # ── Настройки вахты ───────────────────────────────────────────────────────────
 
-def employer_tax_percent(db: Session) -> Decimal:
-    """Ставка налога на официальную часть выплаты, в процентах (task_vahta_taxes).
+def _tax_month_start(year: int | None, month: int | None) -> datetime.date:
+    if year is None or month is None:
+        today = datetime.date.today()
+        return datetime.date(today.year, today.month, 1)
+    return datetime.date(year, month, 1)
 
-    Единственное место, откуда расчёт вахты берёт ставку. Строки настроек нет
-    (база без миграции) — действует ставка по умолчанию.
+
+def employer_tax_percent(
+    db: Session, year: int | None = None, month: int | None = None
+) -> Decimal:
+    """Ставка налога на официальную часть выплаты за МЕСЯЦ, в процентах.
+
+    Единственное место, откуда расчёт вахты берёт ставку. Ставка версионируется
+    с месяца (task_stage3_historicity): действует версия с наибольшей датой не
+    позже 1-го числа месяца. Без месяца — текущий. Версий нет (база без
+    миграции) — ставка по умолчанию.
     """
-    settings = db.query(GuardSettings).order_by(GuardSettings.id).first()
-    if settings is None:
+    version = (
+        db.query(GuardTaxRate)
+        .filter(GuardTaxRate.effective_from <= _tax_month_start(year, month))
+        .order_by(GuardTaxRate.effective_from.desc())
+        .first()
+    )
+    if version is None:
         return DEFAULT_EMPLOYER_TAX_PERCENT
-    return Decimal(str(settings.employer_tax_percent))
+    return Decimal(str(version.employer_tax_percent))
 
 
-def set_employer_tax_percent(db: Session, percent: Decimal) -> GuardSettings:
-    """Задать ставку налога. Строки настроек нет — заводится. Коммит снаружи."""
+def tax_rate_versions(db: Session) -> list[GuardTaxRate]:
+    return db.query(GuardTaxRate).order_by(GuardTaxRate.effective_from).all()
+
+
+def set_employer_tax_percent(
+    db: Session, percent: Decimal, effective_from: datetime.date | None = None,
+    actor_name: str | None = None,
+) -> GuardTaxRate:
+    """Задать ставку налога с 1-го числа месяца `effective_from` (по умолчанию —
+    следующего). Месяц не может быть закрыт или на проверке ни в одном
+    охранном отделе: разнесение этого месяца поехало бы под бухгалтером.
+    Коммит снаружи."""
+    from app.services.closed_periods import closed_message, month_status
+    from app.services.position_terms import ClosedPeriodError, default_effective_from
+
     if percent < 0 or percent > 100:
         raise GuardError("Ставка налога должна быть от 0 до 100 %")
+    start = effective_from or default_effective_from()
+    start = datetime.date(start.year, start.month, 1)
+    for (dept_id,) in db.query(Department.id).filter(Department.is_guard_department == True):  # noqa: E712
+        status = month_status(db, dept_id, start.year, start.month, lock=True)
+        if status is not None:
+            raise ClosedPeriodError(
+                closed_message("ставка налога вахты", start.year, start.month, status)
+            )
+    version = db.query(GuardTaxRate).filter(GuardTaxRate.effective_from == start).first()
+    if version is None:
+        version = GuardTaxRate(effective_from=start, employer_tax_percent=percent,
+                               created_by_name=actor_name)
+        db.add(version)
+    else:
+        version.employer_tax_percent = percent
+    # Позже заданные версии не трогаем: ставка — число на месяц, а не поле,
+    # которое «действует дальше», как условия позиции.
+    db.flush()
+    # `guard_settings` — зеркало последней версии для старых читателей.
+    latest = tax_rate_versions(db)[-1]
     settings = db.query(GuardSettings).order_by(GuardSettings.id).first()
     if settings is None:
-        settings = GuardSettings(employer_tax_percent=percent)
-        db.add(settings)
+        db.add(GuardSettings(employer_tax_percent=latest.employer_tax_percent))
     else:
-        settings.employer_tax_percent = percent
+        settings.employer_tax_percent = latest.employer_tax_percent
     db.flush()
-    return settings
+    return version
 
 
 # ── Отделы охраны ─────────────────────────────────────────────────────────────
@@ -609,23 +659,32 @@ def employment_allows(assignment: GuardAssignment, day: int) -> bool:
 
 # ── Официальная выплата: вычисляется из оф. зарплаты рабочего места ───────────
 
-def days_on_place(position: EmployeePosition | None, year: int, month: int, half: int) -> int:
+def days_on_place(
+    position: EmployeePosition | None, year: int, month: int, half: int,
+    within: tuple[int, int] | None = None,
+) -> int:
     """Сколько КАЛЕНДАРНЫХ дней половины человек числится на этом месте.
 
     Границы — тот же `services.employment_period`, что у табеля: пересечение
     дат позиции и дат человека. Нет позиции (пустой слот) — считать нечего.
+    `within` — (первое, последнее число) отрезка месяца с неизменными условиями.
     """
     from app.services.employment_period import is_within_employment
 
     if position is None:
         return 0
     first, last = half_bounds(year, month, half)
+    if within is not None:
+        first, last = max(first, within[0]), min(last, within[1])
     employee = position.employee
     return sum(
         1
         for day in range(first, last + 1)
         if is_within_employment(employee, position, datetime.date(year, month, day))
     )
+
+
+_OFFICIAL_FIELDS = ("is_official", "official_salary")
 
 
 def official_month_payouts(
@@ -636,16 +695,27 @@ def official_month_payouts(
     Источник — признак «официально устроен» и оф. зарплата НА РУКИ самого
     рабочего места (task_guard_form_rate_official): раньше суммы вбивали в
     строку табеля каждый месяц, и официальной зарплаты в системе не было вовсе.
+
+    Официальная зарплата версионируется (task_stage3_historicity): половина,
+    на которую пришлась смена зарплаты, считается по частям — каждый отрезок
+    своей зарплатой и своими календарными днями, та же формула
+    `official_half_payout`. Без смены — один отрезок, результат прежний.
     """
-    if position is None or not position.is_official or not position.official_salary:
+    if position is None:
         return {half: _ZERO for half in GUARD_HALVES}
-    return {
-        half: official_half_payout(
-            position.official_salary, year, month, half,
-            days_on_place(position, year, month, half),
-        )
-        for half in GUARD_HALVES
-    }
+    segments = month_segments(position, year, month, _OFFICIAL_FIELDS)
+    result: dict[int, Decimal] = {}
+    for half in GUARD_HALVES:
+        total = _ZERO
+        for seg_start, seg_end, terms in segments:
+            if not terms.is_official or not terms.official_salary:
+                continue
+            days = days_on_place(
+                position, year, month, half, within=(seg_start.day, seg_end.day)
+            )
+            total += official_half_payout(terms.official_salary, year, month, half, days)
+        result[half] = total
+    return result
 
 
 def official_by_assignment(
