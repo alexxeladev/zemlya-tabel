@@ -28,8 +28,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Готовность, а не живость (этап 4 п.4.2): /ready ходит в базу и сверяет
+    # версию миграций, поэтому web (и трафик) поднимается только после того,
+    # как схема применена. /health для этого не годится — он константа.
+    # На 503 urlopen бросает HTTPError, контейнер остаётся unhealthy.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/ready').status==200 else 1)"]
       interval: 10s
       timeout: 5s
       retries: 12

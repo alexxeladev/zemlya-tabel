@@ -2,13 +2,14 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.config import MIN_SECRET_KEY_LENGTH, secret_key_problem, settings
-from app.database import SessionLocal
+from app.database import SessionLocal, get_db
 from app.models.production_calendars import ProductionCalendar
 from app.routers.audit import router as audit_router
 from app.routers.auth import router as auth_router
@@ -21,12 +22,14 @@ from app.routers.guard import router as guard_router
 from app.routers.org import router as org_router
 from app.routers.schedules import router as schedules_router
 from app.routers.timesheet import router as timesheet_router
+
 # `reference_audit` и `dashboard_cache` импортируются РАДИ ПОБОЧНОГО ЭФФЕКТА: они регистрируют
 # слушатели сессии, которые ведут журнал изменений справочников. Без этого
 # импорта журнал молча пуст.
 from app.services import reference_audit  # noqa: F401
-from app.services.dashboard_cache import drop_cache
 from app.services.calendar import CalendarFetchError, ensure_calendar
+from app.services.dashboard_cache import drop_cache
+from app.services.readiness import is_ready, readiness_report
 
 logger = logging.getLogger(__name__)
 
@@ -118,4 +121,24 @@ app.include_router(audit_router, prefix="/api/audit", tags=["audit"])
 
 @app.get("/health")
 def health_check():
+    """ЖИВ: процесс отвечает. В базу НЕ ходит — намеренно (этап 4 п.4.2).
+
+    По этой проверке перезапускают зависший контейнер. Завяжи её на базу — и
+    падение базы уводило бы в бесконечный рестарт живой процесс. «Готов ли
+    принимать запросы» — отдельный вопрос, `/ready`.
+    """
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def readiness_check(db: Session = Depends(get_db)):
+    """ГОТОВ принимать запросы: база отвечает и схема на последней миграции.
+
+    Отказ — 503 (а не 200 с пометкой): по коду ответа решают балансировщик и
+    docker-healthcheck, тело они не читают. Правило готовности живёт в одном
+    месте — `services/readiness.py`.
+    """
+    report = readiness_report(db)
+    if not is_ready(report):
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=report)
+    return report
