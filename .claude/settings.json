@@ -13,6 +13,13 @@
       "Bash(scp *)",
       "Bash(ssh *)",
       "Bash(sshpass *)"
+    ],
+    "deny": [
+      "Bash(dropdb *)",
+      "Bash(docker volume rm *)",
+      "Bash(git reset --hard*)",
+      "Bash(./deploy.sh)",
+      "Bash(./deploy.sh *)"
     ]
   },
   "hooks": {
@@ -23,6 +30,38 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/migration_reminder.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/graph_mark.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_bash.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/graph_first.py\"",
             "timeout": 5
           }
         ]
