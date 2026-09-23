@@ -24,7 +24,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
-from app.main import app
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employee_adjustments import EmployeeAdjustment
 from app.models.employees import Employee
@@ -35,7 +34,7 @@ from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
 from app.services.guard_duty import create_assignment
 from app.services.positions import create_position
-from tests.conftest import get_token
+from tests.conftest import app_routes, get_token
 from tests.test_vahta import (  # noqa: F401 — фикстуры модуля вахты
     FIRST_HALF,
     MONTH,
@@ -162,10 +161,10 @@ def world(db_session: Session, companies, guard_dept, other_dept, gbr_place, rod
 
 def _get_paths() -> list[str]:
     skip = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc", "/health"}
-    return sorted(
-        r.path for r in app.routes
-        if "GET" in getattr(r, "methods", set()) and r.path not in skip
-    )
+    # Источник — схема OpenAPI (`app_routes` в conftest): в `app.routes`
+    # маршруты подключённых роутеров с FastAPI 0.138 не лежат плоским списком,
+    # и сканер молча смотрел бы 5 адресов вместо полусотни.
+    return sorted({path for method, path in app_routes() if method == "GET"} - skip)
 
 
 def _urls(world: dict) -> list[str]:

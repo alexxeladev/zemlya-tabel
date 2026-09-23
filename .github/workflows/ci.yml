@@ -1,0 +1,110 @@
+# Проверки на каждый push и pull request (этап 4, п.4.1 и 4.5).
+#
+# Три независимые работы:
+#   fast        — быстрый набор на SQLite, как на машине разработчика;
+#   postgres    — интеграционный прогон: схема строится alembic upgrade head,
+#                 отсюда проверки, которых на SQLite нет вовсе (частичные
+#                 уникальные индексы, гонки транзакций, восстановление из дампа);
+#   clean-install — установка бэкенда СТРОГО из requirements.lock в чистом
+#                 python:3.11-slim + весь набор на нём; фронтенд — npm ci из
+#                 package-lock.json, сборка и тесты.
+#
+# Быстрый набор интеграционным НЕ заменяется: он идёт первым и отвечает за
+# минуты, а не за полноту окружения.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  fast:
+    name: Быстрый набор (SQLite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"   # та же версия, что в backend/Dockerfile
+      - name: Зависимости из lock-файла
+        working-directory: backend
+        run: |
+          pip install -r requirements-dev.lock
+          pip install --no-deps .
+      - name: pytest (postgres-тесты пропускаются без TEST_POSTGRES_URL)
+        working-directory: backend
+        run: pytest -q
+
+  postgres:
+    name: Интеграционный прогон (PostgreSQL + миграции)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tabel
+          POSTGRES_PASSWORD: tabel
+          POSTGRES_DB: tabel
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tabel"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Клиент Postgres (нужен проверке восстановления: pg_dump/psql)
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Зависимости из lock-файла
+        working-directory: backend
+        run: |
+          pip install -r requirements-dev.lock
+          pip install --no-deps .
+      - name: Миграции ложатся на пустую базу
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://tabel:tabel@localhost:5432/tabel
+        run: |
+          alembic upgrade head
+          alembic current
+      - name: Прогон с маркером postgres
+        working-directory: backend
+        env:
+          # Отдельная база: фикстура чистит её целиком, поэтому имя обязано
+          # оканчиваться на _test (проверяется в conftest).
+          TEST_POSTGRES_URL: postgresql+psycopg://tabel:tabel@localhost:5432/tabel_test
+        run: pytest -m postgres -v
+
+  clean-install:
+    name: Чистая установка из зафиксированных версий
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Бэкенд — установка в чистом python:3.11-slim и весь набор
+        run: |
+          docker run --rm -v "$PWD/backend:/src:ro" python:3.11-slim bash -c '
+            set -e
+            mkdir -p /work && cp -r /src/app /src/tests /src/alembic /src/alembic.ini \
+                                    /src/pyproject.toml /src/requirements.lock \
+                                    /src/requirements-dev.lock /work/
+            cd /work
+            pip install --no-cache-dir -q -r requirements-dev.lock
+            pip install --no-cache-dir -q --no-deps .
+            pip check
+            python -m pytest -q
+          '
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"       # та же версия, что в frontend/Dockerfile
+      - name: Фронтенд — npm ci, сборка, тесты
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          npm test

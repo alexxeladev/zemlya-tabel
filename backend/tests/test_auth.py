@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.models.employees import Employee
-from tests.conftest import get_token
+from tests.conftest import app_routes, get_token
 
 
 def test_login_success(client: TestClient, admin_user: Employee):
@@ -169,7 +169,6 @@ def test_cli_rejects_bad(bad, monkeypatch):
 # must_change_password работал со всем API.
 from app.core.deps import PASSWORD_CHANGE_REQUIRED  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
-from app.main import app as fastapi_app  # noqa: E402
 
 # Всё, что ограниченной сессии разрешено: свой профиль и смена пароля.
 ALLOWED_WHILE_PENDING = {("GET", "/api/auth/me"), ("POST", "/api/auth/change-password")}
@@ -189,10 +188,9 @@ def pending_admin(db_session) -> Employee:
 
 
 def _all_routes():
-    for route in fastapi_app.routes:
-        methods = getattr(route, "methods", None) or set()
-        for method in sorted(methods - {"HEAD", "OPTIONS"}):
-            yield method, route.path
+    # Через схему OpenAPI, а не через fastapi_app.routes: см. `app_routes`
+    # в conftest — плоского списка маршрутов там больше нет.
+    yield from app_routes()
 
 
 def _concrete(path: str) -> str:

@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -213,6 +214,106 @@ def pg_client(pg_sessions):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+# ── Дамп и восстановление (этап 4 п.4.3/4.5) ─────────────────────────────────
+#
+# Бэкап, который никто не разворачивал, — не бэкап. Поэтому проверка
+# восстановления в тестах настоящая: pg_dump → отдельная база → чтение данных.
+#
+# Утилиты берутся с хоста, а если их там нет (обычный случай на машине, где
+# Postgres живёт только в Docker) — из КОНТЕЙНЕРА, слушающего тот же порт.
+# Поток идёт через stdin/stdout, поэтому оба пути работают одинаково и файл
+# внутрь контейнера класть не надо.
+
+
+class PgDumpTools:
+    def __init__(self, url, exec_prefix: list[str] | None):
+        self.url = url
+        self._prefix = exec_prefix or []
+
+    def _run(self, tool: str, args: list[str], stdin: str | None = None) -> str:
+        cmd = list(self._prefix) + [tool, "-U", self.url.username or "postgres"]
+        if not self._prefix:  # хостовая утилита — ей нужны адрес и порт
+            cmd += ["-h", self.url.host or "localhost", "-p", str(self.url.port or 5432)]
+        cmd += args
+        env = {**os.environ}
+        if self.url.password and not self._prefix:
+            env["PGPASSWORD"] = self.url.password
+        done = subprocess.run(cmd, input=stdin, capture_output=True, text=True, env=env)
+        if done.returncode != 0:
+            raise AssertionError(f"{tool} упал: {done.stderr[-2000:]}")
+        return done.stdout
+
+    def dump(self, database: str | None = None) -> str:
+        return self._run("pg_dump", ["-d", database or self.url.database])
+
+    def psql(self, database: str, sql: str) -> str:
+        return self._run("psql", ["-d", database, "-v", "ON_ERROR_STOP=1", "-q"], stdin=sql)
+
+    def create_database(self, name: str) -> None:
+        self.psql("postgres", f'drop database if exists "{name}";')
+        self.psql("postgres", f'create database "{name}";')
+
+    def drop_database(self, name: str) -> None:
+        self.psql("postgres", f'drop database if exists "{name}";')
+
+
+def _docker_container_for_port(port: int) -> str | None:
+    """Имя контейнера, опубликовавшего этот порт наружу."""
+    try:
+        names = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True, timeout=20
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if names.returncode != 0:
+        return None
+    for name in names.stdout.split():
+        ports = subprocess.run(
+            ["docker", "port", name], capture_output=True, text=True, timeout=20
+        )
+        if ports.returncode == 0 and f":{port}" in ports.stdout:
+            return name
+    return None
+
+
+@pytest.fixture(scope="session")
+def pg_tools(pg_engine):
+    url = make_url(PG_URL)
+    if shutil.which("pg_dump") and shutil.which("psql"):
+        return PgDumpTools(url, None)
+    container = _docker_container_for_port(url.port or 5432)
+    if container:
+        return PgDumpTools(url, ["docker", "exec", "-i", container])
+    pytest.skip(
+        "Нет ни pg_dump/psql на хосте, ни контейнера Postgres на этом порту — "
+        "проверку восстановления запустить нечем"
+    )
+
+
+# ── Список маршрутов приложения ──────────────────────────────────────────────
+#
+# Берётся из схемы OpenAPI, а НЕ из `app.routes`: начиная с FastAPI 0.138
+# (starlette 1.3) `include_router` больше не раскладывает маршруты плоским
+# списком — в `app.routes` остаются объекты-обёртки, и обход видит 6 маршрутов
+# вместо 127. Тесты-сторожа, которые ходят по всем маршрутам (ограниченная
+# сессия в test_auth, сканер утечек финансов), на таком обходе слепнут, оставаясь
+# зелёными. Поймано прогоном на закреплённом составе (этап 4 п.4.1): в дев-venv
+# стоял FastAPI 0.136, в прод-образе 0.138.
+#
+# Схема — публичный и стабильный источник: она одинакова в обеих версиях.
+
+
+def app_routes() -> list[tuple[str, str]]:
+    """[(МЕТОД, путь)] всех маршрутов приложения, отсортировано."""
+    schema = app.openapi()
+    return sorted(
+        (method.upper(), path)
+        for path, operations in schema.get("paths", {}).items()
+        for method in operations
+        if method.upper() not in {"HEAD", "OPTIONS", "PARAMETERS"}
+    )
 
 
 def get_token(client: TestClient, email: str, password: str) -> str:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -49,6 +49,26 @@ class TimesheetPeriod(Base):
 
     __table_args__ = (
         Index("ix_period_department_year_month", "department_id", "year", "month"),
+        # Один период на (отдел, год, месяц). Два ЧАСТИЧНЫХ индекса, а не один
+        # обычный: в SQL NULL не равен NULL, и обычный unique пропустил бы
+        # сколько угодно периодов группы «Без отдела» за один месяц.
+        # Частичные индексы есть только в Postgres, поэтому строятся лишь там
+        # (ddl_if — как у уникального логина в models/employees.py); объявлены
+        # здесь, чтобы autogenerate не предлагал их удалить: до этапа 4 они жили
+        # ТОЛЬКО в миграции 2ebe9fa53315, и каждая автогенерация норовила снести.
+        # Проверяются они тоже только на Postgres — tests/test_pg_integration.py.
+        Index(
+            "uq_period_dept_year_month",
+            "department_id", "year", "month",
+            unique=True,
+            postgresql_where=text("department_id IS NOT NULL"),
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "uq_period_null_dept_year_month",
+            "year", "month",
+            unique=True,
+            postgresql_where=text("department_id IS NULL"),
+        ).ddl_if(dialect="postgresql"),
         CheckConstraint("month >= 1 AND month <= 12", name="ck_period_month_range"),
         CheckConstraint("year >= 2000 AND year <= 2100", name="ck_period_year_range"),
         CheckConstraint(
