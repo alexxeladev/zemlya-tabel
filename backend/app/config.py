@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+psycopg://tabel:tabel@localhost:5432/tabel"
     SECRET_KEY: str = "change-me"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
+    # Пробрасывается в create_engine(echo=...) — SQL-лог в консоль (database.py).
     DEBUG: bool = False
     CORS_ORIGINS: str = "http://localhost:5173"
 
