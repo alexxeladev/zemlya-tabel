@@ -1,0 +1,41 @@
+# Надстройка над docker-compose.preprod.yml: HTTPS на входе (этап 4 п.4.4).
+# Отдельным файлом, а не правкой основного: стенд без сертификата должен
+# подниматься как раньше.
+#
+# Включается скриптом (сам добавит его в вызовы docker compose):
+#   ./scripts/enable-https.sh --letsencrypt --domain tabel.example.ru --email ops@example.ru
+#   ./scripts/enable-https.sh --cert /путь/fullchain.pem --key /путь/privkey.pem
+#
+# Вручную:
+#   docker compose --env-file .env.preprod \
+#     -f docker-compose.preprod.yml -f docker-compose.https.yml up -d
+
+services:
+  web:
+    # !override, а не добавление: иначе к 80 и 443 осталась бы публикация 8080
+    # из основного файла — и мимо HTTPS можно было бы зайти по открытому HTTP,
+    # ровно так, как сейчас. Проверено `docker compose config`.
+    ports: !override
+      # 80 остаётся: с него идёт редирект на HTTPS и проверка домена certbot-ом.
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx-https.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+      - certbot-webroot:/var/www/certbot
+
+  # Выпуск и продление сертификата Let's Encrypt. Запускается разово
+  # (enable-https.sh --letsencrypt) и по расписанию (--renew); постоянно
+  # висеть ему незачем.
+  certbot:
+    image: certbot/certbot:latest
+    profiles: ["certbot"]
+    volumes:
+      - ./deploy/certs:/etc/letsencrypt/live-copy
+      - certbot-etc:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
+    entrypoint: ["certbot"]
+
+volumes:
+  certbot-etc:
+  certbot-webroot:

@@ -16,5 +16,9 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Правила приложения отдельным файлом: их через include подключает и обычная
+# конфигурация, и конфигурация с TLS (deploy/nginx-https.conf), которую
+# scripts/enable-https.sh монтирует поверх default.conf.
+COPY nginx-app.conf /etc/nginx/app.conf
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 80 443

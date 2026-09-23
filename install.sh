@@ -18,7 +18,16 @@ ENV_FILE="$ROOT/.env.preprod"
 COMPOSE_FILE="$ROOT/docker-compose.preprod.yml"
 
 DKR="docker"   # может стать "sudo docker" после свежей установки (до релогина)
-DC() { $DKR compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"; }
+# Надстройки compose по настройке HTTPS_MODE (её ставит scripts/enable-https.sh).
+# Без этого обновление кода поднимало бы стенд без TLS и молча выключало HTTPS.
+compose_overrides() {
+  case "$(getenv HTTPS_MODE)" in
+    letsencrypt|cert|selfsigned) printf -- '-f %s' "$ROOT/docker-compose.https.yml" ;;
+    proxy)                       printf -- '-f %s' "$ROOT/docker-compose.behind-proxy.yml" ;;
+  esac
+}
+# shellcheck disable=SC2046  # разбиение на слова здесь и нужно
+DC() { $DKR compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" $(compose_overrides) "$@"; }
 say() { printf '\n\033[1;36m▶ %s\033[0m\n' "$*"; }
 err() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; }
 # Читает значение ключа из .env.preprod (всё после первого '='), без source.
@@ -30,7 +39,11 @@ gen_secret() {  # $1 = число байт → hex-строка (shell/URL-safe)
   else python3 -c "import secrets,sys;print(secrets.token_hex(int(sys.argv[1])))" "$1"; fi
 }
 # Health-check без зависимости от host-утилит: busybox wget внутри web-контейнера.
-health_ok() { DC exec -T web wget -q -O /dev/null http://localhost/health 2>/dev/null; }
+# Готовность, а не живость (этап 4 п.4.2): /ready ходит в базу и сверяет версию
+# миграций. По /health стенд рапортовал «отвечает» и с лежащей базой.
+# Спрашиваем backend НАПРЯМУЮ (не через nginx): при включённом HTTPS порт 80
+# отдаёт редирект на 443, и проверка ловила бы 301 вместо ответа готовности.
+ready_ok() { DC exec -T web wget -q -O /dev/null http://backend:8000/ready 2>/dev/null; }
 
 # ── 0. Docker: проверка + авто-установка при отсутствии ──
 # Ставит Docker Engine + compose-плагин официальным скриптом get.docker.com
@@ -171,7 +184,7 @@ say "Запуск backend + web…"
 DC up -d
 echo "  Жду готовности приложения…"
 for i in $(seq 1 30); do
-  if health_ok; then echo "  Приложение отвечает."; break; fi
+  if ready_ok; then echo "  Приложение готово (база отвечает, миграции применены)."; break; fi
   [[ $i -eq 30 ]] && { err "Приложение не ответило за 30с. Смотри: ./deploy.sh логи или DC logs."; break; }
   sleep 1
 done
