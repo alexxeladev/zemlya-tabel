@@ -31,6 +31,7 @@ import { Select } from '../../components/Select'
 import { SharesEditor } from '../../components/SharesEditor'
 import { EmployeeImportModal } from './EmployeeImportModal'
 import { PositionsEditor } from './PositionsEditor'
+import { LoanStatusPanel } from './LoanStatusPanel'
 import { GUARD_ACCRUAL_HINT, isGuardDepartment, isGuardPosition } from '../../utils/guardStaff'
 import { ApiError } from '../../api/client'
 import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
@@ -916,9 +917,10 @@ export function EmployeesPage() {
                 )}
                 {!loanLocked && (
                   <p className="mt-1 text-xs text-gray-400">
-                    Гасится равными долями (сумма ÷ срок) автоматически с месяца начала. Удержание за конкретный месяц можно скорректировать в табеле.
+                    Гасится равными долями (сумма ÷ срок) автоматически с месяца начала. В месяц без начислений не удерживается, а если начислено меньше платежа — удерживается сколько есть; срок при этом растягивается. Удержание за конкретный месяц можно скорректировать в табеле.
                   </p>
                 )}
+                {editTarget?.loan_amount && <LoanStatusPanel employeeId={editTarget.id} />}
               </div>
             )
           })()}

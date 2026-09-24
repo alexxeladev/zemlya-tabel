@@ -1,6 +1,6 @@
 import type {
   CompanyShare, Employee, EmployeeImportResult, EmployeePosition, EmployeePositionInput,
-  EmployeeShares, PayType, PositionTermsHistory, UserRole, WeekendPayType,
+  EmployeeShares, LoanStatus, PayType, PositionTermsHistory, UserRole, WeekendPayType,
 } from '../types/api'
 import { apiClient } from './client'
 
@@ -174,3 +174,8 @@ export const getPositionTerms = (employeeId: number, positionId: number) =>
   apiClient
     .get<PositionTermsHistory>(`/api/employees/${employeeId}/positions/${positionId}/terms`)
     .then((r) => r.data)
+
+/** Состояние займа на месяц (по умолчанию текущий): платежей осталось, по
+ *  исходному сроку, месяцы с недоудержанием (п.5.1). Займа нет — null. */
+export const getLoanStatus = (id: number) =>
+  apiClient.get<LoanStatus | null>(`/api/employees/${id}/loan-status`).then((r) => r.data)

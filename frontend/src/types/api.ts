@@ -82,6 +82,8 @@ export interface EmployeePayroll {
   loan_remaining: string
   loan_planned_deduction: string
   loan_is_manual: boolean
+  /** Недоудержано против плана: начисления не хватило (п.5.1). */
+  loan_shortfall?: string
   total_deductions: string
   // net_payout округлён математически до 1000 ₽; exact/tail — справочно
   net_payout: string
@@ -1257,4 +1259,26 @@ export interface VahtaCandidate {
   tab_number: string | null
   /** Где человек уже стоит в этом месяце — или null, если нигде. */
   where: string | null
+}
+
+/** Состояние займа на месяц — карточка сотрудника (п.5.1). */
+export interface LoanShortMonth {
+  year: number
+  month: number
+  planned: string
+  actual: string
+}
+
+export interface LoanStatus {
+  year: number
+  month: number
+  position_id: number
+  share: string
+  term_months: number
+  planned: string
+  actual: string
+  remaining_after: string
+  payments_left: number
+  payments_left_by_term: number
+  short_months: LoanShortMonth[]
 }

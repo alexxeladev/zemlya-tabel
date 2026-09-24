@@ -34,6 +34,7 @@ import { quantitiesForVisibleDepartments } from '../utils/quantities';
 import { companyColorByIndex } from '../utils/colors';
 import { companyLabel } from '../utils/companies';
 import { payoutRoundingHint } from '../utils/money';
+import { loanShortfallHint } from '../utils/loan';
 import { ABSENCE_KINDS, absenceMeta } from '../utils/absences';
 import { overtimeHours } from '../utils/overtime'
 import { employmentHint, isoDay } from '../utils/employment';
@@ -229,6 +230,7 @@ export type EmployeePayroll = {
   loan_remaining?: string;
   loan_planned_deduction?: string;
   loan_is_manual?: boolean;
+  loan_shortfall?: string;
   total_deductions?: string;
   net_payout?: string;         // округлено до ближайшей 1000 ₽
   net_payout_exact?: string;
@@ -4191,6 +4193,11 @@ function AdjustmentsModal({
                 </span>
               </div>
               <div className="flex justify-between"><span>Остаток после месяца</span><span className="font-mono">{fmtMoney(payroll?.loan_remaining ?? null)}</span></div>
+              {Number(payroll?.loan_shortfall ?? 0) > 0 && (
+                <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                  {loanShortfallHint(payroll?.loan_deduction ?? '0', payroll?.loan_planned_deduction ?? '0')}
+                </p>
+              )}
             </div>
             <div className="flex gap-2 items-center">
               <input
