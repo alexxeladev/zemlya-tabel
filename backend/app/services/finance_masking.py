@@ -190,6 +190,8 @@ _PAYROLL_AMOUNT_FIELDS = (
     "loan_deduction",
     "loan_remaining",
     "loan_planned_deduction",
+    # Недоудержанная часть займа (п.5.1) — тоже сумма.
+    "loan_shortfall",
     "total_deductions",
     "net_payout",
     "net_payout_exact",

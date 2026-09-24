@@ -31,6 +31,7 @@ from app.schemas.employee import (
     EmployeeUpdate,
 )
 from app.schemas.employee_import import EmployeeImportResult
+from app.schemas.payout import LoanShortMonth, LoanStatusRead
 from app.schemas.payroll_statement import (
     CompanyShareInput,
     EmployeeSharesRead,
@@ -79,6 +80,7 @@ from app.services.guard_staff import (
     ensure_position_owned_outside_vahta,
     ensure_transfer_into_guard_allowed,
     is_guard_position,
+    loan_position,
     pin_loan_before_primary_change,
 )
 from app.services.login_guard import locked_until_by_employee, unlock_login
@@ -1039,6 +1041,66 @@ def import_employees(
     if confirm:
         result = import_valid_rows(db, actor, result)
     return result
+
+
+@router.get("/{emp_id}/loan-status", response_model=Optional[LoanStatusRead])
+def get_loan_status(
+    emp_id: int,
+    year: Optional[int] = Query(default=None),
+    month: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+):
+    """Состояние займа на месяц: остаток, сколько платежей осталось и сколько
+    оставалось бы по исходному сроку, месяцы с недоудержанием (п.5.1). Займа
+    нет или месяц до старта — `null`.
+
+    По умолчанию — ПОСЛЕДНИЙ ЗАКОНЧЕННЫЙ месяц: в текущем часы ещё не внесены,
+    начисление в начале месяца ноль, и карточка у каждого заёмщика показывала
+    бы «срок растянулся» без единого пропуска. Заём стартует в текущем месяце —
+    берётся текущий."""
+    if not can_see_finances(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    emp = db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    position = loan_position(emp)
+    if is_department_scoped(current_user) and not can_access_department(
+        current_user, position.department_id if position else None
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    if (year is None) != (month is None):
+        raise HTTPException(status_code=422, detail="Год и месяц задаются парой")
+    from app.services.payroll_statement import loan_status
+
+    if year is None:
+        today = datetime.date.today()
+        prev = datetime.date(today.year, today.month, 1) - datetime.timedelta(days=1)
+        year, month = prev.year, prev.month
+        state = loan_status(db, emp, year, month)
+        if state is None and emp.loan_start_date and (
+            emp.loan_start_date.year, emp.loan_start_date.month
+        ) == (today.year, today.month):
+            year, month = today.year, today.month
+            state = loan_status(db, emp, year, month)
+    else:
+        if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+            raise HTTPException(status_code=422, detail="Invalid year/month")
+        state = loan_status(db, emp, year, month)
+    if state is None or position is None:
+        return None
+    return LoanStatusRead(
+        year=year, month=month, position_id=position.id,
+        share=state.share, term_months=emp.loan_term_months,
+        planned=state.planned, actual=state.actual,
+        remaining_after=state.remaining_after,
+        payments_left=state.payments_left,
+        payments_left_by_term=state.payments_left_by_term(year, month),
+        short_months=[
+            LoanShortMonth(year=y, month=m, planned=pl, actual=ac)
+            for y, m, pl, ac in state.short_months
+        ],
+    )
 
 
 @router.get("/{emp_id}/company-shares", response_model=EmployeeSharesRead)

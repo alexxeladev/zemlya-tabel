@@ -1470,15 +1470,12 @@ def set_loan_override(
     if not (1 <= payload.month <= 12) or not (2000 <= payload.year <= 2100):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid year/month")
 
-    from app.services.payout import load_loan_overrides, loan_month_state
+    from app.services.payroll_statement import loan_status
 
-    # Плановая доля на этот месяц (справочно) — без учёта самой правки этого месяца.
-    overrides = load_loan_overrides(db, [target.id]).get(target.id, {})
-    overrides.pop((payload.year, payload.month), None)
-    state = loan_month_state(
-        target.loan_amount, target.loan_term_months, target.loan_start_date,
-        payload.year, payload.month, overrides,
-    )
+    # Плановая доля на этот месяц (справочно). От правки САМОГО месяца она не
+    # зависит, а от пропущенных прошлых месяцев (п.5.1) — зависит, поэтому
+    # считается тем же расчётом, что ведомость.
+    state = loan_status(db, target, payload.year, payload.month)
     planned = state.planned if state else payload.actual_amount
 
     existing = (

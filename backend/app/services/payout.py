@@ -40,6 +40,36 @@ class LoanMonth:
     remaining_after: Decimal   # остаток после удержания этого месяца
     is_manual: bool            # сумма этого месяца скорректирована вручную
     active: bool               # займ ещё гасится в этом месяце
+    # Доля по графику (сумма ÷ срок) и конец погашения по ИСХОДНОМУ сроку —
+    # для «осталось платежей N (по исходному сроку M)» в карточке.
+    share: Decimal = _ZERO
+    term_end_year: int = 0
+    term_end_month: int = 0
+    # Удержано меньше плана, потому что начисления не хватило (п.5.1):
+    # в этом месяце — `shortfall` > 0; по всем месяцам до него включительно —
+    # `short_months` [(год, месяц, план, удержано)].
+    shortfall: Decimal = _ZERO
+    short_months: tuple[tuple[int, int, Decimal, Decimal], ...] = ()
+
+    @property
+    def payments_left(self) -> int:
+        """Сколько ещё месяцев по доле займа понадобится после этого месяца."""
+        if self.remaining_after <= _ZERO or self.share <= _ZERO:
+            return 0
+        return int(-(-self.remaining_after // self.share))
+
+    def payments_left_by_term(self, year: int, month: int) -> int:
+        """Сколько месяцев оставалось бы после (year, month) по исходному сроку."""
+        return max(0, _month_index(self.term_end_year, self.term_end_month)
+                   - _month_index(year, month))
+
+
+def loan_capacity(accrued_total: Decimal, advance: Decimal) -> Decimal:
+    """Сколько займа можно удержать в месяце позиции (п.5.1, решение заказчика):
+    «Итого начислено» минус аванс, не меньше нуля. Нечего удерживать — месяц
+    пропускается, остаток не уменьшается, срок растягивается."""
+    free = accrued_total - advance
+    return free if free > _ZERO else _ZERO
 
 
 def loan_month_state(
@@ -49,6 +79,8 @@ def loan_month_state(
     target_year: int,
     target_month: int,
     overrides: dict[tuple[int, int], Decimal] | None = None,
+    capacities: dict[tuple[int, int], Decimal] | None = None,
+    facts: dict[tuple[int, int], Decimal] | None = None,
 ) -> LoanMonth | None:
     """
     Состояние займа на конкретный месяц.
@@ -58,6 +90,13 @@ def loan_month_state(
     месяц — удерживается остаток (если он меньше доли). Ручная правка за месяц
     (overrides) меняет только сумму этого месяца; остаток = сумма − фактически
     удержанное суммарно, поэтому при недоудержании займ гасится дольше.
+
+    `capacities` (п.5.1) — сколько можно удержать в месяце (`loan_capacity`):
+    удерживается не больше этого, нуль — месяц пропускается. Месяца нет в
+    словаре — доля удерживается целиком, как раньше (закрытый месяц без снимка,
+    месяц до начала учёта в системе). Ручная правка и факт закрытого месяца
+    (`facts`, из снимка) сильнее: это уже решённая сумма. Факт — не ручная
+    правка: удержанное в нём меньше плана остаётся видно как недоудержание.
 
     Возвращает None, если займа нет или target-месяц раньше старта.
     """
@@ -72,12 +111,16 @@ def loan_month_state(
         return None
 
     overrides = overrides or {}
+    capacities = capacities or {}
+    facts = facts or {}
     share = _round(loan_amount / Decimal(term_months))
     if share <= _ZERO:
         share = loan_amount  # вырожденный случай: доля округлилась до 0
+    end_y, end_m0 = divmod(start_idx + term_months - 1, 12)
 
     remaining = loan_amount
     result: LoanMonth | None = None
+    short_months: list[tuple[int, int, Decimal, Decimal]] = []
 
     for idx in range(start_idx, target_idx + 1):
         y, m = divmod(idx, 12)
@@ -91,14 +134,25 @@ def loan_month_state(
         else:
             planned = min(share, remaining_before)
             ov = overrides.get((y, m))
-            if ov is not None:
+            if (y, m) in facts:
+                actual = min(_round(facts[(y, m)]), remaining_before)
+                # Факт закрытого месяца, в котором была ручная правка, — всё
+                # ещё решение бухгалтера, а не «не хватило начисления».
+                is_manual = ov is not None
+            elif ov is not None:
                 # нельзя удержать больше, чем осталось
                 actual = min(_round(ov), remaining_before)
                 is_manual = True
+            elif (y, m) in capacities:
+                actual = min(planned, _round(max(capacities[(y, m)], _ZERO)))
+                is_manual = False
             else:
                 actual = planned
                 is_manual = False
             active = True
+        shortfall = _ZERO if is_manual else planned - actual
+        if shortfall > _ZERO:
+            short_months.append((y, m, planned, actual))
         remaining = remaining_before - actual
         if idx == target_idx:
             result = LoanMonth(
@@ -108,6 +162,11 @@ def loan_month_state(
                 remaining_after=remaining,
                 is_manual=is_manual,
                 active=active,
+                share=share,
+                term_end_year=end_y,
+                term_end_month=end_m0 + 1,
+                shortfall=shortfall,
+                short_months=tuple(short_months),
             )
     return result
 

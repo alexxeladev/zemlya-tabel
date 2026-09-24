@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.companies import Company
@@ -29,6 +30,7 @@ from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
+from app.models.timesheet_periods import TimesheetPeriod
 from app.schemas.payroll import (
     CompanyBreakdownRead,
     EmployeePayrollRead,
@@ -67,11 +69,13 @@ from app.services.guard_statement import (
 )
 from app.services.night_shifts import load_night_context
 from app.services.payout import (
+    LoanMonth,
     compute_payout,
     load_adjustment_reasons,
     load_adjustment_sums,
     load_loan_overrides,
     load_targeted_funding,
+    loan_capacity,
     loan_month_state,
 )
 from app.services.payroll import calculate_position_payroll
@@ -142,6 +146,185 @@ def _loan_belongs_to(employee: Employee, position: EmployeePosition | None) -> b
     return employee.loan_position_id == position.id
 
 
+# ── Заём при нулевом начислении (п.5.1) ───────────────────────────────────────
+#
+# Удержать можно только то, что начислено позиции займа за месяц (минус аванс):
+# нечего удерживать — месяц пропускается, остаток не уменьшается, срок займа
+# растягивается. Правило действует в месяцах, которые система ВЕЛА и которые не
+# закрыты: закрытый месяц со снимком — факт из снимка, закрытый без снимка и
+# месяц до первого периода отдела — доля удержана по графику, как раньше
+# (решения заказчика 24.09.2026).
+
+def _period_statuses(
+    db: Session, department_ids: set[int | None], last: tuple[int, int],
+) -> tuple[dict[tuple[int | None, int, int], str], dict[int | None, int]]:
+    """Периоды отделов по месяц `last` включительно, одним запросом:
+    ({(отдел, год, месяц): статус}, {отдел: индекс месяца его ПЕРВОГО периода}).
+
+    Первый период — начало учёта отдела в системе: раньше него доля займа
+    считается удержанной по графику (решение заказчика 24.09.2026). Периоды
+    создаются лениво, поэтому «нет строки периода» у месяца ПОСЛЕ первого —
+    это просто месяц, который ещё никто не открывал, а не «до системы».
+    """
+    if not department_ids:
+        return {}, {}
+    ids = [d for d in department_ids if d is not None]
+    cond = []
+    if ids:
+        cond.append(TimesheetPeriod.department_id.in_(ids))
+    if None in department_ids:
+        cond.append(TimesheetPeriod.department_id.is_(None))
+    hi = last[0] * 12 + last[1] - 1
+    rows = (
+        db.query(TimesheetPeriod.department_id, TimesheetPeriod.year,
+                 TimesheetPeriod.month, TimesheetPeriod.status)
+        .filter(or_(*cond))
+        .filter(TimesheetPeriod.year * 12 + TimesheetPeriod.month - 1 <= hi)
+        .all()
+    )
+    statuses: dict[tuple[int | None, int, int], str] = {}
+    first: dict[int | None, int] = {}
+    for d, y, m, st in rows:
+        statuses[(d, y, m)] = st
+        idx = y * 12 + m - 1
+        if d not in first or idx < first[d]:
+            first[d] = idx
+    return statuses, first
+
+
+def _under_zero_accrual_rule(
+    statuses: dict[tuple[int | None, int, int], str],
+    first: dict[int | None, int],
+    department_id: int | None,
+    y: int,
+    m: int,
+) -> bool:
+    """Действует ли в месяце правило п.5.1: отдел уже вёл учёт в системе
+    (месяц не раньше его первого периода) и месяц не закрыт. Одно условие и
+    для истории, и для расчётного месяца — иначе остаток одного займа на
+    разных экранах разойдётся."""
+    start = first.get(department_id)
+    if start is None or y * 12 + m - 1 < start:
+        return False
+    return statuses.get((department_id, y, m)) != "closed"
+
+
+def _loan_capacities(
+    db: Session,
+    loan_rows: list[tuple[Employee, EmployeePosition]],
+    year: int,
+    month: int,
+    loan_overrides: dict[int, dict[tuple[int, int], Decimal]],
+    closed_loans: dict[int, dict[tuple[int, int], Decimal]],
+) -> tuple[dict[int, dict[tuple[int, int], Decimal]], set[int | None]]:
+    """({position_id: {(год, месяц): сколько можно удержать}}, отделы, у которых
+    РАСЧЁТНЫЙ месяц НЕ под правилом п.5.1 — закрыт или раньше начала учёта).
+
+    Первое — по месяцам ДО расчётного, где действует правило п.5.1
+    (`_under_zero_accrual_rule`) и удержание не зафиксировано правкой или
+    снимком.
+    Начисление прошлого месяца считается тем же `build_payroll_summary` — своей
+    формулы здесь нет. Один расчёт на месяц для всех, кому он нужен, и только
+    по позициям займа. Статусы периодов — одним запросом на весь диапазон.
+    """
+    if not loan_rows:
+        return {}, set()
+    target_idx = year * 12 + month - 1
+    departments = {pos.department_id for _, pos in loan_rows}
+    statuses, first = _period_statuses(db, departments, (year, month))
+    old_rule_now = {
+        d for d in departments
+        if not _under_zero_accrual_rule(statuses, first, d, year, month)
+    }
+    need: dict[tuple[int, int], dict[int, Employee]] = {}
+    for emp, pos in loan_rows:
+        start = emp.loan_start_date.year * 12 + emp.loan_start_date.month - 1
+        fixed = set(loan_overrides.get(emp.id, {})) | set(closed_loans.get(pos.id, {}))
+        for idx in range(start, target_idx):
+            y, m = idx // 12, idx % 12 + 1
+            if (y, m) in fixed:
+                continue
+            if not _under_zero_accrual_rule(statuses, first, pos.department_id, y, m):
+                continue
+            need.setdefault((y, m), {})[emp.id] = emp
+
+    from app.services.timesheet import get_month_entries
+
+    loan_pos = {emp.id: pos.id for emp, pos in loan_rows}
+    result: dict[int, dict[tuple[int, int], Decimal]] = {}
+    for (y, m), by_id in sorted(need.items()):
+        emps = list(by_id.values())
+        out: dict[int, Decimal] = {loan_pos[e.id]: _ZERO for e in emps}
+        # Снимков у этих позиций в месяце нет (он не закрыт) — не грузим.
+        build_payroll_summary(
+            db, emps, get_month_entries(db, emps, y, m), y, m,
+            snapshots=MonthSnapshots([]), _loan_capacity_out=out,
+        )
+        for emp in emps:
+            pid = loan_pos[emp.id]
+            # Нет строки позиции в том месяце (место снято с учёта) — удержать
+            # было не с чего.
+            result.setdefault(pid, {})[(y, m)] = out.get(pid, _ZERO)
+    return result, old_rule_now
+
+
+def _loan_state(
+    emp: Employee,
+    position: EmployeePosition,
+    year: int,
+    month: int,
+    loan_overrides: dict[int, dict[tuple[int, int], Decimal]],
+    closed_loans: dict[int, dict[tuple[int, int], Decimal]],
+    history: dict[int, dict[tuple[int, int], Decimal]],
+    target_capacity: Decimal | None,
+) -> LoanMonth | None:
+    """Состояние займа позиции на месяц: ручные правки + факт закрытых месяцев
+    (снимок) + сколько можно было удержать в открытых. `target_capacity` None —
+    расчётный месяц не под правилом п.5.1 (закрыт без снимка или раньше начала
+    учёта отдела) и считается по-старому."""
+    capacities = dict(history.get(position.id, {}))
+    if target_capacity is not None:
+        capacities[(year, month)] = target_capacity
+    return loan_month_state(
+        emp.loan_amount, emp.loan_term_months, emp.loan_start_date,
+        year, month, loan_overrides.get(emp.id) or {}, capacities,
+        closed_loans.get(position.id, {}),
+    )
+
+
+def loan_status(db: Session, emp: Employee, year: int, month: int) -> LoanMonth | None:
+    """Состояние займа сотрудника на месяц — для карточки («осталось платежей»)
+    и ручной правки удержания. Те же части, что в ведомости (`_loan_capacities`,
+    `_loan_state`), но и для ЗАКРЫТОГО месяца: там удержание — факт снимка,
+    а строку ведомость берёт из снимка и займ не считает. Начисление открытого
+    месяца — тот же `build_payroll_summary` в служебном режиме. `None` — займа
+    нет или месяц раньше его старта."""
+    from app.services.guard_staff import loan_position
+    from app.services.timesheet import get_month_entries
+
+    position = loan_position(emp)
+    if (position is None or emp.loan_amount is None
+            or not emp.loan_term_months or not emp.loan_start_date):
+        return None
+    overrides = load_loan_overrides(db, [emp.id])
+    facts = loan_facts(db)
+    history, old_rule_now = _loan_capacities(
+        db, [(emp, position)], year, month, overrides, facts
+    )
+    target_capacity = None
+    if (position.department_id not in old_rule_now
+            and (year, month) not in facts.get(position.id, {})):
+        out: dict[int, Decimal] = {position.id: _ZERO}
+        build_payroll_summary(
+            db, [emp], get_month_entries(db, [emp], year, month), year, month,
+            snapshots=MonthSnapshots([]), _loan_capacity_out=out,
+        )
+        target_capacity = out[position.id]
+    return _loan_state(
+        emp, position, year, month, overrides, facts, history, target_capacity,
+    )
+
+
 def build_payroll_summary(
     db: Session,
     employees: list[Employee],
@@ -151,6 +334,7 @@ def build_payroll_summary(
     actor: Employee | None = None,
     department_id: DepartmentFilter = None,
     snapshots: MonthSnapshots | None = None,
+    _loan_capacity_out: dict[int, Decimal] | None = None,
 ) -> PayrollSummaryRead:
     """Сводный расчёт ЗП — ОДНА СТРОКА НА ПОЗИЦИЮ (task_positions ч.A).
 
@@ -163,7 +347,12 @@ def build_payroll_summary(
 
     actor/department_id — чтобы менеджер не увидел подработку сотрудника в чужом
     отделе; без actor берутся все активные позиции.
+
+    `_loan_capacity_out` — служебный режим истории займа (п.5.1): считаются
+    только позиции-ключи словаря, заём не применяется, а в словарь пишется,
+    сколько можно было удержать с каждой (`_loan_capacities`).
     """
+    history_mode = _loan_capacity_out is not None
     # Снимки закрытых периодов месяца (task_stage3_historicity): позиция со
     # строкой в снимке берётся оттуда, живой расчёт для неё не делается.
     snaps = (
@@ -171,6 +360,8 @@ def build_payroll_summary(
         else load_month_snapshots(db, year, month, scope_departments(actor, department_id))
     )
     all_rows = _payroll_rows(employees, actor, department_id)
+    if history_mode:
+        all_rows = [(e, p) for e, p in all_rows if p is not None and p.id in _loan_capacity_out]
     snapshot_emp_ids = {emp.id for emp in employees}
     live_employees = list({
         emp.id: emp for emp, pos in all_rows
@@ -207,10 +398,10 @@ def build_payroll_summary(
     adjustment_sums = load_adjustment_sums(
         db, emp_ids, year, month, primary_position_ids
     )
-    loan_overrides = load_loan_overrides(db, emp_ids)
+    loan_overrides = load_loan_overrides(db, emp_ids) if not history_mode else {}
     # Удержания займа закрытых месяцев — факт из снимков (решение заказчика):
     # новые условия займа раскладываются только на открытые месяцы.
-    closed_loans = loan_facts(db) if emp_ids else {}
+    closed_loans = loan_facts(db) if emp_ids and not history_mode else {}
     # Годовой лимит больничного: сколько оплачиваемых дней Б уже израсходовано
     # с 1 января до этого месяца (часть 2).
     sick_used_before = sick_days_used_before_month(
@@ -237,6 +428,19 @@ def build_payroll_summary(
         db, [pos for emp in employees for pos in emp.positions]
     )
 
+    # Заём (п.5.1): сколько можно было удержать в прошлых открытых месяцах —
+    # от этого зависит остаток. И статус расчётного месяца: закрытый без
+    # снимка считается по-старому (его цифры не должны поехать).
+    loan_rows = [] if history_mode else [
+        (emp, pos) for emp, pos in all_rows
+        if pos is not None and not snaps.has(pos.id) and pos.id not in guard_rows
+        and _loan_belongs_to(emp, pos)
+        and emp.loan_term_months and emp.loan_start_date
+    ]
+    loan_history, old_rule_now = _loan_capacities(
+        db, loan_rows, year, month, loan_overrides, closed_loans
+    )
+
     payroll_items: list[EmployeePayrollRead] = []
     taken_from_snapshot: set[int] = set()
     for emp, position in all_rows:
@@ -246,6 +450,9 @@ def build_payroll_summary(
             continue
         guard_row = guard_rows.get(position.id) if position is not None else None
         if guard_row is not None:
+            if history_mode:
+                # Строка вахты заём не удерживает вовсе — удержать было не с чего.
+                _loan_capacity_out[position.id] = _ZERO
             payroll_items.append(
                 guard_payroll_read(emp, position, guard_row, year, month)
             )
@@ -274,13 +481,18 @@ def build_payroll_summary(
         # на котором заработаны.
         position_id = position.id if position is not None else None
         sums = adjustment_sums.get(emp.id, {}).get(position_id, {})
+        capacity = loan_capacity(
+            p.total_amount + sums.get("premium", _ZERO) + sums.get("kpi", _ZERO),
+            sums.get("advance", _ZERO),
+        )
         loan_state = None
-        if _loan_belongs_to(emp, position):
-            overrides = dict(loan_overrides.get(emp.id) or {})
-            overrides.update(closed_loans.get(position.id, {}))
-            loan_state = loan_month_state(
-                emp.loan_amount, emp.loan_term_months, emp.loan_start_date,
-                year, month, overrides,
+        if history_mode:
+            if position_id is not None:
+                _loan_capacity_out[position_id] = capacity
+        elif _loan_belongs_to(emp, position):
+            loan_state = _loan_state(
+                emp, position, year, month, loan_overrides, closed_loans, loan_history,
+                None if position.department_id in old_rule_now else capacity,
             )
         loan_deduction = loan_state.actual if loan_state else _ZERO
         payout = compute_payout(
@@ -368,6 +580,7 @@ def build_payroll_summary(
             loan_remaining=loan_state.remaining_after if loan_state else _ZERO,
             loan_planned_deduction=loan_state.planned if loan_state else _ZERO,
             loan_is_manual=loan_state.is_manual if loan_state else False,
+            loan_shortfall=loan_state.shortfall if loan_state else _ZERO,
             total_deductions=payout.total_deductions,
             net_payout=payout.net_payout,
             net_payout_exact=payout.net_payout_exact,
@@ -1133,6 +1346,14 @@ def build_payroll_statement_with_summary(
             f"{_fmt_amount(p.loan_planned_deduction)} ₽)"
             if p.loan_is_manual else None
         )
+        if p.loan_shortfall > _ZERO:
+            # п.5.1: начисления не хватило — удержано меньше плана, долг и срок
+            # займа сдвигаются на следующие месяцы.
+            loan_note = (
+                f"займ: начисления не хватило — удержано "
+                f"{_fmt_amount(p.loan_deduction)} ₽ из {_fmt_amount(p.loan_planned_deduction)} ₽, "
+                f"остаток переносится"
+            )
 
         rows.append(StatementRow(
             employee_id=p.employee_id,

@@ -19,7 +19,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Iterable
 
-from sqlalchemy import event, func, text
+from sqlalchemy import event, func, or_, text
 from sqlalchemy.orm import Session
 
 from app.models.companies import Company
@@ -103,7 +103,113 @@ def _touched_keys(session: Session) -> set[str]:
                 keys.add(REFERENCE_KEY)
         elif isinstance(obj, _REFERENCE):
             keys.add(REFERENCE_KEY)
+    if REFERENCE_KEY not in keys and (
+        _moves_loan_history(session) or _touches_loan_holder(session)
+    ):
+        keys.add(REFERENCE_KEY)
     return keys
+
+
+def _moves_loan_history(session: Session) -> bool:
+    """Период, меняющий, под каким правилом займа идёт ПРОШЛЫЙ месяц (п.5.1):
+    переоткрытие закрытого (факт снимка уходит, месяц считается живьём) и
+    появление периода за прошедший месяц (может сдвинуть начало учёта отдела).
+    Остаток займа поздних месяцев от этого меняется. Обычные создание текущего
+    месяца и переходы draft → на проверке → закрыт сюда не попадают: закрытие
+    пишет в снимок то же, что было посчитано живьём.
+
+    Новый период за прошедший месяц двигает историю, только если он стал
+    ПЕРВЫМ периодом отдела (начало учёта сдвинулось раньше) и в отделе есть
+    заёмщик — два запроса и только на такой редкий флаш; обычная ленивая
+    заводка месяцев кэш не трогает."""
+    from sqlalchemy import inspect
+
+    today = date.today()
+    current = today.year * 12 + today.month - 1
+    for obj in session.new:
+        if not isinstance(obj, TimesheetPeriod):
+            continue
+        idx = obj.year * 12 + obj.month - 1
+        if idx < current and _is_first_period_of_loan_department(session, obj, idx):
+            return True
+    for obj in session.dirty:
+        if isinstance(obj, TimesheetPeriod):
+            hist = inspect(obj).attrs.status.history
+            if hist.has_changes() and "closed" in (hist.deleted or ()):
+                return True
+    return False
+
+
+def _is_first_period_of_loan_department(session: Session, period, idx: int) -> bool:
+    dept_cond = (
+        TimesheetPeriod.department_id.is_(None) if period.department_id is None
+        else TimesheetPeriod.department_id == period.department_id
+    )
+    with session.no_autoflush:
+        earlier = session.query(TimesheetPeriod.id).filter(
+            dept_cond, TimesheetPeriod.year * 12 + TimesheetPeriod.month - 1 < idx,
+        ).first()
+        if earlier is not None:
+            return False
+        pos_dept = (
+            EmployeePosition.department_id.is_(None) if period.department_id is None
+            else EmployeePosition.department_id == period.department_id
+        )
+        return session.query(Employee.id).join(
+            EmployeePosition, EmployeePosition.employee_id == Employee.id,
+        ).filter(pos_dept, Employee.loan_amount.isnot(None)).first() is not None
+
+
+def _touches_loan_holder(session: Session) -> bool:
+    """Помесячная правка человека с займом двигает и ПОЗДНИЕ месяцы: удержание
+    займа зависит от начисления прошлых открытых месяцев (п.5.1), а удержание —
+    от ручных правок прошлых месяцев. Своего месяца мало, бьём по справочнику.
+    Займов единицы, поэтому цена — редкий полный пересчёт кэша.
+
+    Сотрудник обычно уже в identity map (права ячейки проверялись по нему);
+    запрос — только за теми, кого там нет."""
+    from sqlalchemy.orm.util import identity_key
+
+    emp_ids: set[int] = set()
+    pos_ids: set[int] = set()
+    for obj in list(session.new) + list(session.dirty) + list(session.deleted):
+        if not isinstance(obj, _MONTH_KEYED) or isinstance(obj, (PeriodSnapshot, TimesheetPeriod)):
+            continue
+        eid = getattr(obj, "employee_id", None)
+        if isinstance(eid, int):
+            emp_ids.add(eid)
+        elif isinstance(getattr(obj, "position_id", None), int):
+            pos_ids.add(obj.position_id)
+    if not emp_ids and not pos_ids:
+        return False
+    unknown: set[int] = set()
+    for eid in emp_ids:
+        emp = session.identity_map.get(identity_key(Employee, eid))
+        if emp is None:
+            unknown.add(eid)
+        elif emp.loan_amount is not None:
+            return True
+    for pid in pos_ids:
+        pos = session.identity_map.get(identity_key(EmployeePosition, pid))
+        emp = pos.employee if pos is not None and "employee" in pos.__dict__ else None
+        if emp is None:
+            unknown.add(-pid)
+        elif emp.loan_amount is not None:
+            return True
+    if not unknown:
+        return False
+    ids = [i for i in unknown if i > 0]
+    pids = [-i for i in unknown if i < 0]
+    q = session.query(Employee.id).filter(Employee.loan_amount.isnot(None))
+    conds = []
+    if ids:
+        conds.append(Employee.id.in_(ids))
+    if pids:
+        conds.append(Employee.id.in_(
+            session.query(EmployeePosition.employee_id).filter(EmployeePosition.id.in_(pids))
+        ))
+    with session.no_autoflush:
+        return q.filter(or_(*conds)).first() is not None
 
 
 def _date_changed(obj) -> bool:

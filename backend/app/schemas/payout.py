@@ -90,3 +90,30 @@ class LoanInfo(BaseModel):
     remaining_after: Decimal = Decimal("0")
     is_manual: bool = False
     is_active: bool = False
+
+
+class LoanShortMonth(BaseModel):
+    """Месяц, где удержали меньше плана: начисления не хватило (п.5.1)."""
+    year: int
+    month: int
+    planned: Decimal
+    actual: Decimal
+
+
+class LoanStatusRead(BaseModel):
+    """Состояние займа на месяц — для карточки сотрудника (п.5.1).
+
+    `payments_left` — сколько ещё месяцев по доле понадобится после этого;
+    `payments_left_by_term` — сколько оставалось бы по ИСХОДНОМУ сроку. Первое
+    больше второго, когда месяцы пропускались из-за нулевого начисления."""
+    year: int
+    month: int
+    position_id: int
+    share: Decimal
+    term_months: int
+    planned: Decimal
+    actual: Decimal
+    remaining_after: Decimal
+    payments_left: int
+    payments_left_by_term: int
+    short_months: list[LoanShortMonth]

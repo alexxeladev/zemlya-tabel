@@ -111,6 +111,9 @@ class EmployeePayrollRead(BaseModel):
     loan_remaining: Decimal = Decimal("0")
     loan_planned_deduction: Decimal = Decimal("0")
     loan_is_manual: bool = False
+    # Недоудержано против плана, потому что начисления не хватило (п.5.1):
+    # долг остаётся, срок займа растягивается.
+    loan_shortfall: Decimal = Decimal("0")
     total_deductions: Decimal = Decimal("0")
     # net_payout округлён математически до 1000 ₽ (task_payout_rounding);
     # exact/tail — справочно, знак tail любой

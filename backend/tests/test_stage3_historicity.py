@@ -530,6 +530,11 @@ class TestLoanFacts:
         close_period(db_session, _period(db_session, setup["dept"]), setup["admin"])
         # Займ перезаняли: 6000 на 3 месяца — план 2000 в месяц.
         emp.loan_amount, emp.loan_term_months = Decimal("6000"), 3
+        # В июне есть начисление: месяц без него заём пропускает (п.5.1).
+        db_session.add(EmployeeAdjustment(
+            employee_id=emp.id, position_id=emp.primary_position.id, year=2026, month=6,
+            kind="premium", amount=Decimal("10000"), reason="июнь", created_by_id=setup["admin"].id,
+        ))
         db_session.commit()
         may = build_payroll_summary(db_session, [emp], [], 2026, 5).employees[0]
         assert may.loan_deduction == Decimal("1000")  # из снимка
