@@ -117,3 +117,22 @@ class LoanStatusRead(BaseModel):
     payments_left: int
     payments_left_by_term: int
     short_months: list[LoanShortMonth]
+
+
+class OfficialDebtStatusRead(BaseModel):
+    """Переплата по официальной выплате вахты на месяц (task_official_payout_debt).
+
+    Строка на рабочее место. `debt` — непогашенный остаток на конец месяца,
+    `closed_on` — дата, на которую он ЗАФИКСИРОВАН как задолженность: место
+    закрыто (увольнение), гасить его больше нечем и взыскивают вне системы.
+    """
+
+    year: int
+    month: int
+    position_id: int
+    position_title: str | None = None
+    debt: Decimal
+    debt_before_month: Decimal
+    repaid_in_month: Decimal
+    closed_on: date | None = None
+    is_final: bool = False

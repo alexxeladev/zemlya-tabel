@@ -31,7 +31,7 @@ from app.schemas.employee import (
     EmployeeUpdate,
 )
 from app.schemas.employee_import import EmployeeImportResult
-from app.schemas.payout import LoanShortMonth, LoanStatusRead
+from app.schemas.payout import LoanShortMonth, LoanStatusRead, OfficialDebtStatusRead
 from app.schemas.payroll_statement import (
     CompanyShareInput,
     EmployeeSharesRead,
@@ -1101,6 +1101,54 @@ def get_loan_status(
             for y, m, pl, ac in state.short_months
         ],
     )
+
+
+@router.get("/{emp_id}/official-debt", response_model=list[OfficialDebtStatusRead])
+def get_official_debt(
+    emp_id: int,
+    year: Optional[int] = Query(default=None),
+    month: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: Employee = Depends(get_current_user),
+):
+    """Переплата по официальной выплате вахты на месяц (task_official_payout_debt).
+
+    Строка на охранное рабочее место: сколько долга пришло в месяц, сколько
+    погашено и сколько осталось. Уволенное место отдаёт `closed_on` — дату, на
+    которую остаток зафиксирован как задолженность.
+
+    По умолчанию — ПОСЛЕДНИЙ ЗАКОНЧЕННЫЙ месяц, как у займа: в текущем смены
+    ещё проставляют, и долг в начале месяца выглядел бы завышенным.
+    """
+    if not can_see_finances(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
+    emp = db.get(Employee, emp_id)
+    if not emp:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
+    if (year is None) != (month is None):
+        raise HTTPException(status_code=422, detail="Год и месяц задаются парой")
+    if year is None:
+        today = datetime.date.today()
+        prev = datetime.date(today.year, today.month, 1) - datetime.timedelta(days=1)
+        year, month = prev.year, prev.month
+    elif not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        raise HTTPException(status_code=422, detail="Invalid year/month")
+
+    from app.services.official_debt_history import debt_status
+
+    rows = debt_status(db, emp, year, month)
+    if is_department_scoped(current_user):
+        # Доступ проверяется по отделу КАЖДОГО рабочего места, как у премий и
+        # займа (`access.md` п.2.8): у совместителя охранное место может быть в
+        # чужом отделе, и его долг менеджеру другого отдела не показываем.
+        by_position = {p.id: p.department_id for p in emp.positions}
+        rows = [
+            row for row in rows
+            if can_access_department(current_user, by_position.get(row["position_id"]))
+        ]
+    return [
+        OfficialDebtStatusRead(year=year, month=month, **row) for row in rows
+    ]
 
 
 @router.get("/{emp_id}/company-shares", response_model=EmployeeSharesRead)
