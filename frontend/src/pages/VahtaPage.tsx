@@ -45,6 +45,7 @@ import type {
 import { formatMoney } from '../utils/money'
 import { UI_KEYS } from '../utils/persist'
 import { companyLabel } from '../utils/companies'
+import { canOpenGuardStaff, guardStaffPositionPath } from '../utils/guardStaff'
 import { defaultJobTitleId, useGuardJobTitles } from '../hooks/useGuardJobTitles'
 import { ConfirmDialog } from '../components/ds/ConfirmDialog'
 import { RowMenu, type MenuItem } from '../components/ds/Menu'
@@ -145,7 +146,9 @@ interface PersonRowProps {
   showMoney: boolean
   canManage: boolean
   canEdit: boolean
-  canOpenCard: boolean
+  /** Куда ведёт ФИО: рабочее место охраны, общая карточка или никуда. */
+  personHref: string | null
+  role: string | null | undefined
   query: string
   onPaintStart: (row: VahtaRow, day: number) => void
   onPaintOver: (row: VahtaRow, day: number) => void
@@ -186,7 +189,7 @@ function highlight(text: string | null, query: string) {
  */
 const PersonRow = memo(
   function PersonRow({
-    row, firstDay, lastDay, midDay, showMoney, canManage, canEdit, canOpenCard, query,
+    row, firstDay, lastDay, midDay, showMoney, canManage, canEdit, personHref, role, query,
     onPaintStart, onPaintOver, onMoney, onReplace, onRemove, onKind, onRate, placeRate,
     postLabel, jobTitles,
   }: PersonRowProps) {
@@ -239,10 +242,14 @@ const PersonRow = memo(
           style={{ width: COL_NAME_W, minWidth: COL_NAME_W, maxWidth: COL_NAME_W }}
           title={row.employee_name ?? 'вакансия'}
         >
-          {row.employee_id && canOpenCard ? (
+          {row.employee_name && personHref ? (
             <Link
-              to={`/admin/employees?employee_id=${row.employee_id}`}
-              title="Открыть карточку сотрудника"
+              to={personHref}
+              title={
+                canOpenGuardStaff(role)
+                  ? 'Открыть рабочее место в охране'
+                  : 'Открыть карточку сотрудника'
+              }
               className="font-medium text-ds-ink hover:text-ds-accent hover:underline"
             >
               {highlight(row.employee_name, query)}
@@ -500,7 +507,22 @@ export function VahtaPage() {
   const { year, month, setPeriod } = usePeriodStore()
   const role = useAuthStore((s) => s.user?.role)
   const roleCanManage = role === 'admin' || role === 'manager'
-  const canOpenCard = role === 'admin' || role === 'manager' || role === 'accountant'
+  // Куда ведёт ФИО. Из ТАБЕЛЯ смотрят на рабочее место в охране — должность,
+  // даты на месте, пост и смены месяца; ФИО, таб. № и доступ правятся в общей
+  // карточке, и ссылка туда есть в самой панели. Бухгалтеру вкладка настроек
+  // закрыта (`canOpenGuardStaff`), поэтому ему остаётся общая карточка —
+  // отнимать единственный переход незачем. Табельщику недоступно ни то, ни
+  // другое: ссылки нет.
+  const personHrefFor = useCallback(
+    (row: VahtaRow): string | null => {
+      if (!row.employee_id) return null
+      if (canOpenGuardStaff(role) && row.position_id) {
+        return guardStaffPositionPath(row.position_id, year, month)
+      }
+      return role === 'accountant' ? `/admin/employees?employee_id=${row.employee_id}` : null
+    },
+    [role, year, month],
+  )
 
   // Режим отображения: месяц целиком или расчётная половина. Запоминается между
   // заходами, как остальные настройки вида.
@@ -1150,7 +1172,8 @@ export function VahtaPage() {
                           showMoney={showMoney}
                           canManage={canManage}
                           canEdit={canEdit}
-                          canOpenCard={canOpenCard}
+                          personHref={personHrefFor(row)}
+                          role={role}
                           query={query}
                           onPaintStart={onPaintStart}
                           onPaintOver={onPaintOver}

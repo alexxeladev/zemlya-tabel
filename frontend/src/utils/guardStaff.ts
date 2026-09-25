@@ -24,9 +24,19 @@ export function canOpenGuardStaff(role: string | null | undefined): boolean {
   return role === 'admin' || role === 'manager'
 }
 
-/** Ссылка сразу на рабочее место: вкладка откроется с его формой. */
-export function guardStaffPositionPath(positionId: number): string {
-  return vahtaSettingsPath('staff', { positionId })
+/**
+ * Ссылка сразу на рабочее место: вкладка откроется с его формой.
+ *
+ * Месяц передаётся, когда переход идёт ИЗ табеля: панель показывает блок «в
+ * <месяце>» — пост, смены, начислено, — и он должен совпасть с тем месяцем, на
+ * который человек смотрел. Без месяца вкладка откроется на текущем.
+ */
+export function guardStaffPositionPath(
+  positionId: number,
+  year?: number,
+  month?: number,
+): string {
+  return vahtaSettingsPath('staff', { positionId, year, month })
 }
 
 export function isGuardDepartment(dept: { is_guard_department?: boolean } | null | undefined): boolean {
