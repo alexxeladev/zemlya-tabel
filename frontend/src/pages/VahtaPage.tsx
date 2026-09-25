@@ -52,6 +52,13 @@ import { RowMenu, type MenuItem } from '../components/ds/Menu'
 import { MONTHS_RU, MONTHS_RU_GEN, MONTHS_RU_PREP } from '../utils/ruDate'
 import { companyColorByIndex } from '../utils/colors'
 import { vahtaSettingsPath } from '../utils/vahtaSettings'
+import {
+  employmentLabel,
+  vahtaColWidth,
+  vahtaTailColumns,
+  vahtaTaxLabel,
+} from '../utils/vahtaColumns'
+import { countPeople, showsInPeriod } from '../utils/vahtaRows'
 
 // Должности — справочник вахты (настройки → «Должности»), а не константа
 // экрана: грузятся хуком useGuardJobTitles и передаются строкам и окнам.
@@ -79,11 +86,16 @@ const LEFT_RATE = COL_NAME_W + COL_ROLE_W
  * «4 чел. · 5 строк» у экипажа и объекта. Считаются ЛЮДИ (уникальные), а строк
  * бывает больше — человек на двух половинах месяца или на двух постах одного
  * объекта. Пустое место — «никого».
+ *
+ * Считать надо по ПОКАЗАННЫМ строкам, а не по всем строкам карточки: в режиме
+ * половины строки без смен скрыты, и «4 чел.» над двумя строками читается как
+ * поломка — ровно то, от чего защищает счётчик скрытых над таблицей (нашло
+ * ревью: 14 карточек дева из 28).
  */
-function placeCount(card: VahtaCard): string {
-  const people = new Set(card.rows.filter((r) => r.employee_id).map((r) => r.employee_id)).size
+function placeCount(rows: VahtaRow[]): string {
+  const people = countPeople(rows)
   const head = people ? `${people} чел.` : 'никого'
-  return card.rows.length > people ? `${head} · ${plural(card.rows.length, 'строка', 'строки', 'строк')}` : head
+  return rows.length > people ? `${head} · ${plural(rows.length, 'строка', 'строки', 'строк')}` : head
 }
 
 function money(value: string | null | undefined): string {
@@ -165,6 +177,57 @@ interface PersonRowProps {
   jobTitles: GuardJobTitle[]
 }
 
+/**
+ * Ячейка премии или штрафа. Заполненная показывает сумму со знаком, пустая —
+ * пунктирной кнопкой предлагает её завести.
+ *
+ * Колонки в табеле РАЗДЕЛЬНЫЕ (как в исходной таблице бухгалтерии), а правятся
+ * обе там же, где и раньше: клик по любой из них открывает тот же поповер
+ * строки — он ведёт премию, штраф и примечание разом, и делить его на два не
+ * было бы чем оправдать.
+ */
+function MoneyCell({
+  row, value, sign, placeholder, canManage, onOpen,
+}: {
+  row: VahtaRow
+  value: string | null | undefined
+  sign: '+' | '−'
+  placeholder: string
+  canManage: boolean
+  onOpen: (row: VahtaRow, anchor: DOMRect) => void
+}) {
+  const amount = parseFloat(value ?? '0')
+  const filled = amount > 0
+  if (!canManage) {
+    return (
+      <span className="text-[12px] tabular-nums text-ds-muted">
+        {filled ? money(value) : '—'}
+      </span>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={(e) => onOpen(row, (e.currentTarget as HTMLElement).getBoundingClientRect())}
+      title={`${placeholder[0].toUpperCase()}${placeholder.slice(1)} — клик открывает окно премии, штрафа и примечания`}
+      className={`inline-flex h-[26px] cursor-pointer items-center rounded-ds-sm border px-2 text-[12px] tabular-nums ${
+        filled
+          ? 'border-transparent hover:border-ds-control-line hover:bg-ds-surface'
+          : 'border-dashed border-ds-control-line text-ds-muted hover:bg-ds-surface'
+      }`}
+    >
+      {filled ? (
+        <span className={sign === '+' ? 'text-ds-ok' : 'text-ds-danger'}>
+          {sign}
+          {money(value)}
+        </span>
+      ) : (
+        placeholder
+      )}
+    </button>
+  )
+}
+
 /** Подсветка найденного куска — без неё в 85 строках совпадение не заметить. */
 function highlight(text: string | null, query: string) {
   if (!text) return null
@@ -225,10 +288,6 @@ const PersonRow = memo(
       () => Array.from({ length: lastDay - firstDay + 1 }, (_, i) => firstDay + i),
       [firstDay, lastDay],
     )
-    const hasAdjustments =
-      parseFloat(row.premium ?? '0') > 0 ||
-      parseFloat(row.penalty ?? '0') > 0 ||
-      parseFloat(row.official_payout ?? '0') > 0
 
     return (
       <tr
@@ -396,19 +455,115 @@ const PersonRow = memo(
           </td>
         ))}
 
-        <td className="border-b border-ds-line px-1.5 py-1 text-right font-semibold tabular-nums" style={{ width: 44 }}>
+        {/* Хвост строки — в порядке исходной таблицы бухгалтерии: смен,
+            зарплата, трудоустройство, премия, штраф, начислено, оф. выплата,
+            налог, к выплате. Строка читается слева направо как сборка суммы:
+            зарплата + премия − штраф = начислено, начислено − оф. выплата = к
+            выплате. Порядок и подписи — `utils/vahtaColumns`, ключи `data-col`
+            сверяет `vahtaColumns.test.ts`: разъехавшись с шапкой, ячейки встали
+            бы под чужими заголовками. */}
+        <td
+          data-col="shifts"
+          className="border-b border-ds-line px-1.5 py-1 text-right font-semibold tabular-nums"
+          style={{ width: vahtaColWidth('shifts') }}
+        >
           {row.shifts || '—'}
         </td>
 
         {showMoney && (
+          /* Зарплата — смены × ставка строки, БЕЗ премии и штрафа: с неё
+             начинается сверка строки в исходной таблице. Только показ. */
+          <td
+            data-col="salary"
+            className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right tabular-nums text-ds-ink"
+            style={{ width: vahtaColWidth('salary') }}
+            title={
+              row.pay_type === 'salary'
+                ? 'Оклад за отмеченные дни каждой половины месяца'
+                : `Смены × ставка: ${row.shifts} × ${money(row.rate)}`
+            }
+          >
+            {parseFloat(row.salary ?? '0') ? money(row.salary) : '—'}
+          </td>
+        )}
+
+        {/* Трудоустройство — кадровый признак, не деньги: его видит и
+            табельщик. Правится в форме сотрудника охраны, здесь только показ. */}
+        <td
+          data-col="employment"
+          className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-left text-[12px] text-ds-ink-2"
+          style={{ width: vahtaColWidth('employment') }}
+          title={
+            row.employee_id === null
+              ? 'Место свободно — человека нет'
+              : row.is_official
+                ? 'Официально устроен: часть выплаты идёт через банк, на неё начисляется налог'
+                : 'Неофициально: банковской выплаты и налога нет'
+          }
+        >
+          {employmentLabel(row.is_official, row.employee_id !== null)}
+        </td>
+
+        {showMoney && (
           <>
-            <td className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right font-semibold tabular-nums text-ds-ok">
+            {/* Премия и штраф — РАЗДЕЛЬНЫМИ колонками, как в исходной таблице;
+                правятся там же, где и раньше — в поповере строки, он открывается
+                кликом по любой из двух ячеек. */}
+            <td
+              data-col="premium"
+              className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right"
+              style={{ width: vahtaColWidth('premium') }}
+            >
+              <MoneyCell
+                value={row.premium}
+                sign="+"
+                placeholder="премия"
+                canManage={canManage}
+                onOpen={onMoney}
+                row={row}
+              />
+            </td>
+            <td
+              data-col="penalty"
+              className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right"
+              style={{ width: vahtaColWidth('penalty') }}
+            >
+              <MoneyCell
+                value={row.penalty}
+                sign="−"
+                placeholder="штраф"
+                canManage={canManage}
+                onOpen={onMoney}
+                row={row}
+              />
+            </td>
+            {/* Начислено — в исходной таблице такой колонки нет, у нас есть: от
+                неё считается разнесение по юрлицам. Стоит после штрафа, перед
+                вычетами — сумма собрана, ничего ещё не вычтено. */}
+            <td
+              data-col="accrued"
+              className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right font-semibold tabular-nums text-ds-ok"
+              style={{ width: vahtaColWidth('accrued') }}
+              title={`Зарплата ${money(row.salary)} + премия ${money(row.premium)} − штраф ${money(row.penalty)}`}
+            >
               {parseFloat(row.accrued ?? '0') ? money(row.accrued) : '—'}
+            </td>
+            {/* Оф. выплата — вычисляется из официальной зарплаты рабочего места,
+                руками не вводится (task_guard_form_rate_official). */}
+            <td
+              data-col="official"
+              className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right tabular-nums text-ds-ink-2"
+              style={{ width: vahtaColWidth('official') }}
+              title="Половина официальной зарплаты за каждую половину месяца — из формы сотрудника, здесь не правится"
+            >
+              {parseFloat(row.official_payout ?? '0') ? money(row.official_payout) : '—'}
             </td>
             {/* Налог на официальную часть: сверх начисленного, но входит в
                 разнесение по юрлицам — отсюда и разница сумм в подвале. */}
             <td
+              data-col="tax"
               className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right tabular-nums text-ds-ink-2"
+              style={{ width: vahtaColWidth('tax') }}
               title={
                 parseFloat(row.tax ?? '0')
                   ? `Налог с официальной выплаты ${money(row.official_payout)}. ` +
@@ -419,46 +574,11 @@ const PersonRow = memo(
             >
               {parseFloat(row.tax ?? '0') ? money(row.tax) : '—'}
             </td>
-            <td className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right" style={{ width: 170 }}>
-              {/* Премия и штраф вводятся отсюда: пустая ячейка прямо предлагает
-                  их завести, заполненная показывает суммы словами. */}
-              {canManage ? (
-                <button
-                  type="button"
-                  onClick={(e) =>
-                    onMoney(row, (e.currentTarget as HTMLElement).getBoundingClientRect())
-                  }
-                  className={`inline-flex h-[26px] cursor-pointer items-center rounded-ds-sm border px-2 text-[12px] ${
-                    hasAdjustments
-                      ? 'border-transparent text-ds-ink-2 hover:border-ds-control-line hover:bg-ds-surface'
-                      : 'border-dashed border-ds-control-line text-ds-muted hover:bg-ds-surface'
-                  }`}
-                >
-                  {hasAdjustments ? (
-                    <>
-                      {parseFloat(row.premium ?? '0') > 0 && (
-                        <span className="text-ds-ok">+{money(row.premium)}&nbsp;</span>
-                      )}
-                      {parseFloat(row.penalty ?? '0') > 0 && (
-                        <span className="text-ds-danger">−{money(row.penalty)}&nbsp;</span>
-                      )}
-                      {parseFloat(row.official_payout ?? '0') > 0 && (
-                        <span>оф. {money(row.official_payout)}</span>
-                      )}
-                    </>
-                  ) : (
-                    'премия, штраф'
-                  )}
-                </button>
-              ) : (
-                <span className="text-[12px] text-ds-muted">
-                  {hasAdjustments ? money(row.accrued) : 'нет'}
-                </span>
-              )}
-            </td>
             {/* К выплате = начислено − оф. выплата, вверх до 500 ₽ по половинам. */}
             <td
+              data-col="payout"
               className="whitespace-nowrap border-b border-ds-line px-2 py-1 text-right font-semibold tabular-nums text-ds-ink"
+              style={{ width: vahtaColWidth('payout') }}
               title={
                 `Начислено минус официальная выплата — остаток из кассы. ` +
                 `Точно ${money(row.net_payout_exact)}, округлено вверх до 500 ₽ ` +
@@ -480,6 +600,11 @@ const PersonRow = memo(
     a.row.id === b.row.id &&
     a.row.days.join(',') === b.row.days.join(',') &&
     a.row.accrued === b.row.accrued &&
+    // Зарплата и трудоустройство — свои колонки, и без них memo оставил бы в
+    // строке прежние значения (сравнения по дням и ставке тут не хватает:
+    // официальность меняется в форме сотрудника, мимо строки).
+    a.row.salary === b.row.salary &&
+    a.row.is_official === b.row.is_official &&
     a.row.tax === b.row.tax &&
     a.row.net_payout === b.row.net_payout &&
     a.row.net_payout_exact === b.row.net_payout_exact &&
@@ -543,6 +668,13 @@ export function VahtaPage() {
   const [hireAt, setHireAt] = useState<VahtaCard | null>(null)
   const [addTo, setAddTo] = useState<VahtaCard | null>(null)
   const [moneyRow, setMoneyRow] = useState<{ row: VahtaRow; anchor: DOMRect } | null>(null)
+  /**
+   * Строки, которым правили дни в этом сеансе. В режиме половины они остаются
+   * видимыми, даже когда смен в них не осталось: иначе снятая по ошибке
+   * последняя смена прятала бы строку прямо под курсором и вернуть её было бы
+   * нечем. Сбрасывается при каждой загрузке месяца.
+   */
+  const [editedRows, setEditedRows] = useState<ReadonlySet<number>>(() => new Set())
 
   const reload = useCallback(async () => {
     try {
@@ -559,6 +691,17 @@ export function VahtaPage() {
     setLoading(true)
     void reload()
   }, [reload])
+
+  /**
+   * Пометки «строку правили в этом сеансе» снимаются при уходе на другой месяц
+   * или в другой режим — но НЕ при обычном перечитывании месяца: снятие смен
+   * само заканчивается `reload()`, и строка, из которой только что убрали
+   * последнюю смену, иначе исчезала бы сразу после сохранения (поймано живой
+   * проверкой в браузере).
+   */
+  useEffect(() => {
+    setEditedRows(new Set())
+  }, [year, month, view])
 
   useEffect(() => {
     listVahtaSites().then(setSites).catch(() => setSites([]))
@@ -627,6 +770,11 @@ export function VahtaPage() {
     [query, kindFilter],
   )
 
+  // Режим половины: строки без смен в ней не показываются вовсе (решение
+  // заказчика). Правило — `utils/vahtaRows`; итоги подвала и разнесение по
+  // юрлицам считает сервер ПО ВСЕМ строкам, поэтому в этом режиме сумма видимых
+  // строк меньше итога — число скрытых названо в счётчике над таблицей.
+  const viewHalf = data?.view_half ?? null
   const shownZones = useMemo(
     () =>
       zones
@@ -634,11 +782,27 @@ export function VahtaPage() {
         .map((z) => ({
           zone: z,
           cards: z.cards
-            .map((card) => ({ card, rows: card.rows.filter((r) => matches(r, card)) }))
+            .map((card) => ({
+              card,
+              rows: card.rows.filter(
+                (r) =>
+                  matches(r, card) && showsInPeriod(r, viewHalf, editedRows.has(r.id)),
+              ),
+            }))
             .filter((g) => g.rows.length > 0 || !filtering),
         }))
         .filter((z) => z.cards.length > 0),
-    [zones, zoneFilter, matches, filtering],
+    [zones, zoneFilter, matches, filtering, viewHalf, editedRows],
+  )
+
+  /** Сколько строк спрятал режим половины — из прошедших остальные фильтры. */
+  const hiddenInPeriod = useMemo(
+    () =>
+      zones
+        .filter((z) => !zoneFilter || z.zone_name === zoneFilter)
+        .flatMap((z) => z.cards.flatMap((c) => c.rows.filter((r) => matches(r, c))))
+        .filter((r) => !showsInPeriod(r, viewHalf, editedRows.has(r.id))).length,
+    [zones, zoneFilter, matches, viewHalf, editedRows],
   )
 
   const shownRows = useMemo(
@@ -656,6 +820,9 @@ export function VahtaPage() {
   const painting = useRef<{ rowId: number; on: boolean; days: Set<number> } | null>(null)
 
   const patchDays = useCallback((rowId: number, days: number[]) => {
+    // Строку правят — в режиме половины она остаётся на экране до перезагрузки
+    // месяца, даже если смен в ней не осталось (см. `utils/vahtaRows`).
+    setEditedRows((prev) => (prev.has(rowId) ? prev : new Set(prev).add(rowId)))
     setData((prev) => {
       if (!prev) return prev
       // `days` — отметки всего месяца; смены — только в показанном отрезке.
@@ -833,6 +1000,9 @@ export function VahtaPage() {
     (_, i) => data.first_day + i,
   )
   const mid = data.first_half_last_day
+  // Колонки после сетки дней — один список на шапку, ширины и число колонок
+  // строк-спин. Режим половины месяца на состав не влияет: меняются суммы.
+  const tailColumns = vahtaTailColumns(showMoney)
   const halfLabel =
     data.view_half === null
       ? ''
@@ -977,6 +1147,19 @@ export function VahtaPage() {
               {plural(shownPeople, 'человек', 'человека', 'человек')}
             </b>{' '}
             · {plural(shownRows.length, 'строка', 'строки', 'строк')}
+            {/* Скрытые строки надо назвать: пропажа половины табеля иначе
+                читается как поломка. Подсказка обязана быть точной: подвал в
+                режиме половины считает ЗА ЭТУ ПОЛОВИНУ, но по ВСЕМ её строкам,
+                включая скрытые — у них нет смен, зато есть оф. выплата и налог,
+                поэтому «К выплате» и «Налог» внизу больше суммы видимых строк
+                (нашло ревью: 16–30 сентября — 2 121 117,50 против 2 190 500 и
+                46 107,82 против 16 273,35). */}
+            {hiddenInPeriod > 0 && (
+              <span title="В этой половине у них нет ни одной смены. Итоги внизу и разнесение по юрлицам считаются за эту половину по ВСЕМ её строкам, включая скрытые: у скрытых бывают официальная выплата и налог.">
+                {' · скрыто без смен: '}
+                <b className="font-medium text-ds-ink-2">{hiddenInPeriod}</b>
+              </span>
+            )}
           </span>
         </div>
       </div>
@@ -1017,28 +1200,29 @@ export function VahtaPage() {
                   {day}
                 </th>
               ))}
-              <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right">
-                Смен
-              </th>
-              {showMoney && (
-                <>
-                  <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right">
-                    Начислено
-                  </th>
-                  <th
-                    className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right"
-                    title="Налог на официальную выплату. Входит в разнесение по юрлицам сверх начисленного."
-                  >
-                    Налог{data.employer_tax_percent ? ` ${Number(data.employer_tax_percent)} %` : ''}
-                  </th>
-                  <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right">
-                    Премия и штраф
-                  </th>
-                  <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 text-right">
-                    К выплате
-                  </th>
-                </>
-              )}
+              {/* Подписи и порядок — `utils/vahtaColumns` (как в исходной
+                  таблице бухгалтерии). Набор колонок зависит ТОЛЬКО от того,
+                  видит ли актор деньги: в режиме половины месяца он тот же. */}
+              {tailColumns.map((col) => (
+                <th
+                  key={col.key}
+                  className={`sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted px-2 ${
+                    col.key === 'employment' ? 'text-left' : 'text-right'
+                  }`}
+                  style={{ width: col.width, minWidth: col.width }}
+                  title={
+                    col.key === 'tax'
+                      ? 'Налог на официальную выплату. Входит в разнесение по юрлицам сверх начисленного.'
+                      : col.key === 'salary'
+                        ? 'Смены × ставка строки, без премии и штрафа.'
+                        : col.key === 'accrued'
+                          ? 'Зарплата + премия − штраф. От неё считается разнесение по юрлицам.'
+                          : undefined
+                  }
+                >
+                  {col.key === 'tax' ? vahtaTaxLabel(data.employer_tax_percent) : col.label}
+                </th>
+              ))}
               <th className="sticky top-0 z-20 border-b border-ds-line-strong bg-ds-surface-2 py-[7px] text-[11px] font-semibold text-ds-muted">
                 <span className="sr-only">Действия</span>
               </th>
@@ -1050,10 +1234,11 @@ export function VahtaPage() {
               const zoneRows = cards.flatMap((c) => c.rows)
               const crewCount = cards.filter((c) => c.card.kind === 'crew').length
               const siteCount = cards.filter((c) => c.card.kind === 'site').length
-              // ФИО, должность, ставка · дни · смен · 4 денежные · меню «⋯».
-              // Было 4 + дни: колонку «Смен» не считали, и строки зоны и места
-              // обрывались на одну колонку раньше таблицы.
-              const totalCols = 5 + days.length + (showMoney ? 4 : 0)
+              // ФИО, должность, ставка · дни · колонки хвоста · меню «⋯».
+              // Хвост считается по тому же списку, из которого рисуется шапка:
+              // разойдясь с ней, строки зоны и места обрывались бы раньше
+              // таблицы (так уже было, когда «Смен» не учитывали).
+              const totalCols = 3 + days.length + tailColumns.length + 1
               return (
                 <ZoneGroup key={zone.zone_id}>
                   {/* Спина зоны: верхний уровень группировки, без карточек. */}
@@ -1125,7 +1310,7 @@ export function VahtaPage() {
                           className="sticky z-10 whitespace-nowrap border-b border-ds-line bg-ds-surface-2 px-2 text-[12px] text-ds-muted"
                           style={{ left: LEFT_ROLE }}
                         >
-                          {placeCount(card)}
+                          {placeCount(rows)}
                         </td>
                         <td
                           className="sticky z-10 border-r border-r-ds-line-strong border-b border-ds-line bg-ds-surface-2"
@@ -1207,7 +1392,19 @@ export function VahtaPage() {
 
         {shownRows.length === 0 && (
           <div className="p-6">
-            {filtering ? (
+            {/* Пустой экран обязан называть НАСТОЯЩУЮ причину. Строки, скрытые
+                фильтром половины, — это не «состав не заведён» и не «никого не
+                нашлось»: состав есть и человек найден, просто смен в этой
+                половине нет ни у кого (нашло ревью). */}
+            {hiddenInPeriod > 0 ? (
+              <EmptyState
+                title={`В этой половине смен нет ни у кого${filtering ? ' из найденных' : ''}`}
+                compact
+              >
+                Скрыто строк без смен: {hiddenInPeriod}. Посмотрите месяц целиком
+                или другую половину{filtering ? ', либо сбросьте фильтры' : ''}.
+              </EmptyState>
+            ) : filtering ? (
               <EmptyState title="Никого не нашлось" compact>
                 Сбросьте фильтры или измените запрос.
               </EmptyState>
@@ -1237,7 +1434,9 @@ export function VahtaPage() {
             </span>
             {/* Налоги объясняют, почему разнесение больше начисленного. */}
             <span title="Налог на официальную часть выплаты. Затрата компании: входит в разнесение по юрлицам, но не в начислено и не в выплату.">
-              Налог{data.employer_tax_percent ? ` ${Number(data.employer_tax_percent)} % от оф. выплаты` : ''}
+              {/* Подпись со ставкой — из того же места, что шапка колонки:
+                  своя копия при ставке 0 писала «Налог 0 %», а шапка «Налог». */}
+              {vahtaTaxLabel(data.employer_tax_percent)} от оф. выплаты
               <b className="ml-1.5 text-[15px] font-semibold tabular-nums text-ds-ink">{money(data.total_tax)}</b>
             </span>
           </>
