@@ -144,6 +144,9 @@ class GuardCrewCreate(BaseModel):
 
 class GuardCrewUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    #: Перенос экипажа в другую зону — законная операция: экипаж по-прежнему
+    #: принадлежит ОДНОЙ зоне, меняется только какой.
+    zone_id: int | None = None
     shift_rate: Decimal | None = Field(default=None, ge=0)
     sort_order: int | None = None
     is_active: bool | None = None

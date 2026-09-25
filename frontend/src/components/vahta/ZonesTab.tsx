@@ -275,8 +275,14 @@ export function ZonesTab({ year, month }: { year: number; month: number }) {
           )
           return { zone, zoneCrews, zoneSites }
         })
-        .filter((z) => z.zoneCrews.length > 0 || z.zoneSites.length > 0),
-    [zones, crews, sites, hit],
+        // Фильтруем ТОЛЬКО при непустом поиске. Иначе пустая зона (а новая
+        // пуста по определению) выпадала из таблицы: создавалась, но её не было
+        // видно, и добавить в неё объект было нельзя — заказчик 25.09.2026.
+        .filter(
+          ({ zone, zoneCrews, zoneSites }) =>
+            !query || hit(zone.name) || zoneCrews.length > 0 || zoneSites.length > 0,
+        ),
+    [zones, crews, sites, hit, query],
   )
 
   const saveSiteRate = useCallback(
@@ -551,6 +557,7 @@ export function ZonesTab({ year, month }: { year: number; month: number }) {
         <CrewModal
           zone={editCrew.zone}
           crew={editCrew.crew}
+          zones={zones}
           companies={companies}
           onClose={() => setEditCrew(null)}
           onDone={() => {
@@ -974,17 +981,20 @@ function PostModal({
 function CrewModal({
   zone,
   crew,
+  zones,
   companies,
   onClose,
   onDone,
 }: {
   zone: VahtaZone
   crew: VahtaCrew | null
+  zones: VahtaZone[]
   companies: Company[]
   onClose: () => void
   onDone: () => void
 }) {
   const [name, setName] = useState(crew?.name ?? '')
+  const [zoneId, setZoneId] = useState(crew?.zone_id ?? zone.id)
   const [rate, setRate] = useState(crew ? String(parseFloat(crew.shift_rate ?? '0')) : '')
   const [shares, setShares] = useState<Record<number, string>>(() =>
     sharesFrom(crew?.shares ?? []),
@@ -999,8 +1009,8 @@ function CrewModal({
       shares: sharesToList(shares),
     }
     try {
-      if (crew) await updateVahtaCrew(crew.id, payload)
-      else await createVahtaCrew({ ...payload, zone_id: zone.id })
+      if (crew) await updateVahtaCrew(crew.id, { ...payload, zone_id: zoneId })
+      else await createVahtaCrew({ ...payload, zone_id: zoneId })
       onDone()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не удалось сохранить экипаж')
@@ -1056,6 +1066,26 @@ function CrewModal({
             className="w-full rounded-md border border-gray-300 px-3 py-2"
           />
         </label>
+
+        {crew && (
+          <label className="col-span-2 block text-sm">
+            <span className="mb-1 block text-gray-600">Зона обслуживания</span>
+            <select
+              value={zoneId}
+              onChange={(e) => setZoneId(Number(e.target.value))}
+              className="w-full rounded-md border border-gray-300 px-3 py-2"
+            >
+              {zones.map((z) => (
+                <option key={z.id} value={z.id}>
+                  {z.name}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-[11px] text-gray-400">
+              Экипаж принадлежит одной зоне; сменить её можно — например, зоны перекроили.
+            </span>
+          </label>
+        )}
 
         <label className="block text-sm">
           <span className="mb-1 block text-gray-600">Ставка за смену</span>

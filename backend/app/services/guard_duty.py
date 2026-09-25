@@ -271,6 +271,13 @@ def update_crew(db: Session, crew: GuardCrew, data: dict) -> GuardCrew:
     for field in ("name", "shift_rate", "sort_order", "is_active"):
         if field in data and data[field] is not None:
             setattr(crew, field, data[field])
+    # Перенос экипажа в другую зону — законная операция, как у объекта: экипаж
+    # по-прежнему принадлежит ОДНОЙ зоне, меняется только какой (зоны
+    # перекраивают).
+    if data.get("zone_id"):
+        if db.get(GuardZone, data["zone_id"]) is None:
+            raise GuardError("Зона обслуживания не найдена")
+        crew.zone_id = data["zone_id"]
     return crew
 
 

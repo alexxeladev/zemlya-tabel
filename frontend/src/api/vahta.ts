@@ -100,6 +100,8 @@ export const updateVahtaCrew = (
   id: number,
   data: Partial<{
     name: string
+    //: Перенос экипажа в другую зону — законная операция, как у объекта.
+    zone_id: number
     shift_rate: string
     sort_order: number
     is_active: boolean

@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
-from app.models.position_terms import TERMS_BEGINNING
 from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
@@ -24,8 +23,8 @@ from app.models.guard_posts import (
     GuardSiteShare,
     GuardZone,
 )
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.positions import EmployeePosition
-from app.services.position_terms import set_effective_from
 from app.services.guard_duty import (
     create_assignment,
     next_tab_number,
@@ -34,6 +33,7 @@ from app.services.guard_duty import (
     set_days,
 )
 from app.services.payroll_statement import build_payroll_statement
+from app.services.position_terms import set_effective_from
 from tests.conftest import get_token
 
 
@@ -1150,3 +1150,60 @@ class TestTimekeeperCreatesNoPositions:
         })
         assert resp.status_code == 201
         assert self._positions(db_session) == before + 1
+
+
+class TestZoneTransfer:
+    """Перенос экипажа между зонами (замечание заказчика 25.09.2026).
+
+    Объекту перенос был разрешён с самого начала, экипажу — нет, хотя модели это
+    не противоречит: экипаж по-прежнему принадлежит ОДНОЙ зоне, меняется только
+    какой (зоны перекраивают).
+
+    Охранное подразделение в системе ОДНО, поэтому проверок «а не чужой ли это
+    отдел» здесь нет: переносить некуда, все зоны ссылаются на один и тот же
+    отдел (решение заказчика 25.09.2026 — не городить защиту от несуществующего).
+    """
+
+    def test_crew_moves_to_another_zone(self, client, users, db_session, crew, guard_dept):
+        target = _make_zone(db_session, guard_dept, "Зона 2")
+        resp = client.patch(
+            f"/api/vahta/crews/{crew.id}",
+            json={"zone_id": target.id},
+            headers=_auth(client, "admin"),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["zone_id"] == target.id
+        db_session.refresh(crew)
+        assert crew.zone_id == target.id
+
+    def test_manager_moves_crew_too(self, client, users, db_session, crew, guard_dept):
+        """Настройки вахты ведёт менеджер охраны — основной пользователь."""
+        target = _make_zone(db_session, guard_dept, "Зона 3")
+        resp = client.patch(
+            f"/api/vahta/crews/{crew.id}",
+            json={"zone_id": target.id},
+            headers=_auth(client, "manager"),
+        )
+        assert resp.status_code == 200, resp.text
+        db_session.refresh(crew)
+        assert crew.zone_id == target.id
+
+    def test_crew_move_to_unknown_zone_is_rejected(self, client, users, crew):
+        resp = client.patch(
+            f"/api/vahta/crews/{crew.id}",
+            json={"zone_id": 999_999},
+            headers=_auth(client, "admin"),
+        )
+        assert resp.status_code == 422
+
+    def test_crew_edit_without_zone_still_works(self, client, users, db_session, crew):
+        """Правка ставки по клику zone_id не шлёт — перенос не должен мешать."""
+        before = crew.zone_id
+        resp = client.patch(
+            f"/api/vahta/crews/{crew.id}",
+            json={"shift_rate": "5500"},
+            headers=_auth(client, "admin"),
+        )
+        assert resp.status_code == 200, resp.text
+        db_session.refresh(crew)
+        assert str(crew.shift_rate) == "5500.00" and crew.zone_id == before
