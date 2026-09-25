@@ -21,7 +21,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { isTimesheetDeptChoice, departmentChoiceIsStale } from './departments.ts'
+import {
+  isTimesheetDeptChoice,
+  departmentChoiceIsStale,
+  companyFilterAfterLink,
+  departmentChoiceFromLink,
+} from './departments.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const source = (rel: string) => readFileSync(resolve(here, '..', rel), 'utf8')
@@ -197,8 +202,15 @@ test('сохранённое «Без отдела» у роли по отдел
 })
 
 test('ссылка ?department_id=none открывает группу «Без отдела»', () => {
+  // Разбор `?department_id=` уехал в `departmentChoiceFromLink` — он один и на
+  // выбор отдела, и на снятие фильтра юрлица. Сторож смотрит на поведение и на
+  // то, что экран применяет его результат, а не на текст разбора.
+  assert.equal(departmentChoiceFromLink('none'), 'none')
   const code = source('pages/TimesheetPage.tsx')
-  assert.ok(code.includes("raw === 'none'"), 'значение none в адресе не читается')
+  assert.ok(
+    code.includes('departmentChoiceFromLink(raw)') && code.includes('setDeptChoice(fromLink)'),
+    'значение none в адресе не доезжает до выбора отдела',
+  )
 })
 
 // ── 5. Переходы из других разделов ───────────────────────────────────────────
@@ -237,4 +249,84 @@ test('сброс устаревшего выбора по юрлицу прод�
   // сбрасывать нечего, отдела у неё нет.
   assert.equal(departmentChoiceIsStale(depts, 20, 'none'), false)
   assert.equal(departmentChoiceIsStale(depts, 20, null), false)
+})
+
+// ── 7. Ссылка сильнее сохранённого ФИЛЬТРА ЮРЛИЦА ────────────────────────────
+// Баг препрода 25.09.2026: «Задачи» → «Открыть табель» у Юридического
+// департамента (ООО «Земля МО») открывали ЭКРАН ВЫБОРА с отделами ЧОО
+// «Комфорт-Security» — сохранённый фильтр юрлица переживал переход, отдел из
+// ссылки в отфильтрованный список не входил, и `departmentChoiceIsStale`
+// сбрасывал выбор. До периода, ради которого переходили, было не добраться.
+
+test('ссылка с отделом снимает сохранённый фильтр чужого юрлица', () => {
+  const depts = [
+    { id: 10, head_company_id: 1 }, // Юридический департамент — «Земля МО»
+    { id: 20, head_company_id: 2 }, // ЧОП — «Комфорт-Security»
+  ]
+  // Как было: сохранённый фильтр убивал отдел из ссылки.
+  assert.equal(departmentChoiceIsStale(depts, 2, 10), true)
+  // Как стало: ссылка снимает фильтр, и выбор доживает до загрузки табеля.
+  const after = companyFilterAfterLink(2, '10')
+  assert.equal(after, null)
+  assert.equal(departmentChoiceIsStale(depts, after, 10), false)
+})
+
+test('без отдела в ссылке сохранённый фильтр юрлица остаётся', () => {
+  assert.equal(companyFilterAfterLink(2, null), 2)
+  assert.equal(companyFilterAfterLink(null, null), null)
+})
+
+test('группа «Без отдела» из ссылки тоже снимает фильтр', () => {
+  // У группы нет отдела, а значит и юрлица: под чужим фильтром её строки
+  // отсеялись бы по компании позиции, и экран снова был бы пуст.
+  assert.equal(companyFilterAfterLink(2, 'none'), null)
+})
+
+test('мусор в ?department_id фильтр не трогает', () => {
+  // Негодное значение отдел не задаёт (его отсеет справочник) — и фильтр,
+  // который человек выставил руками, снимать не за что.
+  assert.equal(companyFilterAfterLink(2, 'abc'), 2)
+  assert.equal(companyFilterAfterLink(2, ''), 2)
+})
+
+test('отдел из ссылки разбирается ОДНИМ правилом — вторая копия разъедется', () => {
+  assert.equal(departmentChoiceFromLink('none'), 'none')
+  assert.equal(departmentChoiceFromLink('10'), 10)
+  assert.equal(departmentChoiceFromLink('abc'), null)
+  assert.equal(departmentChoiceFromLink(null), null)
+  const code = source('pages/TimesheetPage.tsx')
+  assert.ok(
+    code.includes('departmentChoiceFromLink'),
+    'экран снова разбирает ?department_id сам',
+  )
+  assert.ok(
+    code.includes('companyFilterAfterLink'),
+    'экран снова не снимает фильтр юрлица при переходе по ссылке',
+  )
+})
+
+test('фильтр юрлица снимается ДО того, как хук прочитает хранилище', () => {
+  // Вся правка держится на ПОРЯДКЕ: снятие фильтра пишет в localStorage из
+  // инициализатора `useState` (блок ссылки), а `usePersistentState` читает
+  // оттуда ниже по файлу, на том же первом рендере. Переставь объявления
+  // местами — баг вернётся молча: чистые функции останутся верными, и все
+  // остальные тесты тоже (проверено ревью перестановкой).
+  const code = source('pages/TimesheetPage.tsx')
+  const write = code.indexOf('saveUiState(UI_KEYS.timesheetFilters')
+  const read = code.indexOf('const [filters, setFilters] = usePersistentState(')
+  assert.ok(write > 0, 'снятие фильтра юрлица по ссылке пропало')
+  assert.ok(read > 0, 'чтение фильтров хуком пропало')
+  assert.ok(
+    write < read,
+    'фильтр снимается ПОСЛЕ чтения хуком — переход по ссылке снова упрётся в экран выбора',
+  )
+})
+
+test('ссылка снимает фильтр и тогда, когда он НЕ конфликтовал', () => {
+  // Осознанный побочный эффект варианта А: в инициализаторе справочник отделов
+  // ещё не загружен, и узнать «а конфликтует ли фильтр с этим отделом» там
+  // нечем. Решат сузить до конфликтующих — этот тест упадёт и заставит
+  // переписать правило, а не менять поведение молча.
+  assert.equal(companyFilterAfterLink(1, '10'), null)
+  assert.equal(companyFilterAfterLink(1, 'none'), null)
 })

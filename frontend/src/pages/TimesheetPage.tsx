@@ -29,6 +29,8 @@ import {
   departmentsForCompany,
   departmentChoiceIsStale,
   positionInCompany,
+  companyFilterAfterLink,
+  departmentChoiceFromLink,
 } from '../utils/departments';
 import { quantitiesForVisibleDepartments } from '../utils/quantities';
 import { companyColorByIndex } from '../utils/colors';
@@ -43,11 +45,18 @@ import { useRowChecksStore } from '../store/rowChecks';
 import { useTimesheetViewStore, type DeptChoice } from '../store/timesheetView';
 import { usePeriodStore } from '../store/period';
 import { usePersistentState } from '../hooks/usePersistentState';
-import { UI_KEYS } from '../utils/persist';
+import { UI_KEYS, loadValidated, saveUiState } from '../utils/persist';
 import { QuantityPanel } from '../components/QuantityPanel';
 import { ColumnFilter } from '../components/ColumnFilter';
 import { RowCheckBox, RowCheckProgress } from '../components/RowCheck';
 import type { AbsenceKind, AutofillPreview, DepartmentQuantities, NightFund, NightShift, QuantityDistributionRow } from '../types/api';
+
+// Фильтры табеля в хранилище. Дефолт и проверка формы — ОДНИ на два места:
+// их читает `usePersistentState` ниже и снятие фильтра по ссылке (оно пишет в
+// хранилище ДО того, как хук оттуда прочитает, на том же первом рендере).
+const TIMESHEET_FILTERS = { search: '', companyId: null as number | null };
+const isTimesheetFilters = (v: unknown) =>
+  typeof v === 'object' && v !== null && 'companyId' in v;
 
 // ──────────────────────────────────────────────────────────────
 // Типы (минимальные, чтобы не зависеть от уточнений в api.ts)
@@ -711,9 +720,19 @@ export function TimesheetPage() {
     // Несуществующий отдел не проверяем здесь: его отсеет эффект ниже по
     // загруженному справочнику и вернёт на экран выбора.
     const raw = searchParams.get('department_id');
-    const dept = parseInt(raw ?? '', 10);
-    if (raw === 'none') useTimesheetViewStore.getState().setDeptChoice('none');
-    else if (Number.isFinite(dept)) useTimesheetViewStore.getState().setDeptChoice(dept);
+    const fromLink = departmentChoiceFromLink(raw);
+    if (fromLink !== null) useTimesheetViewStore.getState().setDeptChoice(fromLink);
+    // Ссылка сильнее не только сохранённого ОТДЕЛА, но и сохранённого ФИЛЬТРА
+    // ЮРЛИЦА: отдел из ссылки в отфильтрованный список не входит, и эффект
+    // ниже честно сбросил бы выбор на экран выбора — где нужного отдела тоже
+    // нет (гейт показывает отделы включённого юрлица). Снимаем фильтр в
+    // ХРАНИЛИЩЕ, до того как `usePersistentState` прочитает его на этом же
+    // рендере: из эффекта было бы поздно — сброс выбора успел бы сработать.
+    const saved = loadValidated(UI_KEYS.timesheetFilters, TIMESHEET_FILTERS, isTimesheetFilters);
+    const companyId = companyFilterAfterLink(saved.companyId, raw);
+    if (companyId !== saved.companyId) {
+      saveUiState(UI_KEYS.timesheetFilters, { ...saved, companyId });
+    }
     return null;
   });
 
@@ -759,8 +778,8 @@ export function TimesheetPage() {
   // companyId}`): валидатор смотрит на companyId, лишнее поле не мешает.
   const [filters, setFilters] = usePersistentState(
     UI_KEYS.timesheetFilters,
-    { search: '', companyId: null as number | null },
-    (v) => typeof v === 'object' && v !== null && 'companyId' in v,
+    TIMESHEET_FILTERS,
+    isTimesheetFilters,
   );
   const companyFilter = filters.companyId;
   const setCompanyFilter = (value: number | null) =>
