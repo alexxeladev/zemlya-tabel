@@ -184,8 +184,12 @@ def _payout_shares(
         summary_row = month_summary(
             state, rows[0].year, rows[0].month, half, rounding=round_guard_payout
         )
-        for key, only in (("row", half), (1, 1), (2, 2)):
-            summary = summary_row if key == "row" else month_summary(
+        # Доли считаются ПО ПОЛОВИНАМ, а доля строки за период — их сумма:
+        # иначе строка в режиме месяца показывала бы одно, а в режимах «1–15» и
+        # «16–31» — другое (нашло ревью). Веса внутри половины — начисление
+        # этой половины, поэтому деление честное в каждом разрезе.
+        for key, only in ((1, 1), (2, 2)):
+            summary = month_summary(
                 state, rows[0].year, rows[0].month, only,
                 rounding=round_guard_payout,
             )
@@ -210,6 +214,11 @@ def _payout_shares(
                     parts.get(a.id, _ZERO), exact.get(a.id, _ZERO),
                 )
         for a in rows:
+            halves_shown = (1, 2) if half is None else (half,)
+            shares[a.id]["row"] = (
+                sum((shares[a.id][h][0] for h in halves_shown), _ZERO),
+                sum((shares[a.id][h][1] for h in halves_shown), _ZERO),
+            )
             out[a.id] = {**shares[a.id], "summary": summary_row}
     return out
 

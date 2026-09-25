@@ -342,11 +342,25 @@ class TestReplacementWithinMonth:
         )
         db_session.commit()
         admin = _admin(db_session)
+        month_rows = {
+            r.id: r for z in build_guard_month(db_session, admin, YEAR, MONTH).zones
+            for c in z.cards for r in c.rows
+        }
         for half in (1, 2):
             month = build_guard_month(db_session, admin, YEAR, MONTH, half=half)
             rows = [r for z in month.zones for c in z.cards for r in c.rows]
-            total = sum((r.net_payout or _ZERO) for r in rows)
-            assert total == month.total_net_payout
+            # Сверяем не с собственной суммой подвала (это было бы X == X), а с
+            # тем, что строка показывает в режиме месяца: доля строки за месяц
+            # обязана быть суммой её долей по половинам.
+            for row in rows:
+                half_value = next(
+                    h.net_payout for h in month_rows[row.id].halves if h.half == half
+                )
+                assert row.net_payout == half_value
+        for row_id, row in month_rows.items():
+            assert row.net_payout == sum((h.net_payout or _ZERO) for h in row.halves), (
+                f"строка {row_id}: месяц не равен сумме половин"
+            )
 
 
 class TestMasking:
@@ -412,3 +426,54 @@ class TestKopecksAndVersions:
         db_session.commit()
         after = _row(db_session, rodionov).official_debt_after
         assert before < after < before * 2
+
+
+class TestIdleMonthCapacity:
+    """Чем месяц БЕЗ поста может гасить долг — ровно тем, что выдаёт касса."""
+
+    def _premium(self, db_session, employee, position_id, amount="40000"):
+        from app.models.employee_adjustments import EmployeeAdjustment
+
+        db_session.add(EmployeeAdjustment(
+            employee_id=employee.id, position_id=position_id,
+            year=NEXT_YEAR, month=NEXT_MONTH, kind="premium",
+            amount=Decimal(amount), reason="наследство демо-данных",
+        ))
+        db_session.commit()
+
+    def test_premium_without_position_counts_too(
+        self, db_session, worked_first_half
+    ):
+        """Запись с position_id IS NULL ведомость относит к основной позиции.
+
+        Значит и гасить долг она обязана: иначе касса деньги выдала, а долг
+        вырос на всю банковскую выплату (нашло ревью).
+        """
+        self._premium(db_session, worked_first_half, None)
+        row = _row(db_session, worked_first_half, NEXT_YEAR, NEXT_MONTH)
+        assert row.premium_amount == Decimal("40000")
+        assert row.official_debt_repaid > _ZERO
+        # Долг прошлой половины (15 000) + две половины месяца (30 000) минус
+        # то, что реально погашено премией.
+        assert row.official_debt_after < Decimal("45000")
+
+    def test_loan_deduction_lowers_what_can_repay_the_debt(
+        self, db_session, worked_first_half
+    ):
+        """Заём на охранном месте (наследство) тоже уменьшает кассу."""
+        from datetime import date
+
+        position = worked_first_half.primary_position
+        self._premium(db_session, worked_first_half, position.id)
+        worked_first_half.loan_amount = Decimal("120000")
+        worked_first_half.loan_term_months = 12
+        worked_first_half.loan_start_date = date(YEAR, MONTH, 1)
+        worked_first_half.loan_position_id = position.id
+        db_session.commit()
+
+        row = _row(db_session, worked_first_half, NEXT_YEAR, NEXT_MONTH)
+        # «Аванс/Удержано» строки = банковская выплата 30 000 + доля займа.
+        assert row.deductions > Decimal("30000"), "заём удерживается общим путём"
+        loan = row.deductions - Decimal("30000")
+        # Погашено долга не больше, чем осталось в кассе после займа.
+        assert row.official_debt_repaid <= row.premium_amount - loan

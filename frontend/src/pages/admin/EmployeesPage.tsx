@@ -922,12 +922,21 @@ export function EmployeesPage() {
                   </p>
                 )}
                 {editTarget?.loan_amount && <LoanStatusPanel employeeId={editTarget.id} />}
-                {/* Переплата по официальной выплате вахты: панель сама решает,
-                    показываться ли (долга нет — ничего не рисует). */}
-                {editTarget && <OfficialDebtPanel employeeId={editTarget.id} />}
               </div>
             )
           })()}
+
+          {/* Переплата по официальной выплате вахты — СВОЙ блок, а не хвост
+              раздела «Заём»: к займу она отношения не имеет. Панель сама
+              решает, показываться ли: долга нет — ничего не рисует. */}
+          {editTarget && (
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                Официальная выплата
+              </p>
+              <OfficialDebtPanel employeeId={editTarget.id} />
+            </div>
+          )}
 
           {/* Section 4 — Access (manager не управляет доступом) */}
           {!isMgr && (

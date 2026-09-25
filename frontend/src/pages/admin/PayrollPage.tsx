@@ -704,9 +704,21 @@ export function PayrollPage() {
                     </td>
                     <td
                       className="px-2 py-1.5 text-center font-bold text-emerald-700"
-                      title={payoutRoundingHint(row.net_payout_exact, row.rounding_tail)}
+                      title={[
+                        payoutRoundingHint(row.net_payout_exact, row.rounding_tail),
+                        // Вахта: часть выплаты ушла на переплату прошлых
+                        // половин или, наоборот, не выплачена и едет дальше —
+                        // иначе «начислено − удержано ≠ к выплате» выглядит
+                        // ошибкой (task_official_payout_debt).
+                        row.official_debt_note ?? '',
+                      ].filter(Boolean).join('. ')}
                     >
                       {formatMoney(row.net_payout, { showZero: true })}
+                      {parseFloat(row.official_debt_after ?? '0') > 0 && (
+                        <span className="ml-1 text-[11px] font-medium text-amber-600">
+                          долг {formatMoney(row.official_debt_after)}
+                        </span>
+                      )}
                     </td>
                     {companies.map((c) => {
                       const pct = e[c.id] ?? ''

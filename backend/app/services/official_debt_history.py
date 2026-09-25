@@ -103,13 +103,13 @@ def official_debt_states(
     # строка идёт общим путём и такие деньги реально выдаются кассой, поэтому в
     # гашении долга они участвуют. В месяце С ПОСТОМ строку считает вахта, её
     # премии — свои, а начисления общей системы в кассу не идут (нашло ревью).
-    others = _other_accruals(db, list(by_id))
+    others = _other_accruals(db, by_id)
 
     department_ids = {
         p.department_id for p in by_id.values() if p.department_id is not None
     }
     statuses = _period_statuses(db, department_ids)
-    facts = _debt_facts(db, list(by_id), department_ids, (year, month))
+    facts = _debt_facts(db, list(by_id), (year, month))
 
     result: dict[int, OfficialDebtState] = {}
     for position_id, months in rows.items():
@@ -169,22 +169,21 @@ def _period_statuses(
 
 
 def _debt_facts(
-    db: Session, position_ids: list[int], departments: set[int], last: tuple[int, int]
+    db: Session, position_ids: list[int], last: tuple[int, int]
 ) -> dict[int, dict[tuple[int, int], dict[int, Decimal]]]:
     """{position_id: {(год, месяц): {половина: долг после}}} из снимков.
 
-    Берутся только снимки НУЖНЫХ отделов и не позже расчётного месяца: грузить
-    JSON всех снимков базы здесь нельзя — на этом уже обжигались в этапе 3
-    («первая версия была МЕДЛЕННЕЕ живого расчёта»).
+    Берутся снимки не позже расчётного месяца и только те, где факты долга есть
+    вообще: грузить JSON всех снимков базы здесь нельзя — на этом уже обжигались
+    в этапе 3 («первая версия была МЕДЛЕННЕЕ живого расчёта»). По ОТДЕЛУ не
+    фильтруем: снимок лежит у отдела, который закрывал период, а место могло с
+    тех пор сменить отдел — факт нашёлся бы не всегда (нашло ревью).
     """
     wanted = {str(pid) for pid in position_ids}
     out: dict[int, dict[tuple[int, int], dict[int, Decimal]]] = {}
-    if not departments:
-        return out
     query = db.query(PeriodSnapshot).options(load_only(
         PeriodSnapshot.year, PeriodSnapshot.month, PeriodSnapshot.official_debt_facts,
     )).filter(
-        PeriodSnapshot.department_id.in_(departments),
         PeriodSnapshot.year * 12 + PeriodSnapshot.month <= last[0] * 12 + last[1],
         PeriodSnapshot.official_debt_facts.isnot(None),
     )
@@ -275,29 +274,75 @@ def _closed_on(employee, position, year: int, month: int):
 
 
 def _other_accruals(
-    db: Session, position_ids: list[int]
+    db: Session, positions: dict[int, EmployeePosition]
 ) -> dict[tuple[int, int, int], Decimal]:
-    """{(позиция, год, месяц): премия + KPI − аванс} начислений общей системы.
+    """{(позиция, год, месяц): чем месяц БЕЗ поста может гасить долг}.
 
-    Только для месяцев БЕЗ поста: там строка ведомости идёт общим путём, и эти
-    деньги действительно выдаются из кассы, то есть гасят долг. Заём сюда не
-    входит — строка вахты его не удерживает (правило вахты).
+    В месяце без поста строка ведомости идёт общим путём, и из кассы реально
+    выдаётся `премия + KPI − аванс − удержание займа`. Ровно столько долга он и
+    может погасить — иначе долг «гасился» бы деньгами, которых человек не
+    получил (нашло ревью).
+
+    Записи с `position_id IS NULL` — доположенческие (миграция `f1a2b3c4d5e6`):
+    ведомость относит их к ОСНОВНОЙ позиции, поэтому и здесь они считаются ей,
+    иначе премия попадала бы в кассу, но не в гашение.
+
+    Удержание займа берётся ПЛАНОВОЙ долей (сумма ÷ срок) за месяцы внутри
+    срока: точное удержание считает ведомость, и спрашивать её здесь нельзя —
+    она сама зависит от этого расчёта. Приближение расходится с фактом только
+    в месяце, где начисления не хватило на полную долю.
     """
     from app.models.employee_adjustments import EmployeeAdjustment
+
+    if not positions:
+        return {}
+    employees = {p.employee_id: p for p in positions.values() if p.employee_id}
+    primary_of: dict[int, int] = {}
+    for position in positions.values():
+        employee = position.employee
+        if employee is None:
+            continue
+        primary = next((p for p in employee.positions if p.is_primary), None)
+        if primary is not None and primary.id in positions:
+            primary_of[employee.id] = primary.id
 
     out: dict[tuple[int, int, int], Decimal] = {}
     rows = (
         db.query(
-            EmployeeAdjustment.position_id, EmployeeAdjustment.year,
-            EmployeeAdjustment.month, EmployeeAdjustment.kind,
-            EmployeeAdjustment.amount,
+            EmployeeAdjustment.employee_id, EmployeeAdjustment.position_id,
+            EmployeeAdjustment.year, EmployeeAdjustment.month,
+            EmployeeAdjustment.kind, EmployeeAdjustment.amount,
         )
-        .filter(EmployeeAdjustment.position_id.in_(position_ids))
+        .filter(EmployeeAdjustment.employee_id.in_(
+            [p.employee_id for p in positions.values() if p.employee_id]
+        ))
         .all()
     )
-    for position_id, year, month, kind, amount in rows:
-        value = Decimal(str(amount))
+    for employee_id, position_id, year, month, kind, amount in rows:
+        target = position_id if position_id is not None else primary_of.get(employee_id)
+        if target not in positions:
+            continue
         sign = -1 if kind == "advance" else 1
-        key = (position_id, year, month)
-        out[key] = out.get(key, _ZERO) + sign * value
+        key = (target, year, month)
+        out[key] = out.get(key, _ZERO) + sign * Decimal(str(amount))
+
+    # Плановая доля займа месяца: она же уменьшает кассу в общем пути ведомости.
+    for employee_id, position in employees.items():
+        employee = position.employee
+        if employee is None or not employee.loan_amount or not employee.loan_term_months:
+            continue
+        if not employee.loan_start_date:
+            continue
+        from app.services.guard_staff import loan_position
+
+        target = loan_position(employee)
+        if target is None or target.id not in positions:
+            continue
+        share = (Decimal(str(employee.loan_amount))
+                 / Decimal(employee.loan_term_months)).quantize(Decimal("0.01"))
+        start = (employee.loan_start_date.year, employee.loan_start_date.month)
+        for offset in range(employee.loan_term_months):
+            index = start[0] * 12 + (start[1] - 1) + offset
+            key = (target.id, index // 12, index % 12 + 1)
+            out[key] = out.get(key, _ZERO) - share
     return out

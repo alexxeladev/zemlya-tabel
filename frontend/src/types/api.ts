@@ -284,6 +284,11 @@ export interface StatementRow {
   advance_reasons: string[]
   /** ручная правка удержания по займу (своего обоснования у займа нет) */
   loan_note: string | null
+  /** Перенос переплаты по официальной выплате вахты (task_official_payout_debt):
+   *  объясняет, почему «Итого начислено − Удержано» не равно «К выплате». */
+  official_debt_note: string | null
+  official_debt_after: string
+  official_debt_repaid: string
   vacation_days: number
   sick_days: number
   unpaid_days: number

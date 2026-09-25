@@ -623,7 +623,13 @@ def build_payroll_summary(
             # Только если место УЖЕ стояло на посту: долг начинается с первого
             # месяца на посту (решение заказчика 25.09.2026), а место, которое
             # на пост ни разу не ставили, выплат не порождает вовсе.
-            debt_summary = month_summary(debt_states.get(position.id), year, month)
+            debt_summary = month_summary(
+                debt_states.get(position.id), year, month,
+                # То же округление, что у строки на посту: вверх до 500 ₽ по
+                # половине. Без него месяц без поста не округлялся ни по
+                # правилу вахты, ни по правилу основной системы (нашло ревью).
+                rounding=round_guard_payout,
+            )
             official_total = sum(
                 official_month_payouts(position, year, month).values(), _ZERO
             ) if debt_summary.covered else _ZERO

@@ -121,9 +121,11 @@ def _touches_official_debt(session: Session) -> bool:
     займа. Официальных охранных мест единицы, поэтому цена та же: редкий полный
     пересчёт кэша.
     """
+    from app.models.employee_adjustments import EmployeeAdjustment
     from app.models.guard_assignments import GuardAssignment, GuardShift
 
     position_ids: set[int] = set()
+    employee_ids: set[int] = set()
     for obj in list(session.new) + list(session.dirty) + list(session.deleted):
         if isinstance(obj, GuardAssignment):
             if isinstance(obj.position_id, int):
@@ -132,6 +134,18 @@ def _touches_official_debt(session: Session) -> bool:
             assignment = getattr(obj, "assignment", None)
             if assignment is not None and isinstance(assignment.position_id, int):
                 position_ids.add(assignment.position_id)
+        elif isinstance(obj, EmployeeAdjustment):
+            # Премия месяца БЕЗ поста гасит долг, то есть двигает поздние
+            # месяцы так же, как смены (нашло ревью).
+            if isinstance(obj.position_id, int):
+                position_ids.add(obj.position_id)
+            elif isinstance(obj.employee_id, int):
+                employee_ids.add(obj.employee_id)
+    if employee_ids and session.query(EmployeePosition.id).filter(
+        EmployeePosition.employee_id.in_(employee_ids),
+        EmployeePosition.is_official.is_(True),
+    ).first() is not None:
+        return True
     if not position_ids:
         return False
     return session.query(EmployeePosition.id).filter(
