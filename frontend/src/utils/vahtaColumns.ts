@@ -44,7 +44,8 @@ export const VAHTA_TAIL_COLUMNS: VahtaTailColumn[] = [
   { key: 'accrued', label: 'Начислено', money: true, width: 104 },
   { key: 'official', label: 'Оф. выплата', money: true, width: 104 },
   { key: 'tax', label: 'Налог', money: true, width: 92 },
-  { key: 'payout', label: 'К выплате', money: true, width: 104 },
+  // Шире прочих: под суммой может стоять подпись «долг 12 615 ₽».
+  { key: 'payout', label: 'К выплате', money: true, width: 124 },
 ]
 
 /**

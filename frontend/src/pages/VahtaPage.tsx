@@ -582,31 +582,39 @@ const PersonRow = memo(
               title={
                 `Начислено минус официальная выплата — остаток из кассы. ` +
                 `Точно ${money(row.net_payout_exact)}, округлено вверх до 500 ₽ ` +
-                `по каждой половине` +
-                (parseFloat(row.official_debt_repaid ?? '0') > 0
-                  ? `. Погашено переплаты прошлых половин: ${money(row.official_debt_repaid)}`
-                  : '')
+                `по каждой половине`
               }
             >
-              {parseFloat(row.accrued ?? '0') || parseFloat(row.official_debt_after ?? '0')
-                ? money(row.net_payout)
-                : '—'}
-              {/* Переплата по официальной выплате: банк платит и в нерабочую
-                  половину, поэтому долг виден прямо в строке — как недоудержание
-                  займа в общем табеле (task_official_payout_debt). */}
-              {parseFloat(row.official_debt_after ?? '0') > 0 && (
-                <span
-                  className="ml-1 cursor-help text-[11px] font-medium text-ds-warn"
-                  title={
-                    `Переплата по официальной выплате: ${money(row.official_debt_after)}. ` +
-                    `Банк платит половину оклада в каждую половину месяца, ` +
-                    `и в нерабочую половину платить её нечем — долг гасится из ` +
-                    `следующих выплат.`
-                  }
-                >
-                  долг {money(row.official_debt_after)}
+              {/* Долг — отдельной строкой ПОД суммой, а не рядом с ней: в
+                  плотной таблице он наезжал на меню строки. Обе строки
+                  выровнены по правому краю и прижаты друг к другу
+                  (`leading-tight`), поэтому высота строки не растёт. */}
+              <div className="flex flex-col items-end leading-tight">
+                <span>
+                  {parseFloat(row.accrued ?? '0') || parseFloat(row.official_debt_after ?? '0')
+                    ? money(row.net_payout)
+                    : '—'}
                 </span>
-              )}
+                {parseFloat(row.official_debt_after ?? '0') > 0 ? (
+                  <span
+                    className="text-[10.5px] font-medium text-ds-warn"
+                    title={
+                      `Переплата по официальной выплате: ${money(row.official_debt_after)}. ` +
+                      `Банк платит половину оклада в каждую половину месяца, и в ` +
+                      `нерабочую половину платить её нечем — долг гасится из следующих выплат.`
+                    }
+                  >
+                    долг {money(row.official_debt_after)}
+                  </span>
+                ) : parseFloat(row.official_debt_repaid ?? '0') > 0 ? (
+                  <span
+                    className="text-[10.5px] font-medium text-ds-ok"
+                    title={`Из этой выплаты погашена переплата прошлых половин: ${money(row.official_debt_repaid)}`}
+                  >
+                    погашено {money(row.official_debt_repaid)}
+                  </span>
+                ) : null}
+              </div>
             </td>
           </>
         )}
