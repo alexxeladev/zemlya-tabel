@@ -13,21 +13,20 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.position_terms import TERMS_BEGINNING
 from app.models.employees import Employee
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.positions import EmployeePosition
 from app.models.schedules import Schedule
-from app.services.position_terms import set_effective_from
 from app.services.dashboard import build_dashboard
 from app.services.guard_duty import (
     create_assignment,
     official_by_assignment,
     official_month_payouts,
-    replace_on_post,
 )
 from app.services.guard_month import build_guard_month
 from app.services.guard_payroll import official_half_payout
 from app.services.payroll_statement import build_payroll_statement
+from app.services.position_terms import set_effective_from
 from tests.test_vahta import (  # noqa: F401 — фикстуры модуля вахты
     ALL_DAYS,
     FIRST_HALF,

@@ -11,7 +11,6 @@ import openpyxl
 import pytest
 from sqlalchemy.orm import Session
 
-from app.models.position_terms import TERMS_BEGINNING
 from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
@@ -23,10 +22,11 @@ from app.models.guard_posts import (
     GuardSiteShare,
     GuardZone,
 )
-from app.services.position_terms import set_effective_from
+from app.models.position_terms import TERMS_BEGINNING
 from app.services.guard_duty import create_assignment
 from app.services.guard_export import generate_guard_timesheet_excel
 from app.services.guard_month import build_guard_month
+from app.services.position_terms import set_effective_from
 
 YEAR, MONTH = 2026, 8
 FIRST_HALF = set(range(1, 16))

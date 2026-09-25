@@ -11,7 +11,6 @@
   · менеджеру и табельщику группа недоступна (403), их выдача не меняется;
   · то же значение работает в расчёте, премиях, Т-13 и автозаполнении.
 """
-from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -218,8 +217,9 @@ class TestNoDepartmentGroup:
         """Роль без выбора отдела шлёт пустой фильтр (её набор отделов знает
         сервер), но в файле один отдел — подпись «Все отделы» врала бы. Номер
         отдела из фронта брать нельзя: профиль там кэширован."""
-        from openpyxl import load_workbook
         from io import BytesIO
+
+        from openpyxl import load_workbook
 
         resp = client.get(
             f"/api/timesheet/{YEAR}/{MONTH}/export/excel", headers=_hdr(manager_token),

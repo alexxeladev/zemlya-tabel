@@ -13,7 +13,6 @@ from app.models.employees import Employee
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
-from app.services.position_terms import set_effective_from
 from app.services.company_order import company_display_name
 from app.services.distribution import (
     distribute,
@@ -25,6 +24,7 @@ from app.services.payroll_statement import (
     finalize_distribution,
     unallocated_remainder,
 )
+from app.services.position_terms import set_effective_from
 from tests.conftest import get_token
 
 MAY_BASIC = {"year": 2026, "months": [{"month": 5, "days": "3,4,10,11,17,18,24,25,31"}]}

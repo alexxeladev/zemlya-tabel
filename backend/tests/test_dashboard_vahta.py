@@ -11,13 +11,13 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.position_terms import TERMS_BEGINNING
 from app.models.employees import Employee
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
-from app.services.position_terms import set_effective_from
 from app.services.guard_duty import create_assignment
+from app.services.position_terms import set_effective_from
 from tests.test_vahta import (  # noqa: F401 — фикстуры модуля вахты
     FIRST_HALF,
     MONTH,

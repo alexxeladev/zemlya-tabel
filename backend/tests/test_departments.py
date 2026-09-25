@@ -1,10 +1,10 @@
 from fastapi.testclient import TestClient
 
+from app.core.security import hash_password
+from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
-from app.models.companies import Company
 from app.models.schedules import Schedule
-from app.core.security import hash_password
 from tests.conftest import get_token
 
 

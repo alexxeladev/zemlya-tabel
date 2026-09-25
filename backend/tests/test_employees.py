@@ -124,7 +124,7 @@ def test_grant_access(client: TestClient, admin_user: Employee, db_session):
 
 
 def test_grant_access_duplicate_email(client: TestClient, admin_user: Employee, db_session):
-    emp = _emp(db_session, "Уже с почтой", email="exists@example.com", role="employee", password="password123")
+    _emp(db_session, "Уже с почтой", email="exists@example.com", role="employee", password="password123")
     emp2 = _emp(db_session, "Второй")
     token = get_token(client, "admin@example.com", "admin123")
     resp = client.post(
@@ -243,8 +243,8 @@ def test_delete_system_admin_forbidden(client: TestClient, admin_user: Employee)
 def test_manager_without_dept_sees_empty_list(client: TestClient, db_session):
     dept1, _, company, schedule = _fixtures(db_session)
     _emp(db_session, "Иванов", dept_id=dept1.id)
-    mgr = _emp(db_session, "Менеджер без отдела", email="mgr0@example.com",
-               role="manager", password="password123")
+    _emp(db_session, "Менеджер без отдела", email="mgr0@example.com",
+         role="manager", password="password123")
     token = get_token(client, "mgr0@example.com", "password123")
     resp = client.get("/api/employees", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
@@ -443,7 +443,7 @@ def test_nested_objects_in_read(client: TestClient, admin_user: Employee, db_ses
 # ── Login for employee with role=NULL ──────────────────────────────────────────
 
 def test_login_null_role_fails(client: TestClient, db_session):
-    emp = _emp(db_session, "Без роли", email="norole@example.com")
+    _emp(db_session, "Без роли", email="norole@example.com")
     resp = client.post("/api/auth/login", json={"email": "norole@example.com", "password": "anything"})
     assert resp.status_code == 401
 

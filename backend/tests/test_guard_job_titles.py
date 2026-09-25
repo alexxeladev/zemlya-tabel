@@ -6,8 +6,6 @@
 """
 from decimal import Decimal
 
-import pytest
-
 from app.models.guard_assignments import GuardAssignment
 from app.models.guard_job_titles import GuardJobTitle
 from app.services.guard_duty import create_assignment

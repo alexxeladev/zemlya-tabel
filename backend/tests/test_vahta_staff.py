@@ -10,7 +10,6 @@ import pytest
 from openpyxl import Workbook
 
 from app.core.security import hash_password
-from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
 from app.models.positions import EmployeePosition
@@ -21,10 +20,10 @@ from app.services.payroll import position_setup_issues
 from app.services.payroll_statement import build_payroll_statement
 from tests.conftest import get_token
 from tests.test_vahta import (  # noqa: F401 — фикстуры справочника вахты
-    _title_id,
     _make_post,
     _make_site,
     _make_zone,
+    _title_id,
     companies,
     crew,
     guard_dept,

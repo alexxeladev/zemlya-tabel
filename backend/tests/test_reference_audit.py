@@ -13,7 +13,6 @@
 from decimal import Decimal
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -31,7 +30,6 @@ from app.models.reference_changes import (
 from app.models.schedules import Schedule
 from app.services.reference_audit import audit_operation, set_audit_actor
 from tests.conftest import get_token
-
 
 # ── Фикстуры ──────────────────────────────────────────────────────────────────
 
@@ -574,7 +572,6 @@ class TestImportSource:
     созданных сотрудников в ленте иначе выглядят как полсотни ручных правок."""
 
     def test_import_rows_share_operation_and_source(self, client, db_session):
-        import datetime
         from io import BytesIO
 
         from openpyxl import Workbook

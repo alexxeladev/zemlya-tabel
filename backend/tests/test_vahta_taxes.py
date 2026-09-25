@@ -16,14 +16,13 @@ from io import BytesIO
 import pytest
 from openpyxl import load_workbook
 
-from app.models.position_terms import TERMS_BEGINNING
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
 from app.models.guard_settings import GuardSettings
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
-from app.services.position_terms import set_effective_from
 from app.services.guard_duty import (
     create_assignment,
     employer_tax_percent,
@@ -33,6 +32,7 @@ from app.services.guard_export import generate_guard_timesheet_excel
 from app.services.guard_month import build_guard_month
 from app.services.guard_payroll import calculate_guard_row, employer_tax
 from app.services.payroll_statement import build_payroll_statement
+from app.services.position_terms import set_effective_from
 from tests.test_vahta import (  # noqa: F401 — фикстуры модуля вахты
     FIRST_HALF,
     MONTH,

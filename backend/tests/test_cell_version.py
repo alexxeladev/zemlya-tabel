@@ -5,7 +5,6 @@
 нет»). Разошлась с базой — 409, в базе ничего не меняется. Поле необязательное:
 без него поведение прежнее (батч, автозаполнение, старый клиент).
 """
-import pytest
 
 from app.models.timesheet_entries import TimesheetEntry
 from tests.test_cell_company_change import (  # noqa: F401 — общие фикстуры ячейки

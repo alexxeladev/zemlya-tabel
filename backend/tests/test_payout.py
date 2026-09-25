@@ -3,7 +3,6 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password
@@ -18,7 +17,6 @@ from tests.conftest import get_token
 
 # Reuse the May calendar from the payroll test module.
 from tests.test_payroll import MAY_BASIC, MAY_BASIC_WORKDAYS
-
 
 # ── Unit tests: loan_month_state ───────────────────────────────────────────────
 

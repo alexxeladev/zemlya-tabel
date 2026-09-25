@@ -21,13 +21,13 @@ from app.schemas.calendar import (
 from app.services.calendar import (
     CalendarFetchError,
     ensure_calendar,
+    is_holiday,
+    is_short_day,
     norm_hours_for_period,
     reload_calendar,
     save_calendar_from_dict,
     short_days_in_month,
     workdays_in_month,
-    is_holiday,
-    is_short_day,
 )
 
 router = APIRouter()

@@ -443,8 +443,9 @@ def test_autofill_closed_period_422(
     client: TestClient, admin_emp: Employee, regular_emp: Employee,
     calendar_2026: ProductionCalendar, db_session: Session
 ):
-    from app.models.timesheet_periods import TimesheetPeriod
     from datetime import datetime
+
+    from app.models.timesheet_periods import TimesheetPeriod
     period = TimesheetPeriod(
         department_id=regular_emp.department_id,
         year=2026, month=5, status="closed",

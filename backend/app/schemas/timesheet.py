@@ -6,16 +6,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from app.schemas.absence import AbsenceRead
-from app.schemas.quantity import (
-    DepartmentQuantitiesRead,
-    QuantityDistributionRow,
-)
 from app.schemas.company import CompanyRead
 from app.schemas.employee import EmployeeRead
 from app.schemas.night_shift import NightFundRead, NightShiftRead
 from app.schemas.payout import AdjustmentRead
 from app.schemas.payroll import PayrollSummaryRead
 from app.schemas.position import EmployeePositionRead
+from app.schemas.quantity import (
+    DepartmentQuantitiesRead,
+    QuantityDistributionRow,
+)
 from app.schemas.timesheet_period import TimesheetPeriodRead
 
 

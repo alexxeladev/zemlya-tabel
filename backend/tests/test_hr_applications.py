@@ -28,8 +28,8 @@ from app.models.employees import Employee
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
 from app.models.timesheet_entries import TimesheetEntry
-from app.services.quantity_distribution import quantity_percents, quantity_weights
 from app.services.distribution import distribute_largest_remainder
+from app.services.quantity_distribution import quantity_percents, quantity_weights
 from tests.conftest import get_token
 
 MAY_BASIC = {"year": 2026, "months": [{"month": 5, "days": "3,4,10,11,17,18,24,25,31"}]}

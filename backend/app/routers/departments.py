@@ -34,7 +34,6 @@ from app.services.department_move import (
 from app.services.finance_masking import department_for
 from app.services.guard_staff import guard_flag_removal_report
 from app.services.org_access import (
-    hides_finances,
     is_department_scoped,
     managed_department_ids,
 )

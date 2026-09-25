@@ -4,6 +4,7 @@ import calendar as _cal
 from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +14,9 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.core.audit import log_action
 from app.models.employees import Employee
 from app.models.timesheet_entries import TimesheetEntry
+
+if TYPE_CHECKING:  # только для аннотаций: модуль и так под `from __future__`
+    from app.models.positions import EmployeePosition
 from app.services.employment_period import (
     check_employment_period,
     employment_bounds,
@@ -144,7 +148,7 @@ def compute_extra_companies_by_employee(
 
 def _resolve_cell_target(
     db: Session, employee_id: int, position_id: int | None
-) -> tuple[Employee | None, "EmployeePosition | None"]:
+) -> tuple[Employee | None, EmployeePosition | None]:
     """(сотрудник, его рабочее место ячейки) — ОДИН раз на операцию.
 
     Все проверки ячейки (период, период работы, охранная позиция) и сама запись
@@ -339,7 +343,7 @@ def _upsert_cell_no_commit(
 def _check_period_lock(
     db: Session, employee_id: int, work_date: date, position_id: int | None = None,
     already_locked: set[tuple[int | None, int, int]] | None = None,
-    *, position: "EmployeePosition | None" = None, position_known: bool = False,
+    *, position: EmployeePosition | None = None, position_known: bool = False,
 ) -> None:
     """Raises PeriodLockedException if the period for this position+date is not draft.
 
@@ -379,7 +383,7 @@ def _check_period_lock(
         raise PeriodLockedException(period.status)
 
 
-def _ensure_hours_allowed(db: Session, position: "EmployeePosition | None") -> None:
+def _ensure_hours_allowed(db: Session, position: EmployeePosition | None) -> None:
     """Часы на охранную позицию не вводятся — её смены ведёт вахта (аудит 2-Г).
     Зовётся только для НЕнулевых часов: удаление ячейки разрешено всегда."""
     from app.services.guard_staff import ensure_no_guard_accrual

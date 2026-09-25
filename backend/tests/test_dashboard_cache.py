@@ -10,16 +10,26 @@ from sqlalchemy.orm import Session
 from app.models.dashboard_cache import DashboardMonthCache, DataVersion
 from app.models.employee_absences import EmployeeAbsence
 from app.models.employee_adjustments import EmployeeAdjustment
-from app.models.employees import Employee
 from app.models.night_shifts import NightShift
 from app.models.timesheet_entries import TimesheetEntry
 from app.models.timesheet_periods import TimesheetPeriod
-from app.services.position_terms import set_effective_from
 from app.services.dashboard_cache import REFERENCE_KEY, current_versions, month_key
+from app.services.position_terms import set_effective_from
 from tests.conftest import get_token
 from tests.test_dashboard import (  # noqa: F401 — фикстуры дашборда
-    MAY_BASIC, calendar_2026, company1, company2, dash_accountant, dash_admin, dash_manager,
-    dept1, dept2, may_entries, schedule8, worker1, worker2,
+    MAY_BASIC,
+    calendar_2026,
+    company1,
+    company2,
+    dash_accountant,
+    dash_admin,
+    dash_manager,
+    dept1,
+    dept2,
+    may_entries,
+    schedule8,
+    worker1,
+    worker2,
 )
 
 

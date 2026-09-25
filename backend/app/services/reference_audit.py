@@ -55,6 +55,7 @@ from sqlalchemy.orm import Session, attributes
 from app.models.companies import Company
 from app.models.departments import Department
 from app.models.employees import Employee
+from app.models.guard_job_titles import GuardJobTitle
 from app.models.positions import EmployeePosition
 from app.models.reference_changes import (
     ACTION_CREATE,
@@ -66,7 +67,6 @@ from app.models.reference_changes import (
     SOURCE_UI,
     ReferenceChange,
 )
-from app.models.guard_job_titles import GuardJobTitle
 from app.models.schedules import Schedule
 
 # ── Что под аудитом ───────────────────────────────────────────────────────────

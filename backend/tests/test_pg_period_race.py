@@ -14,7 +14,6 @@
 запрос ЖДАЛ, — иначе зелёный результат был бы везением планировщика.
 """
 import threading
-from datetime import date
 
 import pytest
 
