@@ -582,10 +582,31 @@ const PersonRow = memo(
               title={
                 `Начислено минус официальная выплата — остаток из кассы. ` +
                 `Точно ${money(row.net_payout_exact)}, округлено вверх до 500 ₽ ` +
-                `по каждой половине`
+                `по каждой половине` +
+                (parseFloat(row.official_debt_repaid ?? '0') > 0
+                  ? `. Погашено переплаты прошлых половин: ${money(row.official_debt_repaid)}`
+                  : '')
               }
             >
-              {parseFloat(row.accrued ?? '0') ? money(row.net_payout) : '—'}
+              {parseFloat(row.accrued ?? '0') || parseFloat(row.official_debt_after ?? '0')
+                ? money(row.net_payout)
+                : '—'}
+              {/* Переплата по официальной выплате: банк платит и в нерабочую
+                  половину, поэтому долг виден прямо в строке — как недоудержание
+                  займа в общем табеле (task_official_payout_debt). */}
+              {parseFloat(row.official_debt_after ?? '0') > 0 && (
+                <span
+                  className="ml-1 cursor-help text-[11px] font-medium text-ds-warn"
+                  title={
+                    `Переплата по официальной выплате: ${money(row.official_debt_after)}. ` +
+                    `Банк платит половину оклада в каждую половину месяца, ` +
+                    `и в нерабочую половину платить её нечем — долг гасится из ` +
+                    `следующих выплат.`
+                  }
+                >
+                  долг {money(row.official_debt_after)}
+                </span>
+              )}
             </td>
           </>
         )}
@@ -611,6 +632,10 @@ const PersonRow = memo(
     a.row.premium === b.row.premium &&
     a.row.penalty === b.row.penalty &&
     a.row.official_payout === b.row.official_payout &&
+    // Долг по официальной выплате — своя колонка строки: без сравнения memo
+    // показывал бы вчерашний долг после правки смен.
+    a.row.official_debt_after === b.row.official_debt_after &&
+    a.row.official_debt_repaid === b.row.official_debt_repaid &&
     a.row.rate === b.row.rate &&
     a.row.job_title_id === b.row.job_title_id &&
     a.row.job_title_name === b.row.job_title_name &&

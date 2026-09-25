@@ -1157,6 +1157,15 @@ export interface VahtaRow {
   distribution_base: string | null
   /** Разбивка базы разнесения (начислено + налог) по юрлицам места работы. */
   distribution: Record<number, string> | null
+  /**
+   * Переплата по официальной выплате (task_official_payout_debt): банк платит
+   * равномерно двумя платежами, работа идёт циклами 15/15, и в нерабочую
+   * половину копится долг. Гасится из следующих кассовых выплат; на начисленное,
+   * налог и разнесение по юрлицам НЕ влияет.
+   */
+  official_debt_before: string | null
+  official_debt_after: string | null
+  official_debt_repaid: string | null
 }
 
 /**
@@ -1267,6 +1276,20 @@ export interface LoanShortMonth {
   month: number
   planned: string
   actual: string
+}
+
+/** Переплата по официальной выплате вахты — строка на рабочее место. */
+export interface OfficialDebtStatus {
+  year: number
+  month: number
+  position_id: number
+  position_title: string | null
+  debt: string
+  debt_before_month: string
+  repaid_in_month: string
+  /** Место закрыто: долг зафиксирован на эту дату и больше не гасится. */
+  closed_on: string | null
+  is_final: boolean
 }
 
 export interface LoanStatus {

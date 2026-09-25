@@ -32,6 +32,7 @@ import { SharesEditor } from '../../components/SharesEditor'
 import { EmployeeImportModal } from './EmployeeImportModal'
 import { PositionsEditor } from './PositionsEditor'
 import { LoanStatusPanel } from './LoanStatusPanel'
+import { OfficialDebtPanel } from './OfficialDebtPanel'
 import { GUARD_ACCRUAL_HINT, isGuardDepartment, isGuardPosition } from '../../utils/guardStaff'
 import { ApiError } from '../../api/client'
 import { CLEARING_CANCELLED, withClearingConfirm } from '../../utils/employment'
@@ -921,6 +922,9 @@ export function EmployeesPage() {
                   </p>
                 )}
                 {editTarget?.loan_amount && <LoanStatusPanel employeeId={editTarget.id} />}
+                {/* Переплата по официальной выплате вахты: панель сама решает,
+                    показываться ли (долга нет — ничего не рисует). */}
+                {editTarget && <OfficialDebtPanel employeeId={editTarget.id} />}
               </div>
             )
           })()}

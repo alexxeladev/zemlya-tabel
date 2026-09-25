@@ -1,6 +1,6 @@
 import type {
   CompanyShare, Employee, EmployeeImportResult, EmployeePosition, EmployeePositionInput,
-  EmployeeShares, LoanStatus, PayType, PositionTermsHistory, UserRole, WeekendPayType,
+  EmployeeShares, LoanStatus, OfficialDebtStatus, PayType, PositionTermsHistory, UserRole, WeekendPayType,
 } from '../types/api'
 import { apiClient } from './client'
 
@@ -179,3 +179,10 @@ export const getPositionTerms = (employeeId: number, positionId: number) =>
  *  исходному сроку, месяцы с недоудержанием (п.5.1). Займа нет — null. */
 export const getLoanStatus = (id: number) =>
   apiClient.get<LoanStatus | null>(`/api/employees/${id}/loan-status`).then((r) => r.data)
+
+/** Переплата по официальной выплате вахты: строка на охранное рабочее место
+ *  (task_official_payout_debt). Постов не было — пустой список. */
+export const getOfficialDebt = (id: number) =>
+  apiClient
+    .get<OfficialDebtStatus[]>(`/api/employees/${id}/official-debt`)
+    .then((r) => r.data)
