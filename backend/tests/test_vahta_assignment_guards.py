@@ -167,6 +167,24 @@ class TestOnlyGuardPositions:
         assert copied == 1
         assert new.position_id is None
 
+    def test_copy_brings_the_composition_without_shifts(
+        self, db_session, gbr_place, guard_dept, rodionov,
+    ):
+        """Копируется СОСТАВ, а не смены (решение заказчика 25.09.2026).
+
+        Раньше копирование отмечало все дни месяца: при цикле 15/15 это вдвое
+        больше смен, чем бывает, и лишние приходилось снимать руками.
+        """
+        _assign(db_session, gbr_place, rodionov)
+        copied = copy_previous_period(db_session, YEAR, MONTH + 1, [guard_dept.id])
+        db_session.commit()
+
+        new = db_session.query(GuardAssignment).filter_by(month=MONTH + 1).one()
+        assert copied == 1
+        assert new.position_id == rodionov.primary_position.id, "состав перенесён"
+        assert new.rate is not None, "ставка перенесена"
+        assert new.shifts == [], "а смены — нет"
+
 
 # ── Закрытый период ───────────────────────────────────────────────────────────
 
