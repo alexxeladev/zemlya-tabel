@@ -58,6 +58,11 @@ class PeriodSnapshot(Base):
     #: Экран вахты охранного отдела: {"0": месяц, "1": 1-я половина, "2": 2-я}.
     #: Пусто у обычных отделов.
     guard_views: Mapped[dict | None] = mapped_column(_JSONB, nullable=True)
+    #: {position_id: {"1": долг после 1-й половины, "2": после 2-й}} — переплата
+    #: по официальной выплате вахты (task_official_payout_debt). Факт для
+    #: пересчёта долга в открытых половинах: закрытую половину не пересчитываем,
+    #: как и удержание займа в `loan_facts`. Пусто у обычных отделов.
+    official_debt_facts: Mapped[dict | None] = mapped_column(_JSONB, nullable=True)
 
     created_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(

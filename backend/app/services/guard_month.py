@@ -52,6 +52,7 @@ from app.schemas.guard import (
     GuardZoneCardRead,
 )
 from app.services.company_order import company_order_by
+from app.services.distribution import distribute
 from app.services.guard_duty import (
     employer_tax_percent,
     guard_department_ids,
@@ -62,10 +63,14 @@ from app.services.guard_duty import (
     shares_map,
 )
 from app.services.guard_payroll import (
+    KOPECK,
     calculate_guard_row,
     distribute_guard_amount,
     half_bounds,
+    round_guard_payout,
 )
+from app.services.official_debt import OfficialDebtState, month_summary
+from app.services.official_debt_history import official_debt_states
 from app.services.org_access import can_see_finances
 from app.services.period_snapshots import guard_snapshot_view
 from app.services.position_terms import month_bounds, terms_on
@@ -122,12 +127,100 @@ def assignment_distribution(
     )
 
 
+def _half_payout(
+    shares: dict | None,
+    applies: bool,
+    half: int,
+    result_half,
+    with_money: bool,
+    exact: bool = False,
+) -> Decimal | None:
+    """«К выплате» одной половины строки: её доля в выплате места.
+
+    Долг не считался (табельщик), месяц вне истории или закрыт без снимка —
+    остаётся прежнее значение расчёта: такой период не пересчитывается.
+    """
+    if not with_money:
+        return None
+    if not applies or shares is None or half not in shares:
+        return result_half.net_payout_exact if exact else result_half.net_payout
+    return shares[half][1] if exact else shares[half][0]
+
+
+def _payout_shares(
+    assignments: list[GuardAssignment],
+    debt_states: dict[int, OfficialDebtState],
+    tax_percent: Decimal,
+    half: int | None,
+) -> dict[int, dict]:
+    """Доля «к выплате» КАЖДОЙ строки, когда у места их несколько.
+
+    Состояние долга — на РАБОЧЕЕ МЕСТО, а строк у места в месяце может быть
+    две (замена на посту, перевод). Показать одну и ту же сумму в обеих —
+    значит удвоить её в итогах зоны, подвала и Excel: они складывают строки.
+    Поэтому выплата места делится между строками пропорционально их
+    начислению тем же `distribute` с шагом в копейку, каким делится сама
+    официальная выплата (`guard_duty.official_by_assignment`). Ни у одной
+    строки начисления нет — всё уходит первой, иначе деньги места исчезли бы.
+
+    Возвращает {id строки: {"row": (выплата, точная), 1: …, 2: …,
+    "summary": сводка долга места}}.
+    """
+    out: dict[int, dict] = {}
+    by_position: dict[int, list[GuardAssignment]] = {}
+    for assignment in assignments:
+        if assignment.position_id is not None:
+            by_position.setdefault(assignment.position_id, []).append(assignment)
+
+    for position_id, rows in by_position.items():
+        state = debt_states.get(position_id)
+        if state is None:
+            continue
+        rows = sorted(rows, key=lambda a: (a.sort_order, a.id))
+        results = {
+            a.id: calculate_assignment(a, tax_percent=tax_percent) for a in rows
+        }
+        shares: dict[int, dict] = {a.id: {} for a in rows}
+        summary_row = month_summary(
+            state, rows[0].year, rows[0].month, half, rounding=round_guard_payout
+        )
+        for key, only in (("row", half), (1, 1), (2, 2)):
+            summary = summary_row if key == "row" else month_summary(
+                state, rows[0].year, rows[0].month, only,
+                rounding=round_guard_payout,
+            )
+            weights = {
+                a.id: sum(
+                    (h.accrued for number, h in results[a.id].halves.items()
+                     if only is None or number == only),
+                    _ZERO,
+                )
+                for a in rows
+            }
+            parts = distribute(summary.payout, weights, main_key=rows[0].id, step=KOPECK)
+            exact = distribute(
+                summary.payout_exact, weights, main_key=rows[0].id, step=KOPECK
+            )
+            if not parts:
+                parts, exact = {rows[0].id: summary.payout}, {
+                    rows[0].id: summary.payout_exact
+                }
+            for a in rows:
+                shares[a.id][key] = (
+                    parts.get(a.id, _ZERO), exact.get(a.id, _ZERO),
+                )
+        for a in rows:
+            out[a.id] = {**shares[a.id], "summary": summary_row}
+    return out
+
+
 def _row_read(
     assignment: GuardAssignment,
     with_money: bool,
     tax_percent: Decimal,
     half: int | None = None,
     official: dict[int, Decimal] | None = None,
+    shares: dict | None = None,
 ) -> GuardRowRead:
     result = calculate_assignment(
         assignment, tax_percent=tax_percent, official=official
@@ -135,6 +228,10 @@ def _row_read(
     if half is not None:
         # Режим половины: суммы строки — только за неё (см. шапку модуля).
         result = result.only_half(half)
+    # Перенос переплаты: доля этой СТРОКИ в выплате места и сводка долга места
+    # (task_official_payout_debt). Состояние одно на место, строк может быть две.
+    debt = shares["summary"] if shares else None
+    applies = debt is not None and debt.covered
     position = assignment.position
     employee = position.employee if position else None
 
@@ -153,8 +250,10 @@ def _row_read(
                 penalty=h.penalty if with_money else None,
                 official_payout=h.official_payout if with_money else None,
                 accrued=h.accrued if with_money else None,
-                net_payout=h.net_payout if with_money else None,
-                net_payout_exact=h.net_payout_exact if with_money else None,
+                net_payout=_half_payout(shares, applies, number, h, with_money),
+                net_payout_exact=_half_payout(
+                    shares, applies, number, h, with_money, exact=True
+                ),
                 tax=h.tax if with_money else None,
                 distribution_base=h.distribution_base if with_money else None,
             )
@@ -200,10 +299,28 @@ def _row_read(
         penalty=result.penalty if with_money else None,
         official_payout=result.official_payout if with_money else None,
         accrued=result.accrued if with_money else None,
-        net_payout=result.net_payout if with_money else None,
-        net_payout_exact=result.net_payout_exact if with_money else None,
+        # «К выплате» с учётом переноса переплаты: минус половины больше не
+        # вычитается здесь же, а уезжает долгом в следующие половины
+        # (task_official_payout_debt). Долг считается пересчётом истории.
+        net_payout=(
+            (shares["row"][0] if applies else result.net_payout)
+            if with_money else None
+        ),
+        net_payout_exact=(
+            (shares["row"][1] if applies else result.net_payout_exact)
+            if with_money else None
+        ),
         tax=result.tax if with_money else None,
         distribution_base=result.distribution_base if with_money else None,
+        official_debt_before=(
+            debt.debt_before if with_money and debt is not None else None
+        ),
+        official_debt_after=(
+            debt.debt_after if with_money and debt is not None else None
+        ),
+        official_debt_repaid=(
+            debt.repaid if with_money and debt is not None else None
+        ),
         # База разнесения — затраты: начислено + налог на официальную часть.
         distribution=(
             distribute_guard_amount(
@@ -331,13 +448,23 @@ def build_guard_month_live(
     # Официальная выплата вычисляется из оф. зарплаты рабочего места — ОДИН РАЗ
     # на место за месяц, поэтому считается по всему набору строк сразу.
     official = official_by_assignment(assignments)
+    # Переплата по официальной выплате: состояние на место, пересчётом истории
+    # (task_official_payout_debt). Табельщику денег не отдаём — и считать не надо.
+    debt_states = official_debt_states(
+        db,
+        [a.position for a in assignments if a.position is not None],
+        year, month,
+    ) if with_money else {}
+    # Доли «к выплате» по строкам: у места их может быть несколько.
+    payout_shares = _payout_shares(assignments, debt_states, tax_percent, half)
     zones = list_zones(db, department_ids)
 
     rows_by_crew: dict[int, list[GuardRowRead]] = {}
     rows_by_site: dict[int, list[GuardRowRead]] = {}
     for assignment in assignments:
         row = _row_read(
-            assignment, with_money, tax_percent, half, official.get(assignment.id)
+            assignment, with_money, tax_percent, half, official.get(assignment.id),
+            payout_shares.get(assignment.id),
         )
         if assignment.crew_id is not None:
             rows_by_crew.setdefault(assignment.crew_id, []).append(row)

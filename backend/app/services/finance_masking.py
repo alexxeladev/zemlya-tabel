@@ -192,6 +192,12 @@ _PAYROLL_AMOUNT_FIELDS = (
     "loan_planned_deduction",
     # Недоудержанная часть займа (п.5.1) — тоже сумма.
     "loan_shortfall",
+    # Переплата по официальной выплате вахты (task_official_payout_debt).
+    # Деньги, причём говорящие: долг месяца без смен равен ПОЛОВИНЕ официальной
+    # зарплаты, то есть по нему она и восстанавливается — а её мы маскируем.
+    "official_debt_before",
+    "official_debt_after",
+    "official_debt_repaid",
     "total_deductions",
     "net_payout",
     "net_payout_exact",

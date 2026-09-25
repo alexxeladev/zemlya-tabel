@@ -241,6 +241,11 @@ class GuardRowRead(BaseModel):
     #: Разбивка БАЗЫ РАЗНЕСЕНИЯ (начислено + налог) по юрлицам согласно
     #: процентам места работы. Сумма больше «итого начислено» ровно на `tax`.
     distribution: dict[int, Decimal] | None = None
+    #: Переплата по официальной выплате (task_official_payout_debt): пришло из
+    #: прошлых половин, погашено здесь, ушло дальше. Деньги — табельщику None.
+    official_debt_before: Decimal | None = None
+    official_debt_after: Decimal | None = None
+    official_debt_repaid: Decimal | None = None
 
 
 class GuardCardRead(BaseModel):

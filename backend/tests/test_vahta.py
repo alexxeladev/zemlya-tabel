@@ -496,9 +496,11 @@ class TestStatementIntegration:
         statement = build_payroll_statement(db_session, [rodionov], [], YEAR, MONTH)
         row = statement.rows[0]
         # 1-я половина: 75 230 − 25 230,50 = 49 999,50 → 50 000 (вверх до 500 ₽).
-        # 2-я: смен нет, 0 − 25 230,50 = −25 230,50 — долг не округляется.
-        assert row.net_payout_exact == Decimal("24769.00")
-        assert row.net_payout == Decimal("24769.50")
+        # 2-я: смен нет, 0 − 25 230,50 — касса не выдаёт ничего, а переплата
+        # 25 230,50 уходит ДОЛГОМ в следующие половины (task_official_payout_debt;
+        # до неё минус вычитался тут же и месяц давал 24 769,50).
+        assert row.net_payout_exact == Decimal("49999.50")
+        assert row.net_payout == Decimal("50000")
         assert row.rounding_tail == Decimal("-0.50")
         # Разнесение от округления не зависит: база — начислено + налог.
         assert row.accrued_total == Decimal("75230")

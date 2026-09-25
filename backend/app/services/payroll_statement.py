@@ -59,15 +59,23 @@ from app.services.company_shares import (
     load_month_overrides,
 )
 from app.services.distribution import distribute_largest_remainder
-from app.services.guard_payroll import distribute_guard_amount
+from app.services.guard_duty import employer_tax_percent, official_month_payouts
+from app.services.guard_payroll import (
+    distribute_guard_amount,
+    employer_tax,
+    round_guard_payout,
+)
 from app.services.guard_staff import guard_position_ids
 from app.services.guard_statement import (
     SOURCE_GUARD_POST,
+    apply_idle_official,
     guard_idle_payroll,
     guard_payroll_read,
     load_guard_rows,
 )
 from app.services.night_shifts import load_night_context
+from app.services.official_debt import month_summary
+from app.services.official_debt_history import official_debt_states
 from app.services.payout import (
     LoanMonth,
     compute_payout,
@@ -427,6 +435,18 @@ def build_payroll_summary(
     guard_positions = guard_position_ids(
         db, [pos for emp in employees for pos in emp.positions]
     )
+    # Переплата по официальной выплате (task_official_payout_debt): банк платит
+    # двумя равными платежами в месяц независимо от занятости, поэтому в
+    # нерабочую половину копится долг, который гасится из следующих кассовых
+    # выплат. Состояние считается пересчётом истории от первого месяца на посту
+    # и нигде не хранится. В служебном режиме (`history_mode` — подсчёт того,
+    # сколько можно удержать по займу) долг не нужен: он не меняет начисленное.
+    debt_states = {} if history_mode else official_debt_states(
+        db,
+        [pos for emp in employees for pos in emp.positions
+         if pos.id in guard_positions],
+        year, month,
+    )
 
     # Заём (п.5.1): сколько можно было удержать в прошлых открытых месяцах —
     # от этого зависит остаток. И статус расчётного месяца: закрытый без
@@ -453,9 +473,13 @@ def build_payroll_summary(
             if history_mode:
                 # Строка вахты заём не удерживает вовсе — удержать было не с чего.
                 _loan_capacity_out[position.id] = _ZERO
-            payroll_items.append(
-                guard_payroll_read(emp, position, guard_row, year, month)
-            )
+            payroll_items.append(guard_payroll_read(
+                emp, position, guard_row, year, month,
+                debt=month_summary(
+                    debt_states[position.id], year, month,
+                    rounding=round_guard_payout,
+                ) if position.id in debt_states else None,
+            ))
             continue
         # Охранное место без строки вахты — «не на посту»: ЗАРАБОТОК ноль, а
         # премии/KPI/аванс и заём ниже применяются как всем (они адресованы
@@ -592,6 +616,26 @@ def build_payroll_summary(
             # вахтовая: по этому признаку ведомость ищет её расклад по юрлицам.
             is_guard_row=idle_guard,
         ))
+        # Месяц без поста у ОФИЦИАЛЬНО устроенного места: банк всё равно
+        # заплатил, и вся выплата уходит в долг (task_official_payout_debt).
+        # До этой правки такой месяц был полным нулём — главная дыра задачи.
+        if idle_guard and not history_mode and position is not None:
+            # Только если место УЖЕ стояло на посту: долг начинается с первого
+            # месяца на посту (решение заказчика 25.09.2026), а место, которое
+            # на пост ни разу не ставили, выплат не порождает вовсе.
+            debt_summary = month_summary(debt_states.get(position.id), year, month)
+            official_total = sum(
+                official_month_payouts(position, year, month).values(), _ZERO
+            ) if debt_summary.covered else _ZERO
+            if official_total > _ZERO:
+                payroll_items[-1] = apply_idle_official(
+                    payroll_items[-1],
+                    official_total,
+                    employer_tax(
+                        official_total, employer_tax_percent(db, year, month)
+                    ),
+                    debt_summary,
+                )
 
     # Строки снимков, которых нет среди текущих позиций (место сняли с учёта
     # после закрытия): закрытый месяц показывает то, что было закрыто.
@@ -943,6 +987,32 @@ def _auto_shares_by_hours(breakdown, main_company) -> tuple[dict[int, Decimal], 
     if main_company is not None:
         return {main_company.id: _HUNDRED}, {main_company.id: _HUNDRED}
     return {}, {}
+
+
+def _official_debt_note(p) -> str | None:
+    """Почему «начислено − удержано» не сходится с «к выплате» у строки вахты.
+
+    Официальная часть уходит через банк двумя равными платежами независимо от
+    смен (task_official_payout_debt): в нерабочую половину гасить её нечем, и
+    переплата едет в следующие половины.
+    """
+    if p.official_debt_repaid > _ZERO and p.official_debt_after > _ZERO:
+        return (
+            f"официальная выплата: погашено переплаты "
+            f"{_fmt_amount(p.official_debt_repaid)} ₽, "
+            f"остаток {_fmt_amount(p.official_debt_after)} ₽ переносится"
+        )
+    if p.official_debt_repaid > _ZERO:
+        return (
+            f"официальная выплата: переплата прошлых половин погашена "
+            f"({_fmt_amount(p.official_debt_repaid)} ₽)"
+        )
+    if p.official_debt_after > _ZERO:
+        return (
+            f"официальная выплата: переплата {_fmt_amount(p.official_debt_after)} ₽ "
+            f"переносится на следующие половины"
+        )
+    return None
 
 
 def _fmt_amount(value: Decimal | None) -> str:
@@ -1427,6 +1497,10 @@ def build_payroll_statement_with_summary(
             distribution_total=sum(dist_amounts.values(), _ZERO),
             unallocated_remainder=row_unallocated,
             guard_tax_amount=p.guard_tax_amount,
+            official_debt_note=_official_debt_note(p),
+            official_debt_before=p.official_debt_before,
+            official_debt_after=p.official_debt_after,
+            official_debt_repaid=p.official_debt_repaid,
             is_calculable=p.is_calculable,
             note=p.reason_if_not_calculable,
         ))

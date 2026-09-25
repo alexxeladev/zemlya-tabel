@@ -53,6 +53,7 @@ from app.services.guard_payroll import (
     norm_days_for_month,
     norm_hours_for_month,
 )
+from app.services.official_debt import DebtSummary
 from app.services.payroll import EmployeePayroll
 
 _ZERO = Decimal("0")
@@ -159,8 +160,23 @@ def _merge(left: GuardRowResult, right: GuardRowResult) -> GuardRowResult:
     return GuardRowResult(halves=halves)
 
 
+def _debt_applies(debt: DebtSummary | None) -> bool:
+    """Считать ли «к выплате» по состоянию долга.
+
+    `covered=False` — месяц вне истории долга (раньше первого поста) ИЛИ
+    закрытый без снимка: такой период остаётся ровно таким, каким был, иначе мы
+    правили бы закрытый месяц (нашло ревью).
+    """
+    return debt is not None and debt.covered
+
+
 def guard_payroll_read(
-    employee, position: EmployeePosition, row: GuardStatementRow, year: int, month: int
+    employee,
+    position: EmployeePosition,
+    row: GuardStatementRow,
+    year: int,
+    month: int,
+    debt: DebtSummary | None = None,
 ) -> EmployeePayrollRead:
     """Строка расчёта для ведомости и табеля, посчитанная вахтой.
 
@@ -217,9 +233,24 @@ def guard_payroll_read(
         loan_is_manual=False,
         total_deductions=result.official_payout,
         # «К выплате» вверх до 500 ₽ по каждой половине; хвост ≤ 0 (доплата).
-        net_payout=result.net_payout,
-        net_payout_exact=result.net_payout_exact,
-        rounding_tail=result.rounding_tail,
+        # С task_official_payout_debt из неё вычитается ещё и долг прошлых
+        # половин, а отрицательный остаток не выплачивается, а переносится
+        # дальше — поэтому сумма берётся у состояния долга, если оно посчитано.
+        net_payout=debt.payout if _debt_applies(debt) else result.net_payout,
+        # Точная сумма и хвост округления считаются от ТОЙ ЖЕ выплаты, что и
+        # «к выплате»: иначе строка показывала бы округление от суммы, которую
+        # уже не выдают (минус половины теперь уходит в долг, а не вычитается).
+        net_payout_exact=(
+            debt.payout_exact if _debt_applies(debt) else result.net_payout_exact
+        ),
+        rounding_tail=(
+            debt.rounding_tail if _debt_applies(debt) else result.rounding_tail
+        ),
+        # Долг показывается и у месяца, который сам не пересчитывается: он
+        # пришёл из прошлых половин и поедет дальше.
+        official_debt_before=debt.debt_before if debt else _ZERO,
+        official_debt_after=debt.debt_after if debt else _ZERO,
+        official_debt_repaid=debt.repaid if debt else _ZERO,
         breakdown_by_company=[],
         is_calculable=True,
         reason_if_not_calculable=None,
@@ -295,6 +326,48 @@ def guard_idle_payroll(employee, position: EmployeePosition) -> EmployeePayroll:
         is_calculable=True,
         reason_if_not_calculable=None,
     )
+
+
+def apply_idle_official(
+    read: EmployeePayrollRead,
+    official: Decimal,
+    tax: Decimal,
+    debt: DebtSummary,
+) -> EmployeePayrollRead:
+    """Официальная выплата месяца, в котором место НЕ СТОИТ НА ПОСТУ.
+
+    Банк платит по трудовому договору, работает человек или нет
+    (task_official_payout_debt), поэтому такой месяц перестал быть полным нулём:
+    выплата видна, на неё начисляется налог (решение заказчика 25.09.2026 — «на
+    все официальные выплаты начисляется налог»), а сама выплата целиком уходит
+    в долг.
+
+    «К выплате» берётся у состояния долга: банковский платёж гасится из того,
+    что месяц реально даёт кассой. Начислений вахты в нём нет, поэтому обычно
+    это ноль; если на месте остались премии/KPI общей системы (заводить их
+    запрещено, но наследство есть), они участвуют в гашении — их учитывает
+    `official_debt_history._other_accruals`.
+
+    Начисленное (`total_amount`) остаётся нулевым, поэтому «Итого начислено» не
+    меняется; база распределения растёт РОВНО на налог — это и есть затрата
+    компании за такой месяц.
+    """
+    return read.model_copy(update={
+        # Банковский платёж ДОБАВЛЯЕТСЯ к удержаниям строки, а не заменяет их:
+        # аванс и удержание займа, если они на месте остались наследством,
+        # обязаны сохраниться — иначе деньги считались бы удержанными, не
+        # будучи удержанными (нашло ревью).
+        "advance_deduction": read.advance_deduction + official,
+        "total_deductions": read.total_deductions + official,
+        "guard_tax_amount": tax,
+        "net_payout": debt.payout,
+        "net_payout_exact": debt.payout,
+        "rounding_tail": _ZERO,
+        "official_debt_before": debt.debt_before,
+        "official_debt_after": debt.debt_after,
+        "official_debt_repaid": debt.repaid,
+        "is_guard_row": True,
+    })
 
 
 def guard_hours_per_shift() -> int:

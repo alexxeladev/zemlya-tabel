@@ -66,7 +66,7 @@ SENTINELS = [NIGHT_FUND, RATE, SECOND_RATE, FIXED_RATE, LOAN, PREMIUM, GUARD_PRE
 # Ключ «про деньги»: ставки, суммы, фонд, заём, выплаты, коэффициенты оплаты.
 MONEY_KEY = re.compile(
     r"rate|amount|salary|fund(?!ing_company)|loan|payout|premium|kpi|deduction|"
-    r"coefficient|penalty|tax|accrued|grand_total|^total$|unallocated|rounding"
+    r"coefficient|penalty|tax|accrued|grand_total|^total$|unallocated|rounding|debt"
 )
 # Похожи по имени, но не деньги.
 NOT_MONEY = {

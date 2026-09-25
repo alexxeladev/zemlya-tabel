@@ -135,6 +135,14 @@ class EmployeePayrollRead(BaseModel):
     # начислено» НЕ входит (это затрата компании, а не деньги сотрудника), но
     # добавляется к БАЗЕ распределения — см. `payroll_statement.distribution_base`.
     guard_tax_amount: Decimal = Decimal("0")
+    # Переплата по официальной выплате (task_official_payout_debt): банк платит
+    # равномерно двумя платежами в месяц, работа идёт циклами 15/15, и в
+    # нерабочую половину возникает долг, который гасится из следующих кассовых
+    # выплат. НА НАЧИСЛЕННОЕ, НАЛОГ И БАЗУ РАСПРЕДЕЛЕНИЯ НЕ ВЛИЯЕТ — только на
+    # «к выплате». Долг считается пересчётом истории, нигде не хранится.
+    official_debt_before: Decimal = Decimal("0")
+    official_debt_after: Decimal = Decimal("0")
+    official_debt_repaid: Decimal = Decimal("0")
 
     breakdown_by_company: list[CompanyBreakdownRead]
     is_calculable: bool

@@ -104,10 +104,40 @@ def _touched_keys(session: Session) -> set[str]:
         elif isinstance(obj, _REFERENCE):
             keys.add(REFERENCE_KEY)
     if REFERENCE_KEY not in keys and (
-        _moves_loan_history(session) or _touches_loan_holder(session)
+        _moves_loan_history(session)
+        or _touches_loan_holder(session)
+        or _touches_official_debt(session)
     ):
         keys.add(REFERENCE_KEY)
     return keys
+
+
+def _touches_official_debt(session: Session) -> bool:
+    """Правка месяца ОФИЦИАЛЬНО устроенного охранника двигает и поздние месяцы.
+
+    Переплата по официальной выплате (task_official_payout_debt) считается
+    пересчётом истории: смены, премия и штраф прошлого месяца меняют, сколько
+    долга доедет до следующих. Своего месяца мало — бьём по справочнику, как у
+    займа. Официальных охранных мест единицы, поэтому цена та же: редкий полный
+    пересчёт кэша.
+    """
+    from app.models.guard_assignments import GuardAssignment, GuardShift
+
+    position_ids: set[int] = set()
+    for obj in list(session.new) + list(session.dirty) + list(session.deleted):
+        if isinstance(obj, GuardAssignment):
+            if isinstance(obj.position_id, int):
+                position_ids.add(obj.position_id)
+        elif isinstance(obj, GuardShift):
+            assignment = getattr(obj, "assignment", None)
+            if assignment is not None and isinstance(assignment.position_id, int):
+                position_ids.add(assignment.position_id)
+    if not position_ids:
+        return False
+    return session.query(EmployeePosition.id).filter(
+        EmployeePosition.id.in_(position_ids),
+        EmployeePosition.is_official.is_(True),
+    ).first() is not None
 
 
 def _moves_loan_history(session: Session) -> bool:

@@ -223,10 +223,22 @@ def build_snapshot(db: Session, period: TimesheetPeriod) -> PeriodSnapshot:
     dashboard_rows = serialize_results(results, extras)
 
     guard_views = None
+    official_debt_facts = None
     dept = db.get(Department, period.department_id) if period.department_id else None
     if dept is not None and dept.is_guard_department:
         from app.services.guard_month import build_guard_month_live
+        from app.services.official_debt import debt_facts_of_month
+        from app.services.official_debt_history import official_debt_states
 
+        # Долг по официальной выплате на конец каждой половины
+        # (task_official_payout_debt): закрытая половина не пересчитывается, её
+        # долг читается отсюда — как удержание займа из `loan_facts`.
+        states = official_debt_states(db, list(positions.values()), year, month)
+        official_debt_facts = {
+            str(pid): facts
+            for pid, state in states.items()
+            if (facts := debt_facts_of_month(state, year, month))
+        }
         guard_views = {
             str(half or 0): build_guard_month_live(
                 db, scope, year, month, [dept.id], half
@@ -252,6 +264,7 @@ def build_snapshot(db: Session, period: TimesheetPeriod) -> PeriodSnapshot:
             if p.position_id is not None and _is_loan_position(employees, p)
         },
         guard_views=guard_views,
+        official_debt_facts=official_debt_facts,
     )
 
 

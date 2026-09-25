@@ -236,6 +236,10 @@ def _deduction_reasons(row: StatementRow) -> list[str]:
     lines = list(row.advance_reasons)
     if row.loan_note:
         lines.append(row.loan_note)
+    # Переплата по официальной выплате вахты: без этой строки «Итого начислено
+    # − Удержано ≠ К выплате» выглядит ошибкой выгрузки.
+    if row.official_debt_note:
+        lines.append(row.official_debt_note)
     return lines
 
 
