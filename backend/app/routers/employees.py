@@ -16,7 +16,7 @@ from app.core.security import hash_password, revoke_sessions
 from app.database import get_db
 from app.models.company_shares import EmployeeCompanyShare
 from app.models.employees import Employee
-from app.models.position_terms import TERM_FIELDS, TERMS_BEGINNING
+from app.models.position_terms import TERMS_BEGINNING
 from app.models.positions import (
     EMPLOYEE_COMPAT_FIELDS,
     PAY_TYPE_BASE_FIELD,
@@ -42,8 +42,8 @@ from app.schemas.position import (
     EmployeePositionCreate,
     EmployeePositionRead,
     EmployeePositionUpdate,
-    PositionTermsHistoryRead,
-    PositionTermsRead,
+    PositionTermsStateRead,
+    TermsChangesInput,
 )
 from app.services.accounts import account_conflict, normalize_email
 from app.services.closed_periods import ensure_month_open
@@ -91,9 +91,11 @@ from app.services.org_access import (
     is_department_scoped,
 )
 from app.services.position_terms import (
+    TermsValueError,
     default_effective_from,
-    set_effective_from,
+    ensure_no_free_terms_edit,
 )
+from app.services.position_terms_view import apply_terms_input, terms_state
 from app.services.positions import (
     PositionError,
     apply_position_fields,
@@ -105,7 +107,6 @@ from app.services.positions import (
 )
 from app.services.reference_audit import (
     EMPLOYEE_SHARES_ENTITY,
-    FIELD_LABELS,
     format_share_rows,
     record_change,
 )
@@ -417,28 +418,28 @@ def update_employee(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Employee not found")
 
     data = payload.model_dump(exclude_unset=True)
-    # Дата начала изменения условий — не поле карточки, а параметр правки:
-    # версию заводит слушатель сессии (services/position_terms).
-    if emp.primary_position is not None:
-        set_effective_from(emp.primary_position, data.pop("terms_effective_from", None))
-    else:
-        data.pop("terms_effective_from", None)
     if "tab_number" in data:
         data["tab_number"] = normalize_tab_number(data["tab_number"])
         _ensure_tab_number_free(db, data["tab_number"], exclude_id=emp.id)
 
     # Плоские поля карточки пишут ОСНОВНУЮ позицию; если она охранная — её ведёт
     # вахта. Поля человека (ФИО, таб. №, даты, активность) правятся здесь.
+    position_values = {
+        EMPLOYEE_COMPAT_FIELDS[name]: value
+        for name, value in data.items()
+        if name in EMPLOYEE_COMPAT_FIELDS
+    }
     try:
-        ensure_position_edit_allowed(db, emp.primary_position, {
-            EMPLOYEE_COMPAT_FIELDS[name]: value
-            for name, value in data.items()
-            if name in EMPLOYEE_COMPAT_FIELDS
-        })
+        ensure_position_edit_allowed(db, emp.primary_position, position_values)
         # Заём удерживается с рабочего места; на охранном его не ведут (аудит 2-Г).
         ensure_loan_change_allowed(db, emp, data)
     except GuardOwnedError as exc:
         raise _guard_owned(exc) from exc
+    # Условия труда общей правкой карточки не меняются (ADR-001): у изменения
+    # обязана быть дата, поэтому оно идёт своей точкой входа. Плоские поля
+    # карточки пишут ОСНОВНУЮ позицию — её и спрашиваем. Проверка стоит ПОСЛЕ
+    # владения штатом: у охранного места ведение вахтой — причина главнее.
+    ensure_no_free_terms_edit(emp.primary_position, position_values)
     # Плоское `department_id` карточки переводит ОСНОВНУЮ позицию.
     if "department_id" in data:
         _ensure_transfer_into_guard(db, emp.primary_position, data["department_id"])
@@ -809,13 +810,16 @@ def update_position(
     before_bounds = bounds_snapshot(emp)
     before = _position_dict(position)
     data = payload.model_dump(exclude_unset=True)
-    set_effective_from(position, data.pop("terms_effective_from", None))
     # Охранную позицию правят в вахте. Обычную можно перевести в охрану отсюда —
     # после этого её ведёт вахта (перевод делает тот, кто владеет позицией ДО).
     try:
         ensure_position_edit_allowed(db, position, data)
     except GuardOwnedError as exc:
         raise _guard_owned(exc) from exc
+    # Условия труда меняются своей точкой входа, списком изменений с датой
+    # (ADR-001): общая правка рабочего места их не принимает. После проверки
+    # владения штатом: у охранного места причина отказа — вахта.
+    ensure_no_free_terms_edit(position, data)
     if "department_id" in data:
         _ensure_transfer_into_guard(db, position, data["department_id"])
     # Деактивировать основную нельзя — иначе сотрудник останется без рабочего
@@ -839,17 +843,69 @@ def update_position(
 
 @router.get(
     "/{emp_id}/positions/{position_id}/terms",
-    response_model=PositionTermsHistoryRead,
+    response_model=PositionTermsStateRead,
 )
-def position_terms_history(
+def position_terms_state(
     emp_id: int,
     position_id: int,
     db: Session = Depends(get_db),
     current_user: Employee = Depends(get_current_user),
 ):
-    """История условий рабочего места: что, когда, с какой даты
-    (task_stage3_historicity). Ставки и оклады — деньги: табельщику 403, как
-    и распределение по юрлицам."""
+    """Условия рабочего места: что действует сегодня, что запланировано дальше,
+    история по полю (ADR-001, task_terms_per_field). Ставки и оклады — деньги:
+    табельщику 403, как и распределение по юрлицам."""
+    position = _terms_position(db, emp_id, position_id, current_user)
+    return terms_state(db, position)
+
+
+@router.post(
+    "/{emp_id}/positions/{position_id}/terms",
+    response_model=PositionTermsStateRead,
+)
+def change_position_terms(
+    emp_id: int,
+    position_id: int,
+    payload: TermsChangesInput,
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(_admin_only),
+):
+    """Изменить условия рабочего места — ЯВНЫМ списком изменений с датами.
+
+    Бэкенд не диффит и не угадывает: пишет ровно присланное, поэтому «то же
+    значение, но с сентября» вносится обычным изменением. Разные группы можно
+    изменить разными датами в один заход. Дата в закрытом месяце или месяце на
+    проверке — 409 (`ClosedPeriodError`).
+    """
+    emp = _employee_for_write(db, emp_id)
+    position = _position_or_404(emp, position_id)
+    # Охранное рабочее место ведёт вахта (task_guard_ownership) — там своя форма.
+    # Отказ БЕЗУСЛОВНЫЙ: `ensure_position_edit_allowed` смотрит на расхождение с
+    # зеркалом, а у охранной позиции ставка всегда пуста (её очистила миграция
+    # `a2b3c4d5e6f7`), и проверка «изменилось ли» не сработала бы ни разу —
+    # через карточку правились бы и оф. зарплата охранника, и налог вахты.
+    try:
+        ensure_position_owned_outside_vahta(db, position)
+    except GuardOwnedError as exc:
+        raise _guard_owned(exc) from exc
+    before = _position_dict(position)
+    try:
+        apply_terms_input(db, position, payload.changes)
+    except TermsValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    db.flush()
+    log_action(db, actor, "employee_position", position.id, "terms_change",
+               before=before, after=_position_dict(position))
+    db.commit()
+    db.refresh(position)
+    return terms_state(db, position)
+
+
+def _terms_position(
+    db: Session, emp_id: int, position_id: int, current_user: Employee,
+):
+    """Рабочее место для чтения условий: деньги видят не все роли."""
     if not can_see_finances(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
     emp = _employee_for_read(db, emp_id, current_user)
@@ -858,29 +914,7 @@ def position_terms_history(
         current_user, position.department_id
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Нет доступа")
-
-    versions: list[PositionTermsRead] = []
-    previous = None
-    for v in position.terms_versions:
-        changed = [] if previous is None else [
-            FIELD_LABELS.get(f, f) for f in TERM_FIELDS
-            if getattr(v, f) != getattr(previous, f)
-        ]
-        versions.append(PositionTermsRead(
-            id=v.id,
-            effective_from=None if v.effective_from <= TERMS_BEGINNING else v.effective_from,
-            **{f: getattr(v, f) for f in TERM_FIELDS},
-            schedule_name=v.schedule.name if v.schedule is not None else None,
-            changed=changed,
-            created_by_name=v.created_by_name,
-            created_at=v.created_at,
-        ))
-        previous = v
-    return PositionTermsHistoryRead(
-        position_id=position.id,
-        versions=versions,
-        default_effective_from=default_effective_from(),
-    )
+    return position
 
 
 @router.post(

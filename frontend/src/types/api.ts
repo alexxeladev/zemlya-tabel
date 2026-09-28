@@ -768,41 +768,71 @@ export type EmployeePositionInput = Partial<
   >
 > & {
   is_primary?: boolean
-  /** с какой даты действует изменение условий (task_stage3_historicity);
-   *  не задано — 1-е число следующего месяца */
-  terms_effective_from?: string | null
 }
 
-/** Версия условий рабочего места — история в карточке (task_stage3_historicity). */
-export interface PositionTerms {
-  id: number
-  /** null — с начала (первая версия, перенесённая миграцией) */
+/** Группы условий труда: меняются по группе целиком и каждая со своей даты. */
+export type TermGroupKey = 'pay' | 'schedule' | 'weekend' | 'holiday' | 'overtime' | 'official'
+
+/** Одно изменение одного условия — строка истории (ADR-001). */
+export interface TermChangeRow {
+  field: string
+  field_label: string
+  group: TermGroupKey
+  group_label: string
+  /** null — базовое значение «с начала», а не изменение */
   effective_from: string | null
-  pay_type: PayType
-  rate: string | null
-  shift_rate: string | null
-  hour_rate: string | null
-  schedule_id: number | null
-  schedule_name: string | null
-  weekend_pay_type: WeekendPayType
-  weekend_coefficient: string | null
-  weekend_fixed_rate: string | null
-  holiday_pay_type: WeekendPayType
-  holiday_coefficient: string | null
-  holiday_fixed_rate: string | null
-  overtime_coefficient: string | null
-  is_official: boolean
-  official_salary: string | null
-  /** подписи полей, изменившихся относительно предыдущей версии */
-  changed: string[]
+  effective_label: string
+  value: string | number | boolean | null
   created_by_name: string | null
   created_at: string | null
 }
 
-export interface PositionTermsHistory {
+/** Изменение группы, которое ещё не действует: «с 01.12.2026 будет …». */
+export interface TermPlanned {
+  effective_from: string
+  effective_label: string
+  fields: string[]
+  values: Record<string, string | number | boolean | null>
+}
+
+export interface TermGroupState {
+  group: TermGroupKey
+  label: string
+  fields: string[]
+  current: Record<string, string | number | boolean | null>
+  planned: TermPlanned[]
+}
+
+/** Условия рабочего места: сегодня, запланированное, история по полю. */
+export interface PositionTermsState {
   position_id: number
-  versions: PositionTerms[]
+  today: string
   default_effective_from: string
+  beginning: string
+  groups: TermGroupState[]
+  changes: TermChangeRow[]
+  /** id графика → название (в том числе снятого с учёта) */
+  schedule_names: Record<string, string>
+}
+
+/** Что шлёт диалог «Изменить»: группа, её значения и дата начала действия. */
+export interface TermsChangeInput {
+  group: TermGroupKey
+  effective_from: string
+  pay_type?: PayType
+  rate?: string | null
+  shift_rate?: string | null
+  hour_rate?: string | null
+  schedule_id?: number | null
+  weekend_pay_type?: WeekendPayType
+  weekend_coefficient?: string | null
+  weekend_fixed_rate?: string | null
+  holiday_pay_type?: WeekendPayType
+  holiday_coefficient?: string | null
+  holiday_fixed_rate?: string | null
+  overtime_coefficient?: string | null
+  is_official?: boolean
+  official_salary?: string | null
 }
 
 export type ScheduleType = 'weekday' | 'cyclic'

@@ -264,6 +264,32 @@ class TestDirectoryReadOnly:
         # Ставки у охранного места нет и не появляется — запрос отклонён.
         assert db_session.get(EmployeePosition, pid).shift_rate is None
 
+    def test_terms_endpoint_rejected(self, client, admin, guard_staff, db_session):
+        """Условия охранного места не правятся и новой точкой входа (ADR-001).
+
+        Отказ обязан быть БЕЗУСЛОВНЫМ: ставки у охранной позиции нет вовсе, и
+        проверка «а изменилось ли значение» не сработала бы ни разу — через
+        карточку правились бы оф. зарплата охранника и налог вахты.
+        """
+        emp_id, pid = guard_staff["employee_id"], guard_staff["position_id"]
+        for change in (
+            {"group": "pay", "effective_from": "2026-10-01",
+             "pay_type": "per_shift", "shift_rate": "9999"},
+            {"group": "official", "effective_from": "2026-10-01",
+             "is_official": True, "official_salary": "70000"},
+        ):
+            resp = client.post(
+                f"/api/employees/{emp_id}/positions/{pid}/terms",
+                json={"changes": [change]}, headers=admin,
+            )
+            assert resp.status_code == 403, resp.text
+            assert "Вахта" in resp.json()["detail"]
+        db_session.expire_all()
+        position = db_session.get(EmployeePosition, pid)
+        assert position.shift_rate is None
+        assert position.official_salary is None
+        assert [c for c in position.term_changes if not c.is_base] == []
+
     def test_patch_flat_compat_field_rejected(self, client, admin, guard_staff):
         resp = client.patch(
             f"/api/employees/{guard_staff['employee_id']}",
@@ -376,7 +402,16 @@ class TestDirectoryReadOnly:
         primary = ordinary_emp.primary_position
         resp = client.patch(
             f"/api/employees/{ordinary_emp.id}/positions/{primary.id}",
-            json={"rate": "90000"}, headers=admin,
+            json={"title": "Инженер-механик"}, headers=admin,
+        )
+        assert resp.status_code == 200, resp.text
+        # Условия труда (оклад) и у обычной позиции правятся своей точкой входа
+        # с датой — ADR-001, а не запретом вахты.
+        resp = client.post(
+            f"/api/employees/{ordinary_emp.id}/positions/{primary.id}/terms",
+            json={"changes": [{"group": "pay", "effective_from": "2026-10-01",
+                               "pay_type": "salary", "rate": "90000"}]},
+            headers=admin,
         )
         assert resp.status_code == 200, resp.text
 
@@ -500,10 +535,22 @@ class TestOrdinaryUnchanged:
         assert position_setup_issues(pos) == ["Не задан график", "Не задан оклад"]
 
     def test_ordinary_directory_edit_works(self, client, admin, ordinary_emp):
+        """Обычный сотрудник правится справочником как раньше. Оклад — своей
+        точкой входа с датой (ADR-001), это касается всех позиций, не только
+        охранных."""
         resp = client.patch(
-            f"/api/employees/{ordinary_emp.id}", json={"rate": "85000"}, headers=admin,
+            f"/api/employees/{ordinary_emp.id}", json={"position": "Инженер"},
+            headers=admin,
         )
         assert resp.status_code == 200
+        pid = ordinary_emp.primary_position.id
+        resp = client.post(
+            f"/api/employees/{ordinary_emp.id}/positions/{pid}/terms",
+            json={"changes": [{"group": "pay", "effective_from": "2026-10-01",
+                               "pay_type": "salary", "rate": "85000"}]},
+            headers=admin,
+        )
+        assert resp.status_code == 200, resp.text
 
 
 # ── Снятие флага охраны ───────────────────────────────────────────────────────
@@ -523,12 +570,16 @@ class TestGuardFlagRemoval:
             headers=admin,
         )
         assert resp.status_code == 200
-        # Позиция перешла в справочник.
-        resp = client.patch(
-            f"/api/employees/{guard_staff['employee_id']}/positions/{guard_staff['position_id']}",
-            json={"shift_rate": "4000"}, headers=admin,
+        # Позиция перешла в справочник: её условия теперь меняет карточка (с
+        # датой, ADR-001), а не отказ «ведётся в вахте».
+        resp = client.post(
+            f"/api/employees/{guard_staff['employee_id']}"
+            f"/positions/{guard_staff['position_id']}/terms",
+            json={"changes": [{"group": "pay", "effective_from": "2026-10-01",
+                               "pay_type": "per_shift", "shift_rate": "4000"}]},
+            headers=admin,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
 
     def test_empty_department_no_warning(self, client, admin, guard_dept):
         resp = client.patch(

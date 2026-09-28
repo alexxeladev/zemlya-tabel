@@ -7,7 +7,7 @@ interface Props {
   children: ReactNode
   actions?: ReactNode
   /** Ширина окна. По умолчанию как была — существующие модалки не меняются. */
-  size?: 'lg' | 'xl' | '3xl' | '5xl'
+  size?: 'lg' | 'xl' | '3xl' | '5xl' | '6xl'
 }
 
 const WIDTHS: Record<NonNullable<Props['size']>, string> = {
@@ -15,6 +15,7 @@ const WIDTHS: Record<NonNullable<Props['size']>, string> = {
   xl: 'max-w-xl',
   '3xl': 'max-w-3xl',
   '5xl': 'max-w-5xl',
+  '6xl': 'max-w-6xl',
 }
 
 export function Modal({ isOpen, onClose, title, children, actions, size = 'lg' }: Props) {

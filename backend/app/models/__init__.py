@@ -40,6 +40,10 @@ from app.models.loan_deductions import LoanDeduction
 from app.models.login_failures import LoginFailure
 from app.models.night_shifts import NightShift
 from app.models.period_snapshots import GuardTaxRate, PeriodSnapshot
+from app.models.position_term_changes import (
+    TERM_FIELD_TYPES,
+    PositionTermChange,
+)
 from app.models.position_terms import TERM_FIELDS, TERMS_BEGINNING, PositionTerms
 from app.models.positions import (
     PAY_TYPE_HOURLY,
@@ -101,6 +105,8 @@ __all__ = [
     "PeriodSnapshot",
     "GuardTaxRate",
     "PositionTerms",
+    "PositionTermChange",
+    "TERM_FIELD_TYPES",
     "TERM_FIELDS",
     "TERMS_BEGINNING",
     "PAY_TYPE_HOURLY",

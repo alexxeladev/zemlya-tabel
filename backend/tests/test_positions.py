@@ -876,15 +876,42 @@ class TestPositionCrudApi:
         assert [r["display_title"] for r in rows] == ["Инженер", "Электрик"]
 
     def test_changing_pay_type_clears_other_base(self, client, auth, employee):
+        """Смена типа оплаты гасит базу чужого типа. Тип оплаты и ставка —
+        условия труда, поэтому меняются своей точкой входа с датой (ADR-001)."""
+        pos_id = employee.primary_position.id
+        resp = client.post(
+            f"/api/employees/{employee.id}/positions/{pos_id}/terms",
+            headers=auth,
+            json={"changes": [{
+                "group": "pay", "effective_from": "2026-01-01",
+                "pay_type": PAY_TYPE_HOURLY, "hour_rate": "450",
+            }]},
+        )
+        assert resp.status_code == 200, resp.text
+        position = client.get(
+            f"/api/employees/{employee.id}/positions", headers=auth,
+        ).json()[0]
+        assert position["rate"] is None
+        assert Decimal(position["hour_rate"]) == Decimal("450")
+
+    def test_terms_are_not_freely_editable(self, client, auth, employee):
+        """Общая правка рабочего места условия не принимает: у изменения обязана
+        быть дата, иначе правка молча уходит не в тот месяц (ADR-001)."""
         pos_id = employee.primary_position.id
         resp = client.patch(
             f"/api/employees/{employee.id}/positions/{pos_id}",
             headers=auth,
             json={"pay_type": PAY_TYPE_HOURLY, "hour_rate": "450"},
         )
+        assert resp.status_code == 422, resp.text
+        assert "Изменить" in resp.json()["detail"]
+        # Должность рядом с условиями сохраняется как раньше.
+        resp = client.patch(
+            f"/api/employees/{employee.id}/positions/{pos_id}",
+            headers=auth, json={"title": "Ведущий инженер"},
+        )
         assert resp.status_code == 200, resp.text
-        assert resp.json()["rate"] is None
-        assert Decimal(resp.json()["hour_rate"]) == Decimal("450")
+        assert resp.json()["title"] == "Ведущий инженер"
 
     def test_make_primary_moves_the_flag(self, client, auth, employee, db_session):
         side = client.post(

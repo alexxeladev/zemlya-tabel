@@ -8,7 +8,6 @@ import {
   effectiveMonthLabel,
   firstOfMonth,
   monthInputToIso,
-  termsChanged,
 } from './terms.ts'
 
 test('дата по умолчанию — 1-е число следующего месяца', () => {
@@ -30,13 +29,6 @@ test('подписи версий: первая — «с начала»', () => 
   assert.equal(effectiveLabel(null), 'с начала')
   assert.equal(effectiveLabel('2026-05-15'), 'с 15.05.2026')
   assert.equal(effectiveMonthLabel('2026-10-01'), 'с 10.2026')
-})
-
-test('изменение условий распознаётся, числа сравниваются как числа', () => {
-  const a = { rate: '60000.00', overtime_coefficient: '1.50', title: 'Инженер' }
-  assert.equal(termsChanged(a, { ...a, rate: '60000' }), false)
-  assert.equal(termsChanged(a, { ...a, title: 'Старший инженер' }), false)
-  assert.equal(termsChanged(a, { ...a, rate: '65000' }), true)
 })
 
 test('зеркало бэка: то же правило «1-е число следующего месяца»', () => {

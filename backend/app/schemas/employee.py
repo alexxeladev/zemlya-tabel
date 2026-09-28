@@ -136,10 +136,9 @@ class EmployeeUpdate(BaseModel):
     loan_start_date: Optional[datetime.date] = None
     hire_date: Optional[datetime.date] = None
     dismissal_date: Optional[datetime.date] = None
-    # С какой даты действует изменение условий основной позиции (оклад, тип
-    # оплаты, график, коэффициенты) — task_stage3_historicity. Не задано —
-    # 1-е число следующего месяца.
-    terms_effective_from: Optional[datetime.date] = None
+    # Даты начала изменения условий здесь НЕТ (ADR-001): условия основной
+    # позиции общая правка карточки не принимает вовсе — у изменения обязана
+    # быть дата, и оно идёт своей точкой входа (`POST …/positions/{id}/terms`).
     # Служебных полей здесь НЕТ намеренно (task_stage2_access п.2.5):
     #   is_system_admin — неснимаемая учётка (её не уволить, не сбросить пароль,
     #     не сменить роль); правкой карточки её можно было выдать себе или снять

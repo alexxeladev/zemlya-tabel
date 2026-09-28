@@ -41,6 +41,7 @@ from app.models.guard_settings import GuardSettings
 from app.models.loan_deductions import LoanDeduction
 from app.models.night_shifts import NightShift
 from app.models.period_snapshots import GuardTaxRate, PeriodSnapshot
+from app.models.position_term_changes import PositionTermChange
 from app.models.position_terms import PositionTerms
 from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
@@ -81,8 +82,9 @@ _REFERENCE: tuple[type, ...] = (
     Employee, EmployeePosition, Department, Company, Schedule, ProductionCalendar,
     EmployeeCompanyShare, DepartmentCompanyShare, GuardJobTitle, GuardSettings,
     GuardCrew, GuardCrewShare, GuardSite, GuardSiteShare, GuardPost,
-    # Версии условий позиций и ставки налога вахты (task_stage3_historicity).
-    PositionTerms, GuardTaxRate,
+    # Условия позиций (изменения по полю — ADR-001; снимки версий до него)
+    # и ставки налога вахты (task_stage3_historicity).
+    PositionTermChange, PositionTerms, GuardTaxRate,
 )
 
 

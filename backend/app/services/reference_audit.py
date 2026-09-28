@@ -105,25 +105,14 @@ AUDITED_FIELDS: dict[type, tuple[str, ...]] = {
         # необратима — «кто и когда сдвинул дату» должно быть видно.
         "hire_date",
         "dismissal_date",
-        "pay_type",
-        "rate",
-        "shift_rate",
-        "hour_rate",
-        "schedule_id",
+        # Условия труда (тип оплаты и база, график, коэффициенты, официальное
+        # трудоустройство) в этом списке НЕ значатся: они живут отдельными
+        # строками с датой начала действия (ADR-001), а колонки позиции — их
+        # зеркало. Запись о зеркале дублировала бы изменение, ещё и без даты, —
+        # пишет его `queue_term_change` из `services/position_terms`.
         "department_id",
         "company_id",
-        "weekend_pay_type",
-        "weekend_coefficient",
-        "weekend_fixed_rate",
-        "holiday_pay_type",
-        "holiday_coefficient",
-        "holiday_fixed_rate",
-        "overtime_coefficient",
         "has_night_shifts",
-        # Официальное трудоустройство и оф. зарплата на руки (вахта): от них
-        # считаются официальная выплата, налог и «к выплате».
-        "is_official",
-        "official_salary",
         "is_primary",
         "is_active",
     ),
@@ -586,6 +575,44 @@ def _write_reference_changes(session: Session, flush_context) -> None:
     # executemany по Core-таблице: ORM-объект на строку стоил бы дороже, а
     # читать эти записи всё равно только запросом с фильтрами.
     session.execute(ReferenceChange.__table__.insert(), rows)
+
+
+def queue_term_change(
+    session: Session,
+    position: Any,
+    *,
+    field: str,
+    since: str,
+    old_value: Any,
+    new_value: Any,
+) -> None:
+    """Изменение условия труда в журнал: поле, с какой даты, было → стало.
+
+    Пишется ЯВНО, а не событиями сессии: меняется не колонка, а появляется
+    строка истории (ADR-001), и событий тут нет вовсе. Дата начала действия
+    обязательна в тексте — без неё «оклад 90 000» не говорит, какой месяц
+    поехал, а именно это и стоило 64 часов, оплаченных по нулевому
+    коэффициенту.
+
+    Равенство значений записи НЕ отменяет (в отличие от `record_change`): то же
+    значение с другой даты — настоящее изменение, ровно его и нельзя было
+    внести до ADR-001.
+
+    Строка кладётся в ту же очередь, что и остальной журнал, поэтому уходит
+    одним INSERT-ом после флаша, а `entity_id` и сотрудник дозаполняются там же.
+    """
+    row = _base_row(session, position, ACTION_UPDATE)
+    row["field"] = field
+    row["old_value"] = _terms_text(session, field, old_value, row, "old_value")
+    row["new_value"] = f"{_terms_text(session, field, new_value, row, 'new_value')} ({since})"
+    row["_obj"] = position
+    session.info.setdefault(_PENDING, []).append(row)
+
+
+def _terms_text(session: Session, field: str, value: Any, row: dict, slot: str) -> str:
+    """Значение условия для журнала. Пусто — словом: пустая ячейка читается как
+    «данных нет», а снятое значение — это «не задано»."""
+    return _render(session, field, value, row, slot) or "не задано"
 
 
 def record_change(

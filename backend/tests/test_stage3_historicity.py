@@ -25,7 +25,7 @@ from app.models.employee_adjustments import EmployeeAdjustment
 from app.models.employees import Employee
 from app.models.loan_deductions import LoanDeduction
 from app.models.period_snapshots import PeriodSnapshot
-from app.models.position_terms import TERMS_BEGINNING, PositionTerms
+from app.models.position_terms import TERM_FIELDS, TERMS_BEGINNING, PositionTerms
 from app.models.positions import EmployeePosition
 from app.models.production_calendars import ProductionCalendar
 from app.models.schedules import Schedule
@@ -107,13 +107,14 @@ def _raise_rate(db, emp, amount, day):
 # ── Часть 1: версии условий ───────────────────────────────────────────────────
 
 class TestTermsVersions:
-    def test_new_position_gets_version_from_beginning(self, db_session, setup):
+    def test_new_position_gets_base_values_from_beginning(self, db_session, setup):
+        """Новое рабочее место: базовое значение КАЖДОГО условия «с начала»."""
         pos = setup["emp"].primary_position
-        assert len(pos.terms_versions) == 1
-        v = pos.terms_versions[0]
-        assert v.effective_from == TERMS_BEGINNING
-        assert v.rate == Decimal("60000.00")
-        assert v.schedule_id == setup["sched"].id
+        assert {c.field for c in pos.term_changes} == set(TERM_FIELDS)
+        assert {c.effective_from for c in pos.term_changes} == {TERMS_BEGINNING}
+        by_field = {c.field: c.decoded for c in pos.term_changes}
+        assert by_field["rate"] == Decimal("60000.00")
+        assert by_field["schedule_id"] == setup["sched"].id
 
     def test_one_version_is_identical_to_raw_position(self, db_session, setup):
         """Миграция: одна версия «с начала» не меняет ни одной суммы."""
@@ -135,13 +136,16 @@ class TestTermsVersions:
         assert versioned == raw
 
     def test_change_without_date_starts_next_month(self, db_session, setup):
+        """Путь через зеркало (вахта, создание места): дата по умолчанию —
+        1-е число следующего месяца, и меняется ТОЛЬКО тронутое поле."""
         pos = setup["emp"].primary_position
         pos.rate = Decimal("70000")
         db_session.commit()
-        assert [v.effective_from for v in pos.terms_versions] == [
-            TERMS_BEGINNING, default_effective_from(),
+        dated = [c for c in pos.term_changes if not c.is_base]
+        assert [(c.field, c.effective_from, c.decoded) for c in dated] == [
+            ("rate", default_effective_from(), Decimal("70000.00")),
         ]
-        # Зеркало — последняя версия.
+        # Зеркало — последнее значение поля.
         assert pos.rate == Decimal("70000.00")
 
     def test_mid_month_raise_is_paid_from_its_date(self, db_session, setup):
@@ -225,8 +229,13 @@ class TestTermsVersions:
         set_effective_from(second, date(2026, 5, 15))
         second.rate = Decimal("45000")
         db_session.commit()
-        assert len(emp.primary_position.terms_versions) == 1
-        assert len(second.terms_versions) == 2
+        assert {c.effective_from for c in emp.primary_position.term_changes} == {
+            TERMS_BEGINNING,
+        }
+        dated = [c for c in second.term_changes if not c.is_base]
+        assert [(c.field, c.effective_from) for c in dated] == [
+            ("rate", date(2026, 5, 15)),
+        ]
 
     def test_version_in_closed_month_rejected(self, db_session, setup):
         _period(db_session, setup["dept"], status="closed")
@@ -258,27 +267,43 @@ class TestTermsVersions:
     def test_api_takes_effective_date_and_rejects_closed(self, client, db_session, setup):
         h = _auth(client, setup["admin"])
         emp, pos = setup["emp"], setup["emp"].primary_position
-        r = client.patch(f"/api/employees/{emp.id}/positions/{pos.id}", headers=h,
-                         json={"rate": "90000", "terms_effective_from": "2026-05-15"})
+        r = client.post(f"/api/employees/{emp.id}/positions/{pos.id}/terms", headers=h,
+                        json={"changes": [{
+                            "group": "pay", "effective_from": "2026-05-15",
+                            "pay_type": "salary", "rate": "90000",
+                        }]})
         assert r.status_code == 200, r.text
         _period(db_session, setup["dept"], status="closed", month=6)
-        r = client.patch(f"/api/employees/{emp.id}/positions/{pos.id}", headers=h,
-                         json={"rate": "95000", "terms_effective_from": "2026-06-10"})
+        r = client.post(f"/api/employees/{emp.id}/positions/{pos.id}/terms", headers=h,
+                        json={"changes": [{
+                            "group": "pay", "effective_from": "2026-06-10",
+                            "pay_type": "salary", "rate": "95000",
+                        }]})
         assert r.status_code == 409
         assert "закрыт" in r.json()["detail"]
 
     def test_history_in_position_card(self, client, db_session, setup):
+        """История — строками ПО ПОЛЮ: «оклад 60 000 с начала, 90 000 с 15.05»."""
         h = _auth(client, setup["admin"])
         emp, pos = setup["emp"], setup["emp"].primary_position
-        client.patch(f"/api/employees/{emp.id}/positions/{pos.id}", headers=h,
-                     json={"rate": "90000", "terms_effective_from": "2026-05-15"})
+        client.post(f"/api/employees/{emp.id}/positions/{pos.id}/terms", headers=h,
+                    json={"changes": [{
+                        "group": "pay", "effective_from": "2026-05-15",
+                        "pay_type": "salary", "rate": "90000",
+                    }]})
         r = client.get(f"/api/employees/{emp.id}/positions/{pos.id}/terms", headers=h)
         assert r.status_code == 200
         body = r.json()
-        assert [v["effective_from"] for v in body["versions"]] == [None, "2026-05-15"]
-        assert body["versions"][1]["changed"] == ["Оклад"]
-        assert body["versions"][1]["created_by_name"] == "Test Admin"
+        rate_rows = [c for c in body["changes"] if c["field"] == "rate"]
+        # Свежие сверху; базовое значение помечено пустой датой («с начала»).
+        assert [(c["effective_from"], c["value"]) for c in rate_rows] == [
+            ("2026-05-15", "90000.00"), (None, "60000.00"),
+        ]
+        assert rate_rows[0]["field_label"] == "Оклад"
+        assert rate_rows[0]["group_label"] == "Тип оплаты и ставка"
+        assert rate_rows[0]["created_by_name"] == "Test Admin"
         assert body["default_effective_from"] == default_effective_from().isoformat()
+        assert body["schedule_names"] == {str(setup["sched"].id): "5/2"}
 
 
 # ── Часть 2: снимок закрытого периода ─────────────────────────────────────────

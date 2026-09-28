@@ -28,7 +28,7 @@ import { defaultEffectiveFrom, effectiveMonthLabel, monthInputToIso } from '../.
 import { Button } from '../../components/Button'
 import { EmployeeHistoryModal } from './EmployeeHistoryModal'
 import { Select } from '../../components/Select'
-import { SharesEditor } from '../../components/SharesEditor'
+import { SharesEditor, sharesSum, sharesWarn } from '../../components/SharesEditor'
 import { EmployeeImportModal } from './EmployeeImportModal'
 import { PositionsEditor } from './PositionsEditor'
 import { LoanStatusPanel } from './LoanStatusPanel'
@@ -566,6 +566,10 @@ export function EmployeesPage() {
       <Modal
         isOpen={showCreate || !!editTarget}
         onClose={closeModal}
+        // Карточка широкая: рабочее место — это список свойств «подпись —
+        // значение — Изменить», и на узком окне значения переносились, а до
+        // нижних блоков приходилось прокручивать вдвое дольше.
+        size="6xl"
         title={editTarget ? `${readOnly ? 'Просмотр' : 'Изменить'}: ${editTarget.full_name}` : 'Добавить сотрудника'}
         actions={
           readOnly ? (
@@ -578,18 +582,27 @@ export function EmployeesPage() {
           )
         }
       >
-        <form id="emp-form" onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4 max-h-[70vh] overflow-y-auto pr-1">
+        <form id="emp-form" onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4 max-h-[88vh] overflow-y-auto pr-1">
           <fieldset disabled={readOnly} className="contents">
+          {/* Карточка в ДВЕ КОЛОНКИ: рабочие места — самый высокий блок, и в
+              одну колонку карточка не помещалась на экран. Слева то, что
+              описывает человека, справа — то, что описывает его работу и
+              деньги. На узком экране колонки схлопываются в одну. */}
+          <div className="grid items-start gap-x-6 gap-y-4 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
+            <div className="flex flex-col gap-3">
           {/* Section 1 — Personal */}
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Личная информация</p>
-            <div className="flex flex-col gap-3">
+            {/* ФИО — на всю ширину: длинное «Проверкин Целевой Премиевич» в
+                половину строки не влезало. Табельный номер и должность короткие,
+                поэтому идут под ним в один ряд. */}
+            <div className="grid grid-cols-2 gap-3">
               {[
-                { name: 'tab_number' as const, label: 'Табельный номер', locked: isMgr },
-                { name: 'full_name' as const, label: 'ФИО *', locked: false },
-                { name: 'position' as const, label: 'Должность', locked: false },
-              ].map(({ name, label, locked }) => (
-                <div key={name} className="flex flex-col gap-1">
+                { name: 'full_name' as const, label: 'ФИО *', locked: false, wide: true },
+                { name: 'tab_number' as const, label: 'Табельный номер', locked: isMgr, wide: false },
+                { name: 'position' as const, label: 'Должность', locked: false, wide: false },
+              ].map(({ name, label, locked, wide }) => (
+                <div key={name} className={`flex flex-col gap-1 ${wide ? 'col-span-2' : ''}`}>
                   <label className="text-sm font-medium text-gray-700">{label}</label>
                   <input
                     {...form.register(name)}
@@ -603,20 +616,6 @@ export function EmployeesPage() {
             </div>
           </div>
 
-          {/* ── Должности (позиции) — task_positions ч.B ──
-              Только в режиме редактирования: у существующего сотрудника рабочих
-              мест может быть несколько, и каждое со своими условиями. При
-              создании ниже идут «плоские» поля — они заводят основную позицию. */}
-          {editTarget && (
-            <PositionsEditor
-              employeeId={editTarget.id}
-              departments={departments ?? []}
-              companies={companies ?? []}
-              schedules={schedules ?? []}
-              readOnly={readOnly}
-              onChanged={refetch}
-            />
-          )}
 
           {/* Section 2 — Structure (только при создании: это основная позиция) */}
           {!editTarget && (
@@ -643,6 +642,7 @@ export function EmployeesPage() {
             </div>
           </div>
           )}
+
 
           {/* Section 3 — Employment */}
           <div>
@@ -702,8 +702,23 @@ export function EmployeesPage() {
                   она делает больше, чем ставит дату (блокирует вход, пишет свой
                   audit log). */}
               <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-3">
-                <div className="mb-2 text-xs font-semibold text-gray-700">
-                  Работа в компании
+                {/* «Уволить» стоит в шапке своего же блока: она про даты работы
+                    в компании, а отдельной строкой под блоком висела ни к чему
+                    не привязанной и занимала лишний ряд. */}
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-gray-700">
+                    Работа в компании
+                  </span>
+                  {!isMgr && editTarget && !editTarget.is_system_admin && editTarget.is_active && (
+                    <Button
+                      type="button"
+                      variant="danger"
+                      size="sm"
+                      onClick={() => { closeModal(); setDismissTarget(editTarget); setDismissDate(new Date().toISOString().slice(0, 10)) }}
+                    >
+                      Уволить
+                    </Button>
+                  )}
                 </div>
                 <div className="flex flex-col gap-3">
                   <div className="flex flex-col gap-1">
@@ -717,24 +732,12 @@ export function EmployeesPage() {
                     </div>
                   )}
                   <p className="text-[11px] leading-tight text-gray-500">
-                    Табель заполняется только внутри этого периода, включая обе
-                    даты. Пустое поле — без ограничения. Отдельные должности
-                    могут заканчиваться раньше — это задаётся в самой должности.
+                    Табель заполняется внутри периода, включая обе даты; пустое
+                    поле — без ограничения.
                   </p>
                 </div>
               </div>
-              {!isMgr && editTarget && !editTarget.is_system_admin && editTarget.is_active && (
-                <div className="pt-1">
-                  <Button
-                    type="button"
-                    variant="danger"
-                    size="sm"
-                    onClick={() => { closeModal(); setDismissTarget(editTarget); setDismissDate(new Date().toISOString().slice(0, 10)) }}
-                  >
-                    Уволить
-                  </Button>
-                </div>
-              )}
+
               {!isMgr && editTarget && !editTarget.is_system_admin && !editTarget.is_active && (
                 <div className="pt-1">
                   <Button
@@ -749,6 +752,179 @@ export function EmployeesPage() {
               )}
             </div>
           </div>
+
+
+          {/* Section 3c — Заём (задача 3.11a). Гасится равными долями автоматически.
+              Заём удерживается с ОСНОВНОГО рабочего места. Если оно охранное, заём
+              здесь не заводится и не меняется (бэк отвечает 403): выплаты охраны
+              ведёт вахта. Заведённый до запрета остаётся виден и его можно снять. */}
+          {(() => {
+            // То же место, что у бэка (`guard_staff.loan_position`): позиция займа,
+            // а если она не задана — основная.
+            const positions = editTarget?.positions ?? []
+            const loanPosition =
+              positions.find((p) => p.id === editTarget?.loan_position_id) ??
+              positions.find((p) => p.is_primary)
+            const loanLocked = Boolean(loanPosition && isGuardPosition(loanPosition))
+            const hasLoan = Boolean(form.watch('loan_amount'))
+            const inputClass =
+              'rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 read-only:bg-gray-100 read-only:text-gray-500'
+            return (
+              <div>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Заём</p>
+                {loanLocked && (
+                  <p className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    {GUARD_ACCRUAL_HINT}. Заём для него не заводится.
+                    {hasLoan && ' Заведённый раньше расчётом вахты не удерживается — его можно только снять.'}
+                  </p>
+                )}
+                {(!loanLocked || hasLoan) && (
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm font-medium text-gray-700">Сумма (₽)</label>
+                      <input {...form.register('loan_amount')} readOnly={loanLocked} placeholder="12000" className={inputClass} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm font-medium text-gray-700">Срок (мес.)</label>
+                      <input type="number" min={1} {...form.register('loan_term_months')} readOnly={loanLocked} placeholder="12" className={inputClass} />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-sm font-medium text-gray-700">Начало погашения</label>
+                      <input type="date" {...form.register('loan_start_date')} readOnly={loanLocked} className={inputClass} />
+                    </div>
+                  </div>
+                )}
+                {loanLocked && hasLoan && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      form.setValue('loan_amount', '', { shouldDirty: true })
+                      form.setValue('loan_term_months', '', { shouldDirty: true })
+                      form.setValue('loan_start_date', '', { shouldDirty: true })
+                    }}
+                    className="mt-2 rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
+                  >
+                    Снять заём
+                  </button>
+                )}
+                {!loanLocked && (
+                  <p className="mt-1 text-xs text-gray-400">
+                    Гасится равными долями (сумма ÷ срок) с месяца начала. Месяц
+                    без начислений пропускается, срок растягивается.
+                  </p>
+                )}
+                {editTarget?.loan_amount && <LoanStatusPanel employeeId={editTarget.id} />}
+              </div>
+            )
+          })()}
+
+
+          {/* Переплата по официальной выплате вахты — СВОЙ блок, а не хвост
+              раздела «Заём»: к займу она отношения не имеет. Панель сама
+              решает, показываться ли: долга нет — ничего не рисует. */}
+          {editTarget && (
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                Официальная выплата
+              </p>
+              <OfficialDebtPanel employeeId={editTarget.id} />
+            </div>
+          )}
+
+          {/* Section 4 — Access (manager не управляет доступом) */}
+          {!isMgr && (
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Доступ в систему</p>
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer mb-3">
+              <input type="checkbox" {...form.register('has_access')} className="rounded" />
+              Есть доступ в систему
+            </label>
+
+            {hasAccess && (
+              <div className="flex flex-col gap-3 pl-2 border-l-2 border-blue-200">
+                <div className="flex flex-col gap-1">
+                  <label className="text-sm font-medium text-gray-700">Email</label>
+                  <input
+                    type="email"
+                    {...form.register('email')}
+                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  {/* Логин = часть почты до «@», регистр не важен (бэк: services/accounts). */}
+                  {(form.watch('email') ?? '').includes('@') && (
+                    <p className="text-xs text-gray-500">
+                      Вход по логину «{(form.watch('email') ?? '').trim().toLowerCase().split('@')[0]}» или по полной почте
+                    </p>
+                  )}
+                </div>
+                <Select
+                  label="Роль"
+                  options={ROLE_OPTIONS}
+                  {...form.register('role')}
+                  disabled={editTarget?.is_system_admin}
+                />
+                {editTarget?.is_system_admin && (
+                  <p className="text-xs text-gray-400">Системный администратор — роль изменить нельзя</p>
+                )}
+                {(!editTarget || !editTarget.has_access) && (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-sm font-medium text-gray-700">
+                      Начальный пароль{editTarget && !editTarget.has_access ? ' *' : ''}
+                    </label>
+                    <input
+                      type="password"
+                      {...form.register('initial_password')}
+                      placeholder={editTarget && !editTarget.has_access ? 'Обязательно для нового доступа' : ''}
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    {form.formState.errors.initial_password?.message && (
+                      <p className="text-xs text-red-600">{form.formState.errors.initial_password.message}</p>
+                    )}
+                  </div>
+                )}
+                {editTarget && editTarget.has_access && (
+                  <div className="flex gap-2 mt-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => { closeModal(); setResetTarget(editTarget) }}
+                    >
+                      Сбросить пароль
+                    </Button>
+                    {!editTarget.is_system_admin && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="danger"
+                        onClick={() => { closeModal(); setRevokeTarget(editTarget) }}
+                      >
+                        Отобрать доступ
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          )}
+            </div>
+
+            <div className="flex flex-col gap-3">
+          {/* ── Должности (позиции) — task_positions ч.B ──
+              Только в режиме редактирования: у существующего сотрудника рабочих
+              мест может быть несколько, и каждое со своими условиями. При
+              создании ниже идут «плоские» поля — они заводят основную позицию. */}
+          {editTarget && (
+            <PositionsEditor
+              employeeId={editTarget.id}
+              departments={departments ?? []}
+              companies={companies ?? []}
+              schedules={schedules ?? []}
+              readOnly={readOnly}
+              onChanged={refetch}
+            />
+          )}
+
 
           {/* Section 3b — оплата выхода в свой выходной по графику.
               Коэффициенты — свойство ПОЗИЦИИ: при редактировании они в секции
@@ -850,6 +1026,7 @@ export function EmployeesPage() {
           </>
           )}
 
+
           {/* Section 3b-3 — Распределение затрат по юрлицам по умолчанию (3.11b п.1).
               Проценты задаются РАБОЧЕМУ МЕСТУ: у совместителя каждое разносится
               по юрлицам отдельно. */}
@@ -863,157 +1040,8 @@ export function EmployeesPage() {
             />
           )}
 
-          {/* Section 3c — Заём (задача 3.11a). Гасится равными долями автоматически.
-              Заём удерживается с ОСНОВНОГО рабочего места. Если оно охранное, заём
-              здесь не заводится и не меняется (бэк отвечает 403): выплаты охраны
-              ведёт вахта. Заведённый до запрета остаётся виден и его можно снять. */}
-          {(() => {
-            // То же место, что у бэка (`guard_staff.loan_position`): позиция займа,
-            // а если она не задана — основная.
-            const positions = editTarget?.positions ?? []
-            const loanPosition =
-              positions.find((p) => p.id === editTarget?.loan_position_id) ??
-              positions.find((p) => p.is_primary)
-            const loanLocked = Boolean(loanPosition && isGuardPosition(loanPosition))
-            const hasLoan = Boolean(form.watch('loan_amount'))
-            const inputClass =
-              'rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 read-only:bg-gray-100 read-only:text-gray-500'
-            return (
-              <div>
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Заём</p>
-                {loanLocked && (
-                  <p className="mb-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    {GUARD_ACCRUAL_HINT}. Заём для него не заводится.
-                    {hasLoan && ' Заведённый раньше расчётом вахты не удерживается — его можно только снять.'}
-                  </p>
-                )}
-                {(!loanLocked || hasLoan) && (
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="flex flex-col gap-1">
-                      <label className="text-sm font-medium text-gray-700">Сумма (₽)</label>
-                      <input {...form.register('loan_amount')} readOnly={loanLocked} placeholder="12000" className={inputClass} />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-sm font-medium text-gray-700">Срок (мес.)</label>
-                      <input type="number" min={1} {...form.register('loan_term_months')} readOnly={loanLocked} placeholder="12" className={inputClass} />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="text-sm font-medium text-gray-700">Начало погашения</label>
-                      <input type="date" {...form.register('loan_start_date')} readOnly={loanLocked} className={inputClass} />
-                    </div>
-                  </div>
-                )}
-                {loanLocked && hasLoan && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      form.setValue('loan_amount', '', { shouldDirty: true })
-                      form.setValue('loan_term_months', '', { shouldDirty: true })
-                      form.setValue('loan_start_date', '', { shouldDirty: true })
-                    }}
-                    className="mt-2 rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50"
-                  >
-                    Снять заём
-                  </button>
-                )}
-                {!loanLocked && (
-                  <p className="mt-1 text-xs text-gray-400">
-                    Гасится равными долями (сумма ÷ срок) автоматически с месяца начала. В месяц без начислений не удерживается, а если начислено меньше платежа — удерживается сколько есть; срок при этом растягивается. Удержание за конкретный месяц можно скорректировать в табеле.
-                  </p>
-                )}
-                {editTarget?.loan_amount && <LoanStatusPanel employeeId={editTarget.id} />}
-              </div>
-            )
-          })()}
-
-          {/* Переплата по официальной выплате вахты — СВОЙ блок, а не хвост
-              раздела «Заём»: к займу она отношения не имеет. Панель сама
-              решает, показываться ли: долга нет — ничего не рисует. */}
-          {editTarget && (
-            <div>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
-                Официальная выплата
-              </p>
-              <OfficialDebtPanel employeeId={editTarget.id} />
             </div>
-          )}
-
-          {/* Section 4 — Access (manager не управляет доступом) */}
-          {!isMgr && (
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Доступ в систему</p>
-            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer mb-3">
-              <input type="checkbox" {...form.register('has_access')} className="rounded" />
-              Есть доступ в систему
-            </label>
-
-            {hasAccess && (
-              <div className="flex flex-col gap-3 pl-2 border-l-2 border-blue-200">
-                <div className="flex flex-col gap-1">
-                  <label className="text-sm font-medium text-gray-700">Email</label>
-                  <input
-                    type="email"
-                    {...form.register('email')}
-                    className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  {/* Логин = часть почты до «@», регистр не важен (бэк: services/accounts). */}
-                  {(form.watch('email') ?? '').includes('@') && (
-                    <p className="text-xs text-gray-500">
-                      Вход по логину «{(form.watch('email') ?? '').trim().toLowerCase().split('@')[0]}» или по полной почте
-                    </p>
-                  )}
-                </div>
-                <Select
-                  label="Роль"
-                  options={ROLE_OPTIONS}
-                  {...form.register('role')}
-                  disabled={editTarget?.is_system_admin}
-                />
-                {editTarget?.is_system_admin && (
-                  <p className="text-xs text-gray-400">Системный администратор — роль изменить нельзя</p>
-                )}
-                {(!editTarget || !editTarget.has_access) && (
-                  <div className="flex flex-col gap-1">
-                    <label className="text-sm font-medium text-gray-700">
-                      Начальный пароль{editTarget && !editTarget.has_access ? ' *' : ''}
-                    </label>
-                    <input
-                      type="password"
-                      {...form.register('initial_password')}
-                      placeholder={editTarget && !editTarget.has_access ? 'Обязательно для нового доступа' : ''}
-                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    {form.formState.errors.initial_password?.message && (
-                      <p className="text-xs text-red-600">{form.formState.errors.initial_password.message}</p>
-                    )}
-                  </div>
-                )}
-                {editTarget && editTarget.has_access && (
-                  <div className="flex gap-2 mt-1">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => { closeModal(); setResetTarget(editTarget) }}
-                    >
-                      Сбросить пароль
-                    </Button>
-                    {!editTarget.is_system_admin && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="danger"
-                        onClick={() => { closeModal(); setRevokeTarget(editTarget) }}
-                      >
-                        Отобрать доступ
-                      </Button>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
-          )}
           </fieldset>
         </form>
       </Modal>
@@ -1174,11 +1202,21 @@ function CompanySharesEditor({
         .join(', ')
     : null
 
+  const percentSum = sharesSum(companies, shares)
+
   return (
     <div>
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
-        Распределение затрат по юрлицам (по умолчанию)
-      </p>
+      {/* Сумма стоит у ЗАГОЛОВКА: она про весь набор, а не про кнопку рядом с
+          которой раньше висела. */}
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+          Распределение затрат по юрлицам (по умолчанию)
+        </p>
+        <span className={`text-xs ${sharesWarn(percentSum) ? 'text-amber-600' : 'text-gray-400'}`}>
+          Сумма: {Math.round(percentSum * 100) / 100}%
+          {sharesWarn(percentSum) && ' (должно быть ≈100%)'}
+        </span>
+      </div>
       {activePositions.length > 1 && (
         <select
           value={positionId ?? ''}
@@ -1215,29 +1253,34 @@ function CompanySharesEditor({
           onChange={setShares}
           mainCompanyId={mainCompanyId}
           resetKey={`${employeeId}-${positionId ?? 0}-${loadedAt}`}
+          hideSum
+          // Месяц начала и сохранение — в ОДНОМ ряду с «Разнести поровну»:
+          // тремя рядами эти три действия занимали больше, чем сами проценты.
+          trailing={
+            <>
+              <span className="ml-auto flex items-center gap-2">
+                <span className="text-xs font-medium text-gray-700">с месяца</span>
+                <input
+                  type="month"
+                  value={fromMonth}
+                  onChange={(e) => setFromMonth(e.target.value)}
+                  className="rounded-lg border border-gray-300 px-2 py-1 text-sm"
+                  title="Набор действует с 1-го числа выбранного месяца; прошлые месяцы остаются при своём распределении. Закрытый месяц или месяц на проверке выбрать нельзя."
+                />
+              </span>
+              <Button type="button" variant="secondary" size="sm" onClick={save} disabled={saving}>
+                Сохранить
+              </Button>
+            </>
+          }
         />
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium text-gray-700">Действует с месяца</span>
-            <input
-              type="month"
-              value={fromMonth}
-              onChange={(e) => setFromMonth(e.target.value)}
-              className="rounded-lg border border-gray-300 px-2 py-1.5 text-sm"
-              title="Распределение меняется только с 1-го числа месяца"
-            />
-          </label>
-          <Button type="button" variant="secondary" size="sm" onClick={save} disabled={saving}>
-            Сохранить распределение
-          </Button>
-        </div>
-        <p className="text-[11px] leading-tight text-gray-500">
-          Набор действует с 1-го числа выбранного месяца; прошлые месяцы остаются при
-          своём распределении. Закрытый месяц или месяц на проверке выбрать нельзя.
-          {inherited?.effective_from && (
-            <> Показан последний заданный набор — {effectiveMonthLabel(inherited.effective_from)}.</>
-          )}
-        </p>
+        {/* Правило «только с 1-го числа» — в подсказке самого поля месяца:
+            отдельной строкой оно повторяло то, что и так видно по полю. */}
+        {inherited?.effective_from && (
+          <p className="text-[11px] leading-tight text-gray-500">
+            Показан последний заданный набор — {effectiveMonthLabel(inherited.effective_from)}.
+          </p>
+        )}
         {inherited && inherited.history.length > 1 && (
           <details className="text-[11px] text-gray-600">
             <summary className="cursor-pointer text-gray-500">

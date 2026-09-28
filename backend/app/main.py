@@ -35,7 +35,7 @@ from app.services import (  # noqa: F401
 )
 from app.services.calendar import CalendarFetchError, ensure_calendar
 from app.services.dashboard_cache import drop_cache
-from app.services.position_terms import ClosedPeriodError
+from app.services.position_terms import ClosedPeriodError, TermsNotEditableError
 from app.services.readiness import is_ready, readiness_report
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,17 @@ async def closed_period_conflict(request: Request, exc: ClosedPeriodError) -> JS
     эндпойнт, пишущий те же данные, мимо запрета не пройдёт. Транзакция
     откатывается при закрытии сессии в `get_db`."""
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+
+@app.exception_handler(TermsNotEditableError)
+async def terms_not_editable(request: Request, exc: TermsNotEditableError) -> JSONResponse:
+    """Условия попытались изменить без даты → 422 (ADR-001,
+    task_terms_per_field). Они меняются своей точкой входа, списком изменений
+    с датой; общая правка карточки их не принимает, чтобы правка не уходила
+    молча не в тот месяц."""
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": str(exc)}
+    )
 
 
 app.include_router(auth_router, prefix="/api", tags=["auth"])

@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import datetime
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.company import CompanyRead
 from app.schemas.department import DepartmentRead
@@ -80,10 +80,9 @@ class EmployeePositionUpdate(BaseModel):
     dismissal_date: Optional[datetime.date] = None
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
-    # С какой даты действует изменение условий (ставка, тип оплаты, график,
-    # коэффициенты) — task_stage3_historicity. Не задано — 1-е число
-    # следующего месяца. На поля, которые не версионируются, не влияет.
-    terms_effective_from: Optional[datetime.date] = None
+    # Даты начала изменения условий здесь НЕТ (ADR-001): условия меняются своей
+    # точкой входа явным списком изменений (`TermsChangesInput`), а общая правка
+    # их не принимает вовсе — иначе правка снова уходила бы не в тот месяц.
 
 
 class EmployeePositionRead(EmployeePositionBase):
@@ -100,36 +99,90 @@ class EmployeePositionRead(EmployeePositionBase):
     company: Optional[CompanyRead] = None
 
 
-class PositionTermsRead(BaseModel):
-    """Версия условий рабочего места для истории в карточке
-    (task_stage3_historicity): что действовало и с какой даты."""
+TermGroup = Literal["pay", "schedule", "weekend", "holiday", "overtime", "official"]
 
-    id: int
-    #: None — с начала (первая версия, перенесённая миграцией).
+
+class TermChangeRead(BaseModel):
+    """Одно изменение одного условия — строка истории (ADR-001).
+
+    `value` — в том же виде, в каком его принимает диалог правки: деньги и
+    коэффициенты строкой, график идентификатором (название — в
+    `PositionTermsStateRead.schedule_names`), признак — булевым.
+    """
+
+    field: str
+    field_label: str
+    group: TermGroup
+    group_label: str
+    #: None — базовое значение «с начала», а не изменение.
     effective_from: Optional[datetime.date] = None
-    pay_type: str
-    rate: Optional[Decimal] = None
-    shift_rate: Optional[Decimal] = None
-    hour_rate: Optional[Decimal] = None
-    schedule_id: Optional[int] = None
-    schedule_name: Optional[str] = None
-    weekend_pay_type: str
-    weekend_coefficient: Optional[Decimal] = None
-    weekend_fixed_rate: Optional[Decimal] = None
-    holiday_pay_type: str
-    holiday_coefficient: Optional[Decimal] = None
-    holiday_fixed_rate: Optional[Decimal] = None
-    overtime_coefficient: Optional[Decimal] = None
-    is_official: bool = False
-    official_salary: Optional[Decimal] = None
-    #: Подписи полей, изменившихся относительно предыдущей версии.
-    changed: list[str] = []
+    effective_label: str
+    value: Any = None
     created_by_name: Optional[str] = None
     created_at: Optional[datetime.datetime] = None
 
 
-class PositionTermsHistoryRead(BaseModel):
+class TermPlannedRead(BaseModel):
+    """Изменение группы, которое ещё НЕ действует: «с 01.12.2026 будет …»."""
+
+    effective_from: datetime.date
+    effective_label: str
+    fields: list[str]
+    values: dict[str, Any]
+
+
+class TermGroupStateRead(BaseModel):
+    """Группа условий в карточке: значения сегодня и что запланировано дальше."""
+
+    group: TermGroup
+    label: str
+    fields: list[str]
+    current: dict[str, Any]
+    planned: list[TermPlannedRead] = []
+
+
+class PositionTermsStateRead(BaseModel):
+    """Условия рабочего места для карточки: сегодня, запланированное, история."""
+
     position_id: int
-    versions: list[PositionTermsRead]
-    #: Дата, которую форма подставит по умолчанию (1-е число следующего месяца).
+    today: datetime.date
+    #: Дата, которую диалог подставит по умолчанию (1-е число следующего месяца).
     default_effective_from: datetime.date
+    #: «С начала времён» — так помечены базовые значения, заведённые при найме.
+    beginning: datetime.date
+    groups: list[TermGroupStateRead]
+    changes: list[TermChangeRead] = []
+    #: id графика → название (в том числе снятого с учёта).
+    schedule_names: dict[str, str] = {}
+
+
+class TermsChangeInput(BaseModel):
+    """Одно изменение ГРУППЫ условий с датой начала действия.
+
+    Присылается ровно то, что изменил человек: группа, её значения и дата.
+    Бэкенд ничего не диффит — значение, совпадающее с действующим, тоже
+    записывается (дату выбрал человек осознанно).
+    """
+
+    group: TermGroup
+    effective_from: datetime.date
+    pay_type: Optional[PayType] = None
+    rate: Optional[Decimal] = None
+    shift_rate: Optional[Decimal] = None
+    hour_rate: Optional[Decimal] = None
+    schedule_id: Optional[int] = None
+    weekend_pay_type: Optional[WeekendPayType] = None
+    weekend_coefficient: Optional[Decimal] = None
+    weekend_fixed_rate: Optional[Decimal] = None
+    holiday_pay_type: Optional[WeekendPayType] = None
+    holiday_coefficient: Optional[Decimal] = None
+    holiday_fixed_rate: Optional[Decimal] = None
+    overtime_coefficient: Optional[Decimal] = None
+    is_official: Optional[bool] = None
+    official_salary: Optional[Decimal] = None
+
+
+class TermsChangesInput(BaseModel):
+    """Список изменений: разные группы можно менять разными датами в один заход."""
+
+    changes: list[TermsChangeInput] = Field(min_length=1)

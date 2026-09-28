@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from app.models.companies import Company
     from app.models.departments import Department
     from app.models.employees import Employee
+    from app.models.position_term_changes import PositionTermChange
     from app.models.position_terms import PositionTerms
     from app.models.schedules import Schedule
 
@@ -75,6 +76,11 @@ _INIT_DEFAULTS: dict[str, object] = {
     "holiday_pay_type": "coefficient",
     "holiday_coefficient": Decimal("1.5"),
     "overtime_coefficient": Decimal("1.5"),
+    # Признак официального трудоустройства (вахта) — колонка NOT NULL с
+    # server_default false. Без дефолта в __init__ он был None до INSERT-а, и
+    # базовое значение условия записывалось пустым (ADR-001: значения условий
+    # снимаются с позиции ещё до флаша).
+    "is_official": False,
 }
 
 # Поля позиции, которые видны через compat-аксессоры сотрудника.
@@ -253,6 +259,15 @@ class EmployeePosition(Base):
     terms_versions: Mapped[list["PositionTerms"]] = relationship(
         "PositionTerms",
         order_by="PositionTerms.effective_from",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="selectin",
+    )
+    # Изменения условий по полю (ADR-001) — то, что читает расчёт. Порядок по
+    # дате, потом по имени поля: чтение идёт одним проходом по возрастанию дат.
+    term_changes: Mapped[list["PositionTermChange"]] = relationship(
+        "PositionTermChange",
+        order_by="(PositionTermChange.effective_from, PositionTermChange.field)",
         cascade="all, delete-orphan",
         passive_deletes=True,
         lazy="selectin",

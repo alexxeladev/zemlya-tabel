@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { Company } from '../types/api'
 import { splitEqually } from '../utils/distribution'
 import { Button } from './Button'
@@ -14,6 +15,24 @@ type Props = {
   /** Смена значения переинициализирует галочки из shares (после загрузки с сервера). */
   resetKey?: string | number
   disabled?: boolean
+  /** Сумму показывает сам экран (у своего заголовка) — здесь её не рисуем. */
+  hideSum?: boolean
+  /** Что дорисовать в ряд с «Разнести поровну»: дата начала, кнопка сохранения.
+   *  Одним рядом, а не тремя: у каждого экрана свои действия, но ряд общий. */
+  trailing?: ReactNode
+}
+
+/** Сумма процентов набора — одно правило на редактор и на экраны, которые
+ *  показывают её у своего заголовка. */
+export function sharesSum(companies: Company[], shares: SharesMap): number {
+  return companies
+    .filter((c) => c.is_active)
+    .reduce((acc, c) => acc + num(shares[c.id]), 0)
+}
+
+/** Набор «почти 100%»? Ниже этого порога сумму подсвечивают предупреждением. */
+export function sharesWarn(sum: number): boolean {
+  return sum > 0 && Math.abs(sum - 100) > 0.5
 }
 
 const num = (v: string | undefined): number => {
@@ -30,7 +49,7 @@ const num = (v: string | undefined): number => {
  * общий алгоритм (utils/distribution), сумма ровно 100%.
  */
 export function SharesEditor({
-  companies, shares, onChange, mainCompanyId, resetKey, disabled,
+  companies, shares, onChange, mainCompanyId, resetKey, disabled, trailing, hideSum,
 }: Props) {
   const active = companies.filter((c) => c.is_active)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -40,8 +59,8 @@ export function SharesEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey, companies.length])
 
-  const sum = active.reduce((acc, c) => acc + num(shares[c.id]), 0)
-  const warn = sum > 0 && Math.abs(sum - 100) > 0.5
+  const sum = sharesSum(companies, shares)
+  const warn = sharesWarn(sum)
 
   const toggle = (id: number) => {
     const next = new Set(selected)
@@ -69,6 +88,9 @@ export function SharesEditor({
 
   return (
     <div className="flex flex-col gap-2">
+      {/* Юрлиц у группы восемь: в одну колонку список занимал треть карточки.
+          На узком контейнере колонка остаётся одна. */}
+      <div className="grid gap-2 sm:grid-cols-2">
       {active.map((c) => (
         <div key={c.id} className="flex items-center gap-2">
           <input
@@ -99,26 +121,28 @@ export function SharesEditor({
           <span className="text-sm text-gray-400">%</span>
         </div>
       ))}
+      </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Button
           type="button"
           variant="secondary"
           size="sm"
           disabled={disabled || selected.size === 0}
           onClick={splitSelected}
+          // Пояснение — в подсказке кнопки: тремя строками оно стояло в каждом
+          // месте, где есть редактор процентов, и занимало больше самой кнопки.
+          title="100% делится между отмеченными компаниями, остаток достаётся основной. Проценты фиксируются: новые компании в справочнике их не изменят."
         >
           Разнести поровну
         </Button>
-        <span className={`text-xs ${warn ? 'text-amber-600' : 'text-gray-400'}`}>
-          Сумма: {Math.round(sum * 100) / 100}% {warn && '(должно быть ≈100%)'}
-        </span>
+        {!hideSum && (
+          <span className={`text-xs ${warn ? 'text-amber-600' : 'text-gray-400'}`}>
+            Сумма: {Math.round(sum * 100) / 100}% {warn && '(должно быть ≈100%)'}
+          </span>
+        )}
+        {trailing}
       </div>
-      <p className="text-[11px] text-gray-400">
-        Отметьте компании галочками и нажмите «Разнести поровну» — 100% поделится
-        между ними, остаток достанется основной компании. Проценты фиксируются:
-        новые компании в справочнике их не изменят.
-      </p>
     </div>
   )
 }

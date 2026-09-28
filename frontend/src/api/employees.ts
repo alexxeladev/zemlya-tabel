@@ -1,6 +1,6 @@
 import type {
   CompanyShare, Employee, EmployeeImportResult, EmployeePosition, EmployeePositionInput,
-  EmployeeShares, LoanStatus, OfficialDebtStatus, PayType, PositionTermsHistory, UserRole, WeekendPayType,
+  EmployeeShares, LoanStatus, OfficialDebtStatus, PayType, PositionTermsState, TermsChangeInput, UserRole, WeekendPayType,
 } from '../types/api'
 import { apiClient } from './client'
 
@@ -172,7 +172,17 @@ export const setCompanyShares = (
 /** История условий рабочего места: что, когда, с какой даты. */
 export const getPositionTerms = (employeeId: number, positionId: number) =>
   apiClient
-    .get<PositionTermsHistory>(`/api/employees/${employeeId}/positions/${positionId}/terms`)
+    .get<PositionTermsState>(`/api/employees/${employeeId}/positions/${positionId}/terms`)
+    .then((r) => r.data)
+
+/** Изменить условия труда: ЯВНЫЙ список изменений групп с датами (ADR-001). */
+export const changePositionTerms = (
+  employeeId: number, positionId: number, changes: TermsChangeInput[],
+) =>
+  apiClient
+    .post<PositionTermsState>(
+      `/api/employees/${employeeId}/positions/${positionId}/terms`, { changes },
+    )
     .then((r) => r.data)
 
 /** Состояние займа на месяц (по умолчанию текущий): платежей осталось, по

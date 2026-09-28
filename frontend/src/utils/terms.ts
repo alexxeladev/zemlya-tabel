@@ -11,6 +11,12 @@
  * отдаёт ту же дату в `default_effective_from`, здесь она нужна до ответа,
  * чтобы форма открылась уже с датой. Разойтись им нельзя — держит тест.
  *
+ * Сравнения условий здесь НЕТ (сняли в ADR-001, task_terms_per_field): фронт
+ * больше не решает диффом, спрашивать ли дату. Условия меняются группами через
+ * диалог «Изменить», который дату спрашивает ВСЕГДА, — иначе правку задним
+ * числом тем же значением внести нельзя вовсе. Подписи значений групп — в
+ * `utils/positionTerms.ts`.
+ *
  * Модуль без JSX — проверяется `npm test`.
  */
 
@@ -51,23 +57,3 @@ export function effectiveMonthLabel(value: string | null | undefined): string {
   return `с ${m}.${y}`
 }
 
-/** Поля условий позиции — изменение хотя бы одного из них создаёт версию. */
-export const TERM_FIELDS = [
-  'pay_type', 'rate', 'shift_rate', 'hour_rate', 'schedule_id',
-  'weekend_pay_type', 'weekend_coefficient', 'weekend_fixed_rate',
-  'holiday_pay_type', 'holiday_coefficient', 'holiday_fixed_rate',
-  'overtime_coefficient',
-] as const
-
-/** Изменились ли условия между двумя состояниями формы (строки сравниваются
- *  как числа, где это числа: «1.5» и «1.50» — одно и то же). */
-export function termsChanged(
-  before: Record<string, unknown>, after: Record<string, unknown>,
-): boolean {
-  const norm = (v: unknown) => {
-    if (v == null || v === '') return ''
-    const n = Number(v)
-    return Number.isNaN(n) ? String(v) : String(n)
-  }
-  return TERM_FIELDS.some((f) => norm(before[f]) !== norm(after[f]))
-}

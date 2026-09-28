@@ -28,6 +28,7 @@ from app.models.reference_changes import (
     ReferenceChange,
 )
 from app.models.schedules import Schedule
+from app.services.position_terms import default_effective_from
 from app.services.reference_audit import audit_operation, set_audit_actor
 from tests.conftest import get_token
 
@@ -291,7 +292,10 @@ class TestCompatAccessors:
         assert rows[0].entity_type == "employee_position"
         assert rows[0].entity_id == employee.primary_position.id
         assert rows[0].old_value == "50000"
-        assert rows[0].new_value == "77000"
+        # У изменения условий в журнале ВСЕГДА видно, с какой даты оно
+        # действует (ADR-001): без даты «оклад 77 000» не говорит, какой месяц
+        # поехал. Плоский API даты не задаёт — значит, со следующего месяца.
+        assert rows[0].new_value == f"77000 (с {default_effective_from():%d.%m.%Y})"
         # Связь с человеком не потеряна — история карточки её найдёт.
         assert rows[0].employee_id == employee.id
 
